@@ -180,9 +180,21 @@ static void select_char_texture(char num) {
     gSPDisplayList(gDisplayListHead++, dl_hud_img_load_tex_block);
 }
 
+// Live knobs for on-screen control placement (percent of screen, 100 = normal).
+float gfx_touch_scale = 1.0f;
+float gfx_touch_dx = 0.0f;
+float gfx_touch_dy = 0.0f;
+
 static void DrawSprite(s32 x, s32 y, int scaling) {
-    gSPTextureRectangle(gDisplayListHead++, x - (15 << scaling), y - (15 << scaling), x + (15 << scaling),
-                        y + (15 << scaling), G_TX_RENDERTILE, 0, 0, 4 << (11 - scaling), 1 << (11 - scaling));
+    // Scale around the screen centre, then offset, so the controls can be
+    // pushed out towards the panel edges.
+    float cx0 = SCREEN_WIDTH * 0.5f;
+    float cy0 = SCREEN_HEIGHT * 0.5f;
+    int cx = (int)(cx0 + (x - cx0) * gfx_touch_scale + gfx_touch_dx);
+    int cy = (int)(cy0 + (y - cy0) * gfx_touch_scale + gfx_touch_dy);
+    int half = (int)((15 << scaling) * gfx_touch_scale);
+    gSPTextureRectangle(gDisplayListHead++, cx - half, cy - half, cx + half,
+                        cy + half, G_TX_RENDERTILE, 0, 0, 4 << (11 - scaling), 1 << (11 - scaling));
 }
 
 void render_touch_controls(void) {

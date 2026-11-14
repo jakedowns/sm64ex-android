@@ -169,6 +169,63 @@ static struct RenderingState {
 
 struct GfxDimensions gfx_current_dimensions;
 
+// --- Stereo (Leia half-width SBS) ------------------------------------------
+// When enabled, each frame is rendered twice into a 2x1 side-by-side buffer:
+// eye 0 on the left half, eye 1 on the right half. The eye separation is
+// applied as a clip-space shear so the game's own projection stays untouched.
+int gfx_stereo_enabled = 0;
+int gfx_stereo_eye = 0;
+int gfx_stereo_eye_width = 1;
+int gfx_stereo_full_w = 1;
+int gfx_stereo_full_h = 1;
+int gfx_stereo_out_w = 0;   // 0 = derive from window
+int gfx_stereo_out_h = 0;
+int gfx_stereo_perf = 0;   // 1 = render each eye at half resolution
+int gfx_stereo_fit = 2;    // 0 = fill eye, 1 = 4:3 fit, 2 = 16:9 fit (best)
+int gfx_stereo_toe_pct = 0;    // toe-in (-) / toe-out (+) camera canting
+int gfx_stereo_zbuf = 0;       // render the depth buffer as a gradient
+int gfx_stereo_wire = 0;       // wireframe debug view
+float gfx_stereo_fps = 0.0f;
+int gfx_stereo_canvas[4] = {0, 0, 1, 1};   // x, y, w, h inside the eye buffer
+int gfx_stereo_eye_width_override = 0;    // 0 = derive from window width / 2
+int gfx_stereo_swap_eyes = 0;             // render right eye first / mirrored
+int gfx_stereo_flip_y = 0;                // vertical flip of the eye image
+int gfx_stereo_same_both = 0;             // eye 1 reuses eye 0's view (mapping test)
+float gfx_stereo_ipd_px = 140.0f;         // separation at infinity
+float gfx_stereo_convergence_px = 0.0f;   // moves the zero-parallax plane
+static float gfx_stereo_shear = 0.0f;
+int gfx_stereo_vp[2][2] = {{-1, -1}, {-1, -1}};
+
+#ifdef __ANDROID__
+// Implemented in gfx_opengl.c: one framebuffer per eye + SBS composite.
+extern void gfx_opengl_stereo_begin(int eye, int w, int h, int cx, int cy, int cw, int ch);
+extern void gfx_opengl_stereo_composite(int w, int h, int full_w, int full_h);
+#endif
+
+static void gfx_apply_stereo_shear(void) {
+    if (!gfx_stereo_enabled) {
+        return;
+    }
+    // x' = x + shear*w  =>  column 0 += shear * column 3
+    for (int i = 0; i < 4; i++) {
+        rsp.MP_matrix[i][0] += gfx_stereo_shear * rsp.MP_matrix[i][3];
+    }
+    if (gfx_stereo_flip_y) {
+        // y' = -y in clip space (mirror vertically around the eye centre)
+        for (int i = 0; i < 4; i++) {
+            rsp.MP_matrix[i][1] = -rsp.MP_matrix[i][1];
+        }
+    }
+    if (gfx_stereo_toe_pct != 0) {
+        // Camera canting: shift x proportionally to z (rotate the eye about
+        // the vertical axis). Positive = toe-out, negative = toe-in.
+        float toe = gfx_stereo_toe_pct / 100.0f * 0.25f;
+        for (int i = 0; i < 4; i++) {
+            rsp.MP_matrix[i][0] += toe * rsp.MP_matrix[i][2];
+        }
+    }
+}
+
 static bool dropped_frame;
 
 static float buf_vbo[MAX_BUFFERED * (26 * 3)]; // 3 vertices in a triangle and 26 floats per vtx
@@ -726,6 +783,7 @@ static void gfx_sp_matrix(uint8_t parameters, const int32_t *addr) {
         rsp.lights_changed = 1;
     }
     gfx_matrix_mul(rsp.MP_matrix, rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1], rsp.P_matrix);
+    gfx_apply_stereo_shear();
 }
 
 static void gfx_sp_pop_matrix(uint32_t count) {
@@ -734,6 +792,7 @@ static void gfx_sp_pop_matrix(uint32_t count) {
             --rsp.modelview_matrix_stack_size;
             if (rsp.modelview_matrix_stack_size > 0) {
                 gfx_matrix_mul(rsp.MP_matrix, rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1], rsp.P_matrix);
+                gfx_apply_stereo_shear();
             }
         }
     }
@@ -1773,6 +1832,46 @@ void gfx_start_frame(void) {
         // Avoid division by zero
         gfx_current_dimensions.height = 1;
     }
+    if (gfx_stereo_enabled) {
+        // Each eye gets half the window; the RAPI shifts the viewport by eye.
+        gfx_stereo_full_w = gfx_stereo_out_w > 0 ? gfx_stereo_out_w
+                                                 : gfx_current_dimensions.width;
+        gfx_stereo_full_h = gfx_stereo_out_h > 0 ? gfx_stereo_out_h
+                                                 : gfx_current_dimensions.height;
+        gfx_current_dimensions.width = gfx_stereo_full_w;
+        gfx_current_dimensions.height = gfx_stereo_full_h;
+        gfx_stereo_eye_width = gfx_stereo_eye_width_override > 0
+                ? gfx_stereo_eye_width_override
+                : gfx_current_dimensions.width / 2;
+        if (gfx_stereo_eye_width < 1) {
+            gfx_stereo_eye_width = 1;
+        }
+        // Decide the canvas aspect inside the eye buffer.
+        float eye_ar = (float)gfx_stereo_eye_width / (float)gfx_current_dimensions.height;
+        float target_ar = gfx_stereo_fit == 1 ? 4.0f / 3.0f
+                        : gfx_stereo_fit == 2 ? 16.0f / 9.0f
+                        : eye_ar;
+        int cw = gfx_stereo_eye_width;
+        int ch = gfx_current_dimensions.height;
+        if (target_ar > eye_ar) {
+            ch = (int)(cw / target_ar);
+        } else if (target_ar < eye_ar) {
+            cw = (int)(ch * target_ar);
+        }
+        if (cw < 1) cw = 1;
+        if (ch < 1) ch = 1;
+        gfx_stereo_canvas[0] = (gfx_stereo_eye_width - cw) / 2;
+        gfx_stereo_canvas[1] = (gfx_current_dimensions.height - ch) / 2;
+        gfx_stereo_canvas[2] = cw;
+        gfx_stereo_canvas[3] = ch;
+        gfx_current_dimensions.width = cw;
+        gfx_current_dimensions.height = ch;
+        if (gfx_stereo_perf) {
+            // Half-res per eye: the composite pass upscales to the panel.
+            gfx_current_dimensions.width /= 2;
+            gfx_current_dimensions.height /= 2;
+        }
+    }
     gfx_current_dimensions.aspect_ratio = (float)gfx_current_dimensions.width / (float)gfx_current_dimensions.height;
 }
 
@@ -1786,6 +1885,34 @@ void gfx_run(Gfx *commands) {
         return;
     }
     dropped_frame = false;
+    
+    if (gfx_stereo_enabled) {
+        for (int eye = 0; eye < 2; eye++) {
+            gfx_stereo_eye = eye;
+            // The game emits its viewport command only once, so eye 1 would
+            // inherit eye 0's viewport forever. Force a re-apply each pass.
+            rdp.viewport_or_scissor_changed = true;
+            int v = (gfx_stereo_same_both || gfx_stereo_swap_eyes) ? (eye ^ (gfx_stereo_same_both ? 0 : 1)) : eye;
+            float off = (v == 0 ? 0.5f : -0.5f) * gfx_stereo_ipd_px - gfx_stereo_convergence_px;
+            gfx_stereo_shear = off * 2.0f / (float)gfx_stereo_eye_width;
+#ifdef __ANDROID__
+            // Render this eye into its own FBO (own color + depth).
+            gfx_opengl_stereo_begin(eye, gfx_stereo_eye_width, gfx_stereo_full_h,
+                    gfx_stereo_canvas[0], gfx_stereo_canvas[1],
+                    gfx_stereo_canvas[2], gfx_stereo_canvas[3]);
+#else
+            gfx_rapi->start_frame();
+#endif
+            gfx_run_dl(commands);
+            gfx_flush();
+        }
+#ifdef __ANDROID__
+        gfx_opengl_stereo_composite(0, 0, gfx_stereo_full_w, gfx_stereo_full_h);
+#endif
+        gfx_stereo_eye = 0;
+        gfx_wapi->swap_buffers_begin();
+        return;
+    }
     
 #ifdef __ANDROID__
     for (int i = 0; i < ((configWindow.vsync == 3) ? render_multiplier : 1); i++) {

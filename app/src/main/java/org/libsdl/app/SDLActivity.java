@@ -1378,9 +1378,50 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
     }
 
     /**
+     * When set, SDL renders into this Surface instead of its own SurfaceView.
+     * Used to feed the Leia interlacer (see sm64portActivity).
+     */
+    public static Surface mOverrideSurface = null;
+    /** When true, getNativeSurface() waits for mOverrideSurface before falling back. */
+    public static boolean mWaitForOverride = false;
+    public static boolean mOverrideFailed = false;
+    private static final Object mOverrideLock = new Object();
+
+    public static void setOverrideSurface(Surface surface) {
+        synchronized (mOverrideLock) {
+            mOverrideSurface = surface;
+            mOverrideLock.notifyAll();
+        }
+    }
+
+    public static void failOverride() {
+        synchronized (mOverrideLock) {
+            mOverrideFailed = true;
+            mOverrideLock.notifyAll();
+        }
+    }
+
+    /**
      * This method is called by SDL using JNI.
      */
     public static Surface getNativeSurface() {
+        if (mWaitForOverride && mOverrideSurface == null && !mOverrideFailed) {
+            synchronized (mOverrideLock) {
+                long deadline = System.currentTimeMillis() + 5000;
+                while (mOverrideSurface == null && !mOverrideFailed) {
+                    long left = deadline - System.currentTimeMillis();
+                    if (left <= 0) break;
+                    try {
+                        mOverrideLock.wait(left);
+                    } catch (InterruptedException e) {
+                        break;
+                    }
+                }
+            }
+        }
+        if (mOverrideSurface != null) {
+            return mOverrideSurface;
+        }
         if (SDLActivity.mSurface == null) {
             return null;
         }

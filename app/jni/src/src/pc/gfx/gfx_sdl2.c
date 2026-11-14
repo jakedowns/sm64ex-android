@@ -44,6 +44,125 @@
 
 #ifdef __ANDROID__
 extern int render_multiplier;
+// Defined in gfx_pc.c; enabled here because Android renders into Leia's SBS surface.
+extern int gfx_stereo_enabled;
+extern int gfx_stereo_eye;
+extern int gfx_stereo_eye_width;
+extern int gfx_stereo_eye_width_override;
+extern int gfx_stereo_swap_eyes;
+extern int gfx_stereo_flip_y;
+extern int gfx_stereo_same_both;
+extern int gfx_stereo_vp[2][2];
+extern int gfx_stereo_debug_tint;
+extern int gfx_stereo_in_scale_pct;
+extern int gfx_stereo_toe_pct;
+extern int gfx_stereo_zbuf;
+extern int gfx_stereo_wire;
+extern float gfx_stereo_fps;
+extern int gfx_stereo_perf;
+extern int gfx_stereo_out_w;
+extern int gfx_stereo_out_h;
+extern int gfx_stereo_fit;
+extern float gfx_touch_scale;
+extern float gfx_touch_dx;
+extern float gfx_touch_dy;
+extern float gfx_stereo_ipd_px;
+extern float gfx_stereo_convergence_px;
+
+#include <jni.h>
+
+static float s_base_ipd = 140.0f;
+static float s_base_convergence = 0.0f;
+static float s_depth_scale = 1.0f;
+
+JNIEXPORT void JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeSetStereo(JNIEnv *env, jobject thiz,
+                                                            jint which, jint value) {
+    (void) env;
+    (void) thiz;
+    switch (which) {
+        case 0: s_base_ipd = (float) value; break;
+        case 1: s_base_convergence = (float) value; break;
+        case 2: s_depth_scale = (float) value / 100.0f; break;
+    }
+    gfx_stereo_ipd_px = s_base_ipd * s_depth_scale;
+    gfx_stereo_convergence_px = s_base_convergence * s_depth_scale;
+}
+
+static int s_draw_w = 0;
+static int s_draw_h = 0;
+
+JNIEXPORT void JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeSetStereoMode(JNIEnv *env, jobject thiz,
+                                                                 jint enabled) {
+    (void) env;
+    (void) thiz;
+    gfx_stereo_enabled = enabled ? 1 : 0;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeGetDrawableWidth(JNIEnv *env, jobject thiz) {
+    (void) env; (void) thiz;
+    return s_draw_w;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeGetDrawableHeight(JNIEnv *env, jobject thiz) {
+    (void) env; (void) thiz;
+    return s_draw_h;
+}
+
+JNIEXPORT void JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeSetStereoInt(JNIEnv *env, jobject thiz,
+                                                                jint which, jint value) {
+    (void) env; (void) thiz;
+    switch (which) {
+        case 3: gfx_stereo_eye_width_override = value; break;
+        case 4: gfx_stereo_swap_eyes = value; break;
+        case 5: gfx_stereo_flip_y = value; break;
+        case 6: gfx_stereo_same_both = value; break;
+        case 7: gfx_stereo_debug_tint = value; break;
+        case 12: gfx_stereo_perf = value; break;
+        case 14: gfx_stereo_in_scale_pct = value; break;
+        case 15: gfx_stereo_zbuf = value; break;
+        case 16: gfx_stereo_wire = value; break;
+        case 17: gfx_stereo_toe_pct = value; break;
+        case 13: gfx_stereo_fit = value; break;
+        case 8: gfx_touch_dx = (float) value * 4.0f; break;    // percent -> px (approx)
+        case 9: gfx_touch_dy = (float) value * 4.0f; break;
+        case 10: gfx_touch_scale = (float) value / 100.0f; break;
+    }
+}
+
+JNIEXPORT jint JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeGetVpX(JNIEnv *env, jobject thiz, jint eye) {
+    (void) env; (void) thiz;
+    return (eye >= 0 && eye < 2) ? gfx_stereo_vp[eye][0] : -1;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeGetVpW(JNIEnv *env, jobject thiz, jint eye) {
+    (void) env; (void) thiz;
+    return (eye >= 0 && eye < 2) ? gfx_stereo_vp[eye][1] : -1;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeGetFps(JNIEnv *env, jobject thiz) {
+    (void) env; (void) thiz;
+    return (jint) (gfx_stereo_fps + 0.5f);
+}
+
+JNIEXPORT jint JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeGetEyeWidth(JNIEnv *env, jobject thiz) {
+    (void) env; (void) thiz;
+    return gfx_stereo_eye_width;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeGetStereoEnabled(JNIEnv *env, jobject thiz) {
+    (void) env; (void) thiz;
+    return gfx_stereo_enabled;
+}
 #endif
 
 static const Uint32 FRAME_TIME = 1000 / FRAMERATE;
@@ -201,6 +320,21 @@ static void gfx_sdl_init(const char *window_title) {
         SDL_WINDOW_OPENGL | SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE
     );
     ctx = SDL_GL_CreateContext(wnd);
+
+#ifdef __ANDROID__
+    // Android target feeds the Leia interlacer with a 2x1 SBS frame.
+    // With the mpv-style picture asset, the producer buffer IS the interlaced
+    // view size; do NOT resize it here (that corrupted the EGL context).
+    gfx_stereo_enabled = 1;
+    {
+        int ww = 0, wh = 0, dw = 0, dh = 0;
+        SDL_GetWindowSize(wnd, &ww, &wh);
+        SDL_GL_GetDrawableSize(wnd, &dw, &dh);
+        s_draw_w = dw;
+        s_draw_h = dh;
+        SDL_Log("SM64 stereo: window=%dx%d drawable=%dx%d", ww, wh, dw, dh);
+    }
+#endif
 
     test_vsync();
     SDL_GL_SetSwapInterval(configWindow.vsync);

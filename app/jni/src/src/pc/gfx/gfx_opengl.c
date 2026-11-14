@@ -3,6 +3,21 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+// Stereo state lives in gfx_pc.c (set by the Leia bridge).
+extern int gfx_stereo_enabled;
+extern int gfx_stereo_eye;
+extern int gfx_stereo_eye_width;
+#ifdef __ANDROID__
+#include <android/log.h>
+#endif
+extern int gfx_stereo_vp[2][2];
+extern int gfx_stereo_toe_pct;
+extern int gfx_stereo_zbuf;
+extern int gfx_stereo_wire;
+extern float gfx_stereo_fps;
+
+
+
 #ifndef _LANGUAGE_C
 # define _LANGUAGE_C
 #endif
@@ -571,12 +586,237 @@ static void gfx_opengl_set_zmode_decal(bool zmode_decal) {
     }
 }
 
+/* ---------------- Stereo: one framebuffer per eye ---------------- */
+#ifdef __ANDROID__
+static GLuint s_eye_fbo[2] = {0, 0};
+static GLuint s_eye_tex[2] = {0, 0};
+static GLuint s_eye_depth[2] = {0, 0};
+static int    s_eye_w = 0, s_eye_h = 0;
+static int    s_fbo_mode = 0;
+static int    s_depth_tex_mode = 0;   // 1 if GL_OES_depth_texture is available
+static int    s_depth_tex_checked = 0;
+#include <string.h>
+#include <time.h>
+static int    s_canvas_x = 0, s_canvas_y = 0;
+static int    s_canvas_w = 1, s_canvas_h = 1;
+
+static GLuint s_comp_prog = 0, s_comp_vbo = 0;
+static GLint  s_comp_pos = -1, s_comp_uv = -1, s_comp_tex = -1;
+static GLint  s_comp_mode = -1, s_comp_solid = -1, s_comp_scale = -1;
+int gfx_stereo_in_scale_pct = 100;   // pre-scale of each eye inside the SBS buffer
+int gfx_stereo_debug_tint = 0;   // 1 = 50% red/blue overlay per half
+
+static const char *s_comp_vs =
+    "attribute vec2 aPos; attribute vec2 aUV; varying vec2 vUV;\n"
+    "uniform float uScale;\n"
+    "void main(){ vUV = aUV; gl_Position = vec4(aPos * uScale, 0.0, 1.0); }\n";
+static const char *s_comp_fs =
+    "precision mediump float; varying vec2 vUV; uniform sampler2D uTex;\n"
+    "uniform float uMode; uniform vec4 uSolid;\n"
+    "void main(){ gl_FragColor = (uMode > 0.5) ? uSolid : texture2D(uTex, vUV); }\n";
+
+static GLuint compile_shader(GLenum type, const char *src) {
+    GLuint sh = glCreateShader(type);
+    glShaderSource(sh, 1, &src, NULL);
+    glCompileShader(sh);
+    return sh;
+}
+
+static void stereo_ensure_resources(int w, int h) {
+    if (w == s_eye_w && h == s_eye_h && s_eye_fbo[0] != 0) {
+        return;
+    }
+    for (int i = 0; i < 2; i++) {
+        if (s_eye_fbo[i]) glDeleteFramebuffers(1, &s_eye_fbo[i]);
+        if (s_eye_tex[i]) glDeleteTextures(1, &s_eye_tex[i]);
+        if (s_eye_depth[i]) glDeleteRenderbuffers(1, &s_eye_depth[i]);
+
+        glGenTextures(1, &s_eye_tex[i]);
+        glBindTexture(GL_TEXTURE_2D, s_eye_tex[i]);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, w, h, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+        // (Re)generate the eye framebuffer: this call was accidentally dropped
+        // during the ZBUF edit, leaving s_eye_fbo == 0 forever.
+        glGenFramebuffers(1, &s_eye_fbo[i]);
+        glBindFramebuffer(GL_FRAMEBUFFER, s_eye_fbo[i]);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                               GL_TEXTURE_2D, s_eye_tex[i], 0);
+
+        if (s_depth_tex_mode) {
+            // Depth as a texture so the composite pass can visualise it.
+            glGenTextures(1, &s_eye_depth[i]);
+            glBindTexture(GL_TEXTURE_2D, s_eye_depth[i]);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT16, w, h, 0,
+                         GL_DEPTH_COMPONENT, GL_UNSIGNED_SHORT, NULL);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+                                   GL_TEXTURE_2D, s_eye_depth[i], 0);
+        } else {
+            glGenRenderbuffers(1, &s_eye_depth[i]);
+            glBindRenderbuffer(GL_RENDERBUFFER, s_eye_depth[i]);
+            glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT16, w, h);
+            glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+                                      GL_RENDERBUFFER, s_eye_depth[i]);
+        }
+        __android_log_print(ANDROID_LOG_INFO, "SM64FBO", "eye %d fbo=%u tex=%u %dx%d status=0x%x",
+                            i, s_eye_fbo[i], s_eye_tex[i], w, h,
+                            glCheckFramebufferStatus(GL_FRAMEBUFFER));
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    s_eye_w = w;
+    s_eye_h = h;
+
+    if (!s_comp_prog) {
+        GLuint vs = compile_shader(GL_VERTEX_SHADER, s_comp_vs);
+        GLuint fs = compile_shader(GL_FRAGMENT_SHADER, s_comp_fs);
+        s_comp_prog = glCreateProgram();
+        glAttachShader(s_comp_prog, vs);
+        glAttachShader(s_comp_prog, fs);
+        glLinkProgram(s_comp_prog);
+        s_comp_pos = glGetAttribLocation(s_comp_prog, "aPos");
+        s_comp_uv  = glGetAttribLocation(s_comp_prog, "aUV");
+        s_comp_tex = glGetUniformLocation(s_comp_prog, "uTex");
+        s_comp_mode = glGetUniformLocation(s_comp_prog, "uMode");
+        s_comp_scale = glGetUniformLocation(s_comp_prog, "uScale");
+        s_comp_solid = glGetUniformLocation(s_comp_prog, "uSolid");
+        glDeleteShader(vs);
+        glDeleteShader(fs);
+        __android_log_print(ANDROID_LOG_INFO, "SM64FBO", "composite prog=%u pos=%d uv=%d",
+                            s_comp_prog, s_comp_pos, s_comp_uv);
+    }
+}
+
+/* Called by gfx_pc.c before each eye's display list. */
+void gfx_opengl_stereo_begin(int eye, int w, int h, int cx, int cy, int cw, int ch) {
+    if (s_eye_fbo[0] == 0 && !s_depth_tex_checked) {
+        s_depth_tex_checked = 1;
+        const char *ext = (const char *)glGetString(GL_EXTENSIONS);
+        s_depth_tex_mode = 0;   // DISABLED: suspected FBO=0 regression; ZBUF view pending rework
+        __android_log_print(ANDROID_LOG_INFO, "SM64FBO",
+                "GL_VERSION=%s RENDERER=%s OES_depth_texture=%d",
+                glGetString(GL_VERSION), glGetString(GL_RENDERER),
+                s_depth_tex_mode);
+    }
+    s_canvas_x = cx;
+    s_canvas_y = cy;
+    s_canvas_w = cw;
+    s_canvas_h = ch;
+    stereo_ensure_resources(w, h);
+    s_fbo_mode = 1;
+    glBindFramebuffer(GL_FRAMEBUFFER, s_eye_fbo[eye & 1]);
+    glDisable(GL_SCISSOR_TEST);
+    glDepthMask(GL_TRUE);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(0, 0, w, h);
+    glViewport(cx, cy, cw, ch);
+}
+
+/* Blit both eye textures into the 2x1 side-by-side default framebuffer. */
+void gfx_opengl_stereo_composite(int w, int h, int full_w, int full_h) {
+    s_fbo_mode = 0;
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
+    glViewport(0, 0, full_w, full_h);
+
+    glUseProgram(s_comp_prog);
+    glActiveTexture(GL_TEXTURE0);
+    glUniform1i(s_comp_tex, 0);
+
+    static const float quad[] = {
+        -1.0f, -1.0f, 0.0f, 0.0f,
+         1.0f, -1.0f, 1.0f, 0.0f,
+        -1.0f,  1.0f, 0.0f, 1.0f,
+         1.0f,  1.0f, 1.0f, 1.0f,
+    };
+    if (!s_comp_vbo) {
+        glGenBuffers(1, &s_comp_vbo);
+    }
+    glBindBuffer(GL_ARRAY_BUFFER, s_comp_vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(quad), quad, GL_STREAM_DRAW);
+    glEnableVertexAttribArray(s_comp_pos);
+    glVertexAttribPointer(s_comp_pos, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void *)0);
+    glEnableVertexAttribArray(s_comp_uv);
+    glVertexAttribPointer(s_comp_uv, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float),
+                          (void *)(2 * sizeof(float)));
+
+    glUniform1f(s_comp_mode, 0.0f);
+    glUniform1f(s_comp_scale, (float)gfx_stereo_in_scale_pct / 100.0f);
+    int zview = gfx_stereo_zbuf && s_depth_tex_mode;
+    glUniform1f(s_comp_mode, zview ? 2.0f : 0.0f);
+    for (int eye = 0; eye < 2; eye++) {
+        glViewport(eye * (full_w / 2), 0, full_w / 2, full_h);
+        glBindTexture(GL_TEXTURE_2D, zview ? s_eye_depth[eye] : s_eye_tex[eye]);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    }
+
+    if (gfx_stereo_debug_tint) {
+        // 50% red over the left half, 50% blue over the right half: shows
+        // exactly which pixels come from which eye in the SBS buffer.
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glUniform1f(s_comp_mode, 1.0f);
+        glViewport(0, 0, full_w / 2, full_h);
+        glUniform4f(s_comp_solid, 1.0f, 0.0f, 0.0f, 0.5f);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glViewport(full_w / 2, 0, full_w / 2, full_h);
+        glUniform4f(s_comp_solid, 0.0f, 0.2f, 1.0f, 0.5f);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glDisable(GL_BLEND);
+        glUniform1f(s_comp_mode, 0.0f);
+    }
+
+    glDisableVertexAttribArray(s_comp_pos);
+    glDisableVertexAttribArray(s_comp_uv);
+    glUseProgram(0);
+    glEnable(GL_DEPTH_TEST);
+}
+#endif
+
 static void gfx_opengl_set_viewport(int x, int y, int width, int height) {
-    glViewport(x, y, width, height);
+#ifdef __ANDROID__
+    if (s_fbo_mode) {
+        glViewport(s_canvas_x + x, s_canvas_y + y, width, height);
+        return;
+    }
+#endif
+#ifdef __ANDROID__
+    {
+        static int vp_log_n = 0;
+        if ((vp_log_n++ % 120) == 0) {
+            __android_log_print(ANDROID_LOG_INFO, "SM64VP",
+                "set_viewport eye=%d x=%d y=%d w=%d h=%d eyeW=%d",
+                gfx_stereo_eye, x, y, width, height, gfx_stereo_eye_width);
+        }
+    }
+#endif
+    int ox = x;
+#ifndef __ANDROID__
+    ox = x + (gfx_stereo_enabled ? gfx_stereo_eye * gfx_stereo_eye_width : 0);
+#endif
+    if (gfx_stereo_enabled && gfx_stereo_eye >= 0 && gfx_stereo_eye < 2) {
+        gfx_stereo_vp[gfx_stereo_eye][0] = ox;
+        gfx_stereo_vp[gfx_stereo_eye][1] = width;
+    }
+    glViewport(ox, y, width, height);
 }
 
 static void gfx_opengl_set_scissor(int x, int y, int width, int height) {
-    glScissor(x, y, width, height);
+#ifdef __ANDROID__
+    if (s_fbo_mode) {
+        glScissor(s_canvas_x + x, s_canvas_y + y, width, height);
+        return;
+    }
+#endif
+    glScissor(x + (gfx_stereo_enabled ? gfx_stereo_eye * gfx_stereo_eye_width : 0), y, width, height);
 }
 
 static void gfx_opengl_set_use_alpha(bool use_alpha) {
@@ -587,10 +827,43 @@ static void gfx_opengl_set_use_alpha(bool use_alpha) {
     }
 }
 
+static GLuint s_wire_ibo = 0;
+static GLsizei s_wire_capacity = 0;
+
 static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_vbo_num_tris) {
     //printf("flushing %d tris\n", buf_vbo_num_tris);
     glBufferData(GL_ARRAY_BUFFER, sizeof(float) * buf_vbo_len, buf_vbo, GL_STREAM_DRAW);
-    glDrawArrays(GL_TRIANGLES, 0, 3 * buf_vbo_num_tris);
+    if (gfx_stereo_wire) {
+        // ES2 has no glPolygonMode: expand each triangle into its 3 edges.
+        if (s_wire_capacity < (GLsizei)buf_vbo_num_tris * 6) {
+            if (s_wire_ibo) glDeleteBuffers(1, &s_wire_ibo);
+            glGenBuffers(1, &s_wire_ibo);
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, s_wire_ibo);
+            s_wire_capacity = (GLsizei)buf_vbo_num_tris * 6;
+            glBufferData(GL_ELEMENT_ARRAY_BUFFER,
+                         s_wire_capacity * sizeof(GLushort), NULL, GL_STREAM_DRAW);
+        }
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, s_wire_ibo);
+        GLushort *idx = (GLushort *)
+                glMapBufferOES(GL_ELEMENT_ARRAY_BUFFER, GL_WRITE_ONLY_OES);
+        if (idx != NULL) {
+            for (size_t t = 0; t < buf_vbo_num_tris; t++) {
+                GLushort b = (GLushort)(3 * t);
+                idx[6 * t + 0] = b + 0;
+                idx[6 * t + 1] = b + 1;
+                idx[6 * t + 2] = b + 1;
+                idx[6 * t + 3] = b + 2;
+                idx[6 * t + 4] = b + 2;
+                idx[6 * t + 5] = b + 0;
+            }
+            glUnmapBufferOES(GL_ELEMENT_ARRAY_BUFFER);
+            glDrawElements(GL_LINES, 6 * (GLsizei)buf_vbo_num_tris,
+                           GL_UNSIGNED_SHORT, NULL);
+        }
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+    } else {
+        glDrawArrays(GL_TRIANGLES, 0, 3 * buf_vbo_num_tris);
+    }
 }
 
 static inline bool gl_get_version(int *major, int *minor, bool *is_es) {
@@ -634,13 +907,48 @@ static void gfx_opengl_init(void) {
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 }
 
+
 static void gfx_opengl_start_frame(void) {
     frame_count++;
+    {
+        static long last_ms = 0;
+        static int frames = 0;
+        long now = (long)(frame_count * (1000.0 / 30.0));
+        frames++;
+        // wall-clock timing via clock_gettime
+        struct timespec ts;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        long ms = ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+        if (last_ms == 0) last_ms = ms;
+        if (ms - last_ms >= 500) {
+            gfx_stereo_fps = frames * 1000.0f / (float)(ms - last_ms);
+            last_ms = ms;
+            frames = 0;
+        }
+    }
 
+#ifdef __ANDROID__
+    if (s_fbo_mode) {
+        // Each eye framebuffer is cleared by gfx_opengl_stereo_begin().
+        return;
+    }
+#endif
     glDisable(GL_SCISSOR_TEST);
-    glDepthMask(GL_TRUE); // Must be set to clear Z-buffer
-    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    if (gfx_stereo_enabled && gfx_stereo_eye > 0) {
+        // Second eye: wipe ONLY its own half, color AND depth, so the two eyes
+        // never share a depth buffer (that caused eye-vs-eye z-fighting).
+        glEnable(GL_SCISSOR_TEST);
+        glScissor(gfx_stereo_eye * gfx_stereo_eye_width, 0,
+                  gfx_stereo_eye_width, 0x10000);
+        glDepthMask(GL_TRUE);
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glDisable(GL_SCISSOR_TEST);
+    } else {
+        glDepthMask(GL_TRUE); // Must be set to clear Z-buffer
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    }
     glEnable(GL_SCISSOR_TEST);
 }
 
