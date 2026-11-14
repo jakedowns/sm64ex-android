@@ -182,6 +182,7 @@ int gfx_stereo_out_w = 0;   // 0 = derive from window
 int gfx_stereo_out_h = 0;
 int gfx_stereo_perf = 0;   // 1 = render each eye at half resolution
 int gfx_stereo_fit = 2;    // 0 = fill eye, 1 = 4:3 fit, 2 = 16:9 fit (best)
+int gfx_stereo_aspect_pct = 0;  // 0 = auto; else aspect*100 for the eye canvas
 int gfx_stereo_toe_pct = 0;    // toe-in (-) / toe-out (+) camera canting
 int gfx_stereo_zbuf = 0;       // render the depth buffer as a gradient
 int gfx_stereo_wire = 0;       // wireframe debug view
@@ -1848,7 +1849,9 @@ void gfx_start_frame(void) {
         }
         // Decide the canvas aspect inside the eye buffer.
         float eye_ar = (float)gfx_stereo_eye_width / (float)gfx_current_dimensions.height;
-        float target_ar = gfx_stereo_fit == 1 ? 4.0f / 3.0f
+        float target_ar = gfx_stereo_aspect_pct > 0
+                        ? (float)gfx_stereo_aspect_pct / 100.0f
+                        : gfx_stereo_fit == 1 ? 4.0f / 3.0f
                         : gfx_stereo_fit == 2 ? 16.0f / 9.0f
                         : eye_ar;
         int cw = gfx_stereo_eye_width;

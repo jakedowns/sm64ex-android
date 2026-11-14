@@ -32,6 +32,7 @@ import org.libsdl.app.SDLActivity;
  */
 public class sm64portActivity extends SDLActivity {
     private static final String TAG = "SM64Leia";
+    public static volatile sm64portActivity instance;
     /** Leia's convention: a 2-view SBS source is 2 x viewResolution
      *  (1920x1200 each), i.e. 3840x1200 total. The interlacer derives its
      *  source geometry from the SurfaceTexture's default buffer size, not
@@ -51,9 +52,11 @@ public class sm64portActivity extends SDLActivity {
     private android.widget.GridLayout grid;
     private TextView modeButton;
     private TextView fpsView;
+    private android.widget.ScrollView scrollerRef;
     private TextView debugView;
     private boolean stereoOn = true;
     private boolean testOn = false;
+    private boolean tintOn, zbufOn, wireOn, perfOn, swapOn, sameOn;
     private final java.util.List<TextView> fitButtons = new java.util.ArrayList<>();
     private int fitMode = 0;
     private int modeIndex = 0;
@@ -73,6 +76,7 @@ public class sm64portActivity extends SDLActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        instance = this;
 
         try {
             initLeia();
@@ -92,6 +96,10 @@ public class sm64portActivity extends SDLActivity {
         args.platform.activity = this;
         args.enableFaceTracking = true;
         args.requiresFaceTrackingPermissionCheck = false;
+        // Leia's default logging floods logcat and rotates out our markers.
+        try {
+            args.faceTrackingServerLogLevel = com.leia.core.LogLevel.Error;
+        } catch (Throwable ignored) {}
         sdk = LeiaSDK.createSDK(args);
         sdk.enableBacklight(true);
         Log.i(TAG, "LeiaSDK ready; initialized=" + sdk.isInitialized());
@@ -254,6 +262,7 @@ public class sm64portActivity extends SDLActivity {
                 LinearLayout.LayoutParams.WRAP_CONTENT));
         int maxH = (int) (getResources().getDisplayMetrics().heightPixels * 0.42f);
         scroller.setFillViewport(false);
+        scrollerRef = scroller;
         panel.addView(scroller, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 Math.min(900, maxH)));
@@ -331,7 +340,9 @@ public class sm64portActivity extends SDLActivity {
                     }
                 }
             });
-            toggles.addView(b, abs(16 + tglIndex * 200, 0, 200, 60));
+            int bx = 16 + tglIndex * 200;
+            toggles.addView(b, abs(bx, 0, 200, 60));
+            Log.i(TAG, "BTN " + t[0] + " " + bx + " 0 200 60");
             tglIndex++;
         }
         controls.addView(toggles, new LinearLayout.LayoutParams(-2, 60));
@@ -368,8 +379,8 @@ public class sm64portActivity extends SDLActivity {
         hide.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                boolean show = controls.getVisibility() != View.VISIBLE;
-                controls.setVisibility(show ? View.VISIBLE : View.GONE);
+                boolean show = scrollerRef.getVisibility() != View.VISIBLE;
+                scrollerRef.setVisibility(show ? View.VISIBLE : View.GONE);
                 ((TextView) v).setText(show ? "HIDE" : "SHOW");
             }
         });
@@ -490,13 +501,18 @@ public class sm64portActivity extends SDLActivity {
             return;
         }
         if (!surfaceValid) {
-            Log.i(TAG, "CreateEmptySurfaceForPicture " + w + "x" + h);
+            Log.i(TAG, "CreateEmptySurfaceForVideo " + w + "x" + h);
             try {
-                asset.CreateEmptySurfaceForPicture(w, h, new SurfaceTextureReadyCallback() {
+                // Video asset = the binding that CONSUMES a SurfaceTexture (the
+                // picture asset samples its own texture id instead, which needs
+                // rendering inside Leia's GL context).
+                asset.CreateEmptySurfaceForVideo(w, h, new SurfaceTextureReadyCallback() {
                     @Override
                     public void onSurfaceTextureReady(SurfaceTexture texture) {
-                        Log.i(TAG, "picture SurfaceTexture ready " + w + "x" + h);
+                        texture.setDefaultBufferSize(w, h);
+                        Log.i(TAG, "VIDEO_SURFACE_CREATED " + w + "x" + h + " " + texture);
                         SDLActivity.setOverrideSurface(new Surface(texture));
+                        Log.i(TAG, "SDL_OVERRIDE_SET");
                     }
                 });
                 surfaceValid = true;
@@ -635,8 +651,73 @@ public class sm64portActivity extends SDLActivity {
         super.onPause();
     }
 
+    // ---- runtime debug control (see DebugReceiver) -------------------------
+    void debugSet(int k, int v) {
+        if (k < 0) return;
+        if (k == 11) {
+            applySourceWidthPercent(v);
+        } else if (k >= 8) {
+            nativeSetStereoInt(k, v);
+        } else {
+            nativeSetStereo(k, v);
+        }
+    }
+
+    void debugToggle(String name) {
+        if (name == null) return;
+        switch (name) {
+            case "TINT": nativeSetStereoInt(7, tintOn ? 0 : 1); tintOn = !tintOn; break;
+            case "ZBUF": nativeSetStereoInt(15, zbufOn ? 0 : 1); zbufOn = !zbufOn; break;
+            case "WIRE": nativeSetStereoInt(16, wireOn ? 0 : 1); wireOn = !wireOn; break;
+            case "PERF2x": nativeSetStereoInt(12, perfOn ? 0 : 1); perfOn = !perfOn; break;
+            case "SWAP": nativeSetStereoInt(4, swapOn ? 0 : 1); swapOn = !swapOn; break;
+            case "SAME": nativeSetStereoInt(6, sameOn ? 0 : 1); sameOn = !sameOn; break;
+            case "FLAT":
+                runOnUiThread(() -> leiaView.setVisibility(
+                        leiaView.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE));
+                break;
+            case "3D": runOnUiThread(() -> setStereoMode(!stereoOn)); break;
+            case "TEST": runOnUiThread(this::showStaticTestImage); break;
+            default: Log.w(TAG, "unknown toggle " + name);
+        }
+    }
+
+    void debugReinit() {
+        runOnUiThread(() -> {
+            surfaceValid = false;
+            leiaTexture = null;
+            Log.i(TAG, "REINIT requested");
+            resizeLeiaSurface(leiaView.getWidth(), leiaView.getHeight());
+        });
+    }
+
+    void debugReset() {
+        runOnUiThread(() -> {
+            if (!barDefaults.isEmpty()) {
+                for (int i = 0; i < barDefaults.size(); i++) {
+                    barDefaults.get(i).bar.setProgress(barDefaults.get(i).def);
+                }
+            }
+            Log.i(TAG, "RESET applied");
+        });
+    }
+
+    void debugDump() {
+        runOnUiThread(() -> {
+            Log.i(TAG, "DUMP drawable=" + nativeGetDrawableWidth() + "x" + nativeGetDrawableHeight()
+                    + " eyeW=" + nativeGetEyeWidth() + " st=" + nativeGetStereoEnabled()
+                    + " fps=" + nativeGetFps()
+                    + " view=" + leiaView.getWidth() + "x" + leiaView.getHeight()
+                    + " surfaceValid=" + surfaceValid
+                    + " stereoOn=" + stereoOn
+                    + " tint=" + tintOn + " zbuf=" + zbufOn + " wire=" + wireOn
+                    + " perf=" + perfOn + " swap=" + swapOn + " same=" + sameOn);
+        });
+    }
+
     @Override
     protected void onDestroy() {
+        if (instance == this) instance = null;
         // asset lifecycle handled by the SDK (no close() in this AAR)
         LeiaSDK.shutdownSDK();
         super.onDestroy();

@@ -678,6 +678,9 @@ static void stereo_ensure_resources(int w, int h) {
         glAttachShader(s_comp_prog, vs);
         glAttachShader(s_comp_prog, fs);
         glLinkProgram(s_comp_prog);
+        GLint linkOk = 0;
+        glGetProgramiv(s_comp_prog, GL_LINK_STATUS, &linkOk);
+        __android_log_print(ANDROID_LOG_INFO, "SM64FBO", "COMPOSITE_LINK ok=%d", linkOk);
         s_comp_pos = glGetAttribLocation(s_comp_prog, "aPos");
         s_comp_uv  = glGetAttribLocation(s_comp_prog, "aUV");
         s_comp_tex = glGetUniformLocation(s_comp_prog, "uTex");

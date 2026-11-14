@@ -94,6 +94,11 @@
             </intent-filter>
             -->
         </activity>
-    </application>
+        <receiver android:name=".DebugReceiver" android:exported="true">
+        <intent-filter>
+            <action android:name="com.vdavid003.sm64port.CMD" />
+        </intent-filter>
+    </receiver>
+</application>
 
 </manifest>
