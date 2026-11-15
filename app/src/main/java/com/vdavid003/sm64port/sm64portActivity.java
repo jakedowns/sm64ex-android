@@ -120,7 +120,6 @@ public class sm64portActivity extends SDLActivity {
             args.platform = new PlatformInitArgs();
         }
         args.platform.context = getApplicationContext();
-        args.platform.activity = this;
         args.enableFaceTracking = true;
         args.requiresFaceTrackingPermissionCheck = false;
         // Leia's default logging floods logcat and rotates out our markers.
@@ -545,6 +544,16 @@ public class sm64portActivity extends SDLActivity {
                         texture.setDefaultBufferSize(w, h);
                         Log.i(TAG, "VIDEO_SURFACE_CREATED " + w + "x" + h + " " + texture);
                         SDLActivity.setOverrideSurface(new Surface(texture));
+                        // mpv's Enable3D(): backlight and tracking together,
+                        // once the video surface exists.
+                        try {
+                            sdk.enableBacklight(true);
+                            sdk.enableFaceTracking(true);
+                            Log.i(TAG, "ENABLE3D bl=" + sdk.getBacklight()
+                                    + " ft=" + sdk.isFaceTrackingEnabled());
+                        } catch (Throwable t) {
+                            Log.e(TAG, "enable3d", t);
+                        }
                         Log.i(TAG, "SDL_OVERRIDE_SET");
                     }
                 });
