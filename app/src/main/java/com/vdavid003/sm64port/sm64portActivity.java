@@ -53,6 +53,7 @@ public class sm64portActivity extends SDLActivity {
     private android.widget.GridLayout grid;
     private TextView modeButton;
     private TextView fpsView;
+    private TouchOverlay touchOverlay;
     private android.widget.ScrollView scrollerRef;
     private TextView debugView;
     private boolean stereoOn = true;
@@ -721,6 +722,9 @@ public class sm64portActivity extends SDLActivity {
     }
     private native int nativeGetEyeWidth();
     private native int nativeGetFps();
+
+    static native void nativeOverlayInput(int active, int sx, int sy, int buttons);
+    static native void nativeHideInGameControls(int hide);
     private native int nativeGetVpX(int eye);
     private native int nativeGetVpW(int eye);
     private native int nativeGetStereoEnabled();

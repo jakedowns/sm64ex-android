@@ -71,6 +71,11 @@ extern float gfx_touch_scale;
 extern float gfx_touch_dx;
 extern float gfx_touch_dy;
 extern int gfx_touch_float;
+extern int gfx_ovl_active;
+extern int gfx_ovl_stick_x;
+extern int gfx_ovl_stick_y;
+extern unsigned int gfx_ovl_buttons;
+extern int gfx_hide_touch_controls;
 extern float gfx_stereo_ipd_px;
 extern float gfx_stereo_convergence_px;
 
@@ -153,6 +158,24 @@ JNIEXPORT jint JNICALL
 Java_com_vdavid003_sm64port_sm64portActivity_nativeGetVpW(JNIEnv *env, jobject thiz, jint eye) {
     (void) env; (void) thiz;
     return (eye >= 0 && eye < 2) ? gfx_stereo_vp[eye][1] : -1;
+}
+
+JNIEXPORT void JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeOverlayInput(JNIEnv *env, jclass clazz,
+                                                                jint active, jint sx,
+                                                                jint sy, jint buttons) {
+    (void) env; (void) clazz;
+    gfx_ovl_active = active;
+    gfx_ovl_stick_x = sx;
+    gfx_ovl_stick_y = sy;
+    gfx_ovl_buttons = (unsigned int) buttons;
+}
+
+JNIEXPORT void JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeHideInGameControls(JNIEnv *env, jclass clazz,
+                                                                      jint hide) {
+    (void) env; (void) clazz;
+    gfx_hide_touch_controls = hide;
 }
 
 JNIEXPORT jint JNICALL

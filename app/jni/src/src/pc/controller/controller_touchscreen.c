@@ -49,6 +49,12 @@ struct ControlElement {
 };
 
 int gfx_touch_float = 1;
+// Input from the Java overlay (screen-space controls).
+int gfx_ovl_active = 0;
+int gfx_ovl_stick_x = 0;
+int gfx_ovl_stick_y = 0;
+unsigned int gfx_ovl_buttons = 0;
+int gfx_hide_touch_controls = 0;
 struct Position gStickPos = { .x = 160, .y = 720 };
 int gStickFloating = 0;
 float gfx_touch_parallax = 0.0f;
@@ -213,6 +219,9 @@ static void DrawSprite(s32 x, s32 y, int scaling) {
 }
 
 void render_touch_controls(void) {
+    if (gfx_hide_touch_controls) {
+        return;
+    }
 	
 	if(get_current_input()!=touchScreen)
         return;
@@ -257,6 +266,12 @@ static void touchscreen_init(void) {
 }
 
 static void touchscreen_read(OSContPad *pad) {
+    if (gfx_ovl_active) {
+        pad->stick_x = (s8)gfx_ovl_stick_x;
+        pad->stick_y = (s8)gfx_ovl_stick_y;
+        pad->button |= gfx_ovl_buttons;
+        return;
+    }
     for(int i = 0; i < ControlElementsLength; i++) {
         switch (ControlElements[i].type) {
             case Joystick:
