@@ -50,6 +50,14 @@ public class sm64portActivity extends SDLActivity {
     private LinearLayout controls;
     private SurfaceTexture leiaTexture;
     private int lastViewW, lastViewH;
+    private final Runnable settleCreate = new Runnable() {
+        @Override public void run() {
+            if (!surfaceValid && leiaView.getWidth() > 0) {
+                Log.i(TAG, "SETTLE_CREATE " + leiaView.getWidth() + "x" + leiaView.getHeight());
+                resizeLeiaSurface(leiaView.getWidth(), leiaView.getHeight());
+            }
+        }
+    };
     private final SeekBar[] bars = new SeekBar[24];
     private final SeekBar[] outBars = new SeekBar[6];
     private final int[] outDefs = new int[6];
@@ -201,28 +209,22 @@ public class sm64portActivity extends SDLActivity {
                 if (w != lastViewW || h != lastViewH) {
                     lastViewW = w; lastViewH = h;
                     Log.i(TAG, "VIEW_RESIZED " + w + "x" + h);
-                    // Re-assert 3D and keep the producer buffer matched.
-                    leiaView.setSingleViewMode(false);
-                    if (leiaTexture != null) {
-                        leiaTexture.setDefaultBufferSize(w, h);
-                    }
-                    resizeLeiaSurface(w, h);
                     applyImmersive();
+                    // Only (re)create the surface while it does not exist yet.
+                    // Resizing an existing SurfaceTexture after SDL created its
+                    // EGL surface breaks rendering (black screen).
+                    if (!surfaceValid) {
+                        leiaView.removeCallbacks(settleCreate);
+                        leiaView.postDelayed(settleCreate, 600);
+                    } else {
+                        leiaView.setSingleViewMode(false);
+                    }
                 }
             }
         });
         // The view may not be laid out yet at this point; retry until it has
         // a real size, then create the surface at that exact geometry.
-        leiaView.postDelayed(new Runnable() {
-            @Override
-            public void run() {
-                if (leiaView.getWidth() > 0) {
-                    resizeLeiaSurface(leiaView.getWidth(), leiaView.getHeight());
-                } else {
-                    leiaView.postDelayed(this, 300);
-                }
-            }
-        }, 200);
+        leiaView.postDelayed(settleCreate, 700);
 
         leiaView.setSingleViewMode(false);
     }
