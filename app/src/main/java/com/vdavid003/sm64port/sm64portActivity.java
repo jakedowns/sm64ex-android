@@ -45,7 +45,7 @@ public class sm64portActivity extends SDLActivity {
     private InputViewsAsset asset;
     private LinearLayout controls;
     private SurfaceTexture leiaTexture;
-    private final SeekBar[] bars = new SeekBar[20];
+    private final SeekBar[] bars = new SeekBar[24];
     private final SeekBar[] outBars = new SeekBar[6];
     private final int[] outDefs = new int[6];
     private final int[] outVal = new int[6];
@@ -489,7 +489,7 @@ public class sm64portActivity extends SDLActivity {
             @Override public void onStartTrackingTouch(SeekBar seekBar) {}
             @Override public void onStopTrackingTouch(SeekBar seekBar) {}
         });
-        bars[which] = bar;
+        if (which >= 0 && which < bars.length) bars[which] = bar;
         barDefaults.add(new BarDefault(bar, initial - min));
         addToGrid(label, bar);
     }
