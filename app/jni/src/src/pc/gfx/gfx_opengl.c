@@ -14,8 +14,6 @@ extern int gfx_stereo_vp[2][2];
 extern int gfx_stereo_toe_pct;
 extern int gfx_stereo_zbuf;
 extern int gfx_stereo_wire;
-extern int gfx_stereo_only_eye;
-extern int gfx_stereo_zoff;
 extern float gfx_stereo_fps;
 
 
@@ -567,13 +565,12 @@ static void gfx_opengl_set_sampler_parameters(int tile, bool linear_filter, uint
 }
 
 // N64 semantics: with the Z-buffer off there are no depth writes at all.
-// GL still writes depth when the test is disabled unless the mask is off, which
-// made the skybox stamp near depth over the whole scene.
+// GL still writes depth while the test is disabled unless the mask is off,
+// which made the skybox stamp near depth over the whole scene.
 static bool s_depth_test_on = true;
 static bool s_depth_write_wanted = true;
 
 static void gfx_opengl_set_depth_test(bool depth_test) {
-    if (gfx_stereo_zoff) { depth_test = false; }
     s_depth_test_on = depth_test;
     if (depth_test) {
         glEnable(GL_DEPTH_TEST);
@@ -707,34 +704,11 @@ static void stereo_ensure_resources(int w, int h) {
 }
 
 /* Called by gfx_pc.c before each eye's display list. */
-// Reset the GL state that the game assumes is default. Eye 0 inherits state
-// from the previous frame's eye-1 pass; leaking depth-test/mask/offset settings
-// made near geometry vanish in one eye only.
-static void stereo_reset_gl_state(void) {
-    glEnable(GL_DEPTH_TEST);
-    glDepthFunc(GL_LEQUAL);
-    glDepthMask(GL_TRUE);
-    glDepthRangef(0.0f, 1.0f);
-    glDisable(GL_BLEND);
-    glDisable(GL_POLYGON_OFFSET_FILL);
-    glDisable(GL_CULL_FACE);
-    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-    glDisable(GL_STENCIL_TEST);
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, 0);
-    glUseProgram(0);
-}
-
 void gfx_opengl_stereo_begin(int eye, int w, int h, int cx, int cy, int cw, int ch) {
     if (s_eye_fbo[0] == 0 && !s_depth_tex_checked) {
         s_depth_tex_checked = 1;
         const char *ext = (const char *)glGetString(GL_EXTENSIONS);
         s_depth_tex_mode = 0;   // DISABLED: suspected FBO=0 regression; ZBUF view pending rework
-        {
-            GLint dbits = 0;
-            glGetIntegerv(GL_DEPTH_BITS, &dbits);
-            __android_log_print(ANDROID_LOG_INFO, "SM64FBO", "GL_DEPTH_BITS=%d", dbits);
-        }
         __android_log_print(ANDROID_LOG_INFO, "SM64FBO",
                 "GL_VERSION=%s RENDERER=%s OES_depth_texture=%d",
                 glGetString(GL_VERSION), glGetString(GL_RENDERER),
@@ -747,7 +721,6 @@ void gfx_opengl_stereo_begin(int eye, int w, int h, int cx, int cy, int cw, int 
     stereo_ensure_resources(w, h);
     s_fbo_mode = 1;
     glBindFramebuffer(GL_FRAMEBUFFER, s_eye_fbo[eye & 1]);
-    stereo_reset_gl_state();
     glDisable(GL_SCISSOR_TEST);
     glDepthMask(GL_TRUE);
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
@@ -809,9 +782,8 @@ void gfx_opengl_stereo_composite(int w, int h, int full_w, int full_h) {
     int zview = gfx_stereo_zbuf && s_depth_tex_mode;
     glUniform1f(s_comp_mode, zview ? 2.0f : 0.0f);
     for (int eye = 0; eye < 2; eye++) {
-        int src = gfx_stereo_only_eye >= 0 ? gfx_stereo_only_eye : eye;
         glViewport(eye * (full_w / 2), 0, full_w / 2, full_h);
-        glBindTexture(GL_TEXTURE_2D, zview ? s_eye_depth[src] : s_eye_tex[src]);
+        glBindTexture(GL_TEXTURE_2D, zview ? s_eye_depth[eye] : s_eye_tex[eye]);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     }
 

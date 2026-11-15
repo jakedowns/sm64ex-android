@@ -197,14 +197,6 @@ int gfx_stereo_same_both = 0;             // eye 1 reuses eye 0's view (mapping 
 float gfx_stereo_ipd_px = 140.0f;         // separation at infinity
 float gfx_stereo_convergence_px = 0.0f;   // moves the zero-parallax plane
 float gfx_stereo_shear = 0.0f;   // clip-space shear, used by culling too
-// Extra frustum margin (NDC) so culling covers BOTH eyes. Computed each frame
-// because culling runs while the display list is built, before any eye pass.
-float gfx_stereo_cull_inflate = 0.0f;
-// Per-eye clip-plane knobs (percent, 100 = untouched) and eye isolation.
-int gfx_stereo_near_pct[2] = {100, 100};
-int gfx_stereo_far_pct[2] = {100, 100};
-int gfx_stereo_only_eye = -1;   // -1 = both, 0/1 = render only that eye
-int gfx_stereo_zoff = 0;        // debug: disable depth testing entirely
 int gfx_stereo_nocull = 0;       // debug: skip frustum culling
 int gfx_stereo_vp[2][2] = {{-1, -1}, {-1, -1}};
 
@@ -220,18 +212,6 @@ static void gfx_apply_stereo_shear(void) {
     }
     if (gfx_stereo_2d) {
         return;   // no parallax in 2D mode, but keep the canvas/FOV handling
-    }
-    {
-        int e = (gfx_stereo_eye >= 0 && gfx_stereo_eye < 2) ? gfx_stereo_eye : 0;
-        float zs = (float)gfx_stereo_near_pct[e] / 100.0f;
-        float zo = ((float)gfx_stereo_far_pct[e] - 100.0f) / 100.0f;
-        if (zs != 1.0f || zo != 0.0f) {
-            // z' = z*zs + w*zo : moves the near/far clip planes per eye.
-            for (int i = 0; i < 4; i++) {
-                rsp.MP_matrix[i][2] = rsp.MP_matrix[i][2] * zs
-                                    + rsp.MP_matrix[i][3] * zo;
-            }
-        }
     }
     // x' = x + shear*w  =>  column 0 += shear * column 3
     for (int i = 0; i < 4; i++) {
@@ -1860,14 +1840,6 @@ void gfx_start_frame(void) {
         gfx_current_dimensions.height = 1;
     }
     if (gfx_stereo_enabled) {
-        {
-            float eyeW = (float)(gfx_current_dimensions.width / 2);
-            if (eyeW < 1.0f) eyeW = 1.0f;
-            float maxoff = (fabsf(gfx_stereo_ipd_px) * 0.5f
-                            + fabsf(gfx_stereo_convergence_px)) * 2.0f / eyeW;
-            maxoff += fabsf((float)gfx_stereo_toe_pct) / 100.0f * 0.25f;
-            gfx_stereo_cull_inflate = maxoff + 0.15f;
-        }
         // Each eye gets half the window; the RAPI shifts the viewport by eye.
         gfx_stereo_full_w = gfx_stereo_out_w > 0 ? gfx_stereo_out_w
                                                  : gfx_current_dimensions.width;

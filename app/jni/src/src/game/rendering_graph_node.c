@@ -243,26 +243,12 @@ static void geo_process_perspective(struct GraphNodePerspective *node) {
         u16 perspNorm;
         Mtx *mtx = alloc_display_list(sizeof(*mtx));
 
-        // Use the ACTUAL render canvas aspect. The root node's width/height are
-        // the fixed 320x240 game dimensions, which gave a 4:3 projection even
-        // when rendering a 16:9 eye canvas (wrong horizontal FOV).
-        f32 aspect = gfx_current_dimensions.aspect_ratio;
-        if (aspect < 0.1f) {
-            aspect = (f32) gCurGraphNodeRoot->width / (f32) gCurGraphNodeRoot->height;
-        }
-
-#ifdef __ANDROID__
-        {
-            static int logged = 0;
-            if (logged < 3) {
-                logged++;
-                extern int __android_log_print(int, const char*, const char*, ...);
-                __android_log_print(4, "SM64PROJ", "fov=%.1f near=%.1f far=%.1f aspect=%.3f",
-                                    (double)node->fov, (double)node->near,
-                                    (double)node->far, (double)aspect);
-            }
-        }
+#ifdef VERSION_EU
+        f32 aspect = ((f32) gCurGraphNodeRoot->width / (f32) gCurGraphNodeRoot->height) * 1.1f;
+#else
+        f32 aspect = (f32) gCurGraphNodeRoot->width / (f32) gCurGraphNodeRoot->height;
 #endif
+
         guPerspective(mtx, &perspNorm, node->fov, aspect, node->near, node->far, 1.0f);
         gSPPerspNormalize(gDisplayListHead++, perspNorm);
 
@@ -747,7 +733,7 @@ static void geo_process_shadow(struct GraphNodeShadow *node) {
  */
 extern int gfx_stereo_enabled;
 extern int gfx_stereo_nocull;
-extern float gfx_stereo_cull_inflate;
+extern float gfx_stereo_shear;
 
 static int obj_is_in_view(struct GraphNodeObject *node, Mat4 matrix) {
     s16 cullingRadius;
@@ -777,8 +763,11 @@ static int obj_is_in_view(struct GraphNodeObject *node, Mat4 matrix) {
     hScreenEdge *= GFX_DIMENSIONS_ASPECT_RATIO;
 
     if (gfx_stereo_enabled) {
-        // Display list is replayed for both eyes: cull against the union.
-        hScreenEdge *= (1.0f + gfx_stereo_cull_inflate);
+        // The display list is replayed for both eyes with a clip-space shear;
+        // culling must include the union of both eye frusta, otherwise geometry
+        // pops out at the edges while panning.
+        float inflate = 1.0f + fabsf(gfx_stereo_shear);
+        hScreenEdge *= inflate;
     }
 
     if (geo != NULL && geo->type == GRAPH_NODE_TYPE_CULLING_RADIUS) {

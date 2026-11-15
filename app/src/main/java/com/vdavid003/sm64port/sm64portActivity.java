@@ -3,10 +3,6 @@ package com.vdavid003.sm64port;
 import android.graphics.Color;
 import android.graphics.SurfaceTexture;
 import android.os.Bundle;
-import android.view.WindowInsetsController;
-import android.view.WindowInsets;
-import android.view.Window;
-import android.os.Build;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.Surface;
@@ -49,15 +45,6 @@ public class sm64portActivity extends SDLActivity {
     private InputViewsAsset asset;
     private LinearLayout controls;
     private SurfaceTexture leiaTexture;
-    private int lastViewW, lastViewH;
-    private final Runnable settleCreate = new Runnable() {
-        @Override public void run() {
-            if (!surfaceValid && leiaView.getWidth() > 0) {
-                Log.i(TAG, "SETTLE_CREATE " + leiaView.getWidth() + "x" + leiaView.getHeight());
-                resizeLeiaSurface(leiaView.getWidth(), leiaView.getHeight());
-            }
-        }
-    };
     private final SeekBar[] bars = new SeekBar[24];
     private final SeekBar[] outBars = new SeekBar[6];
     private final int[] outDefs = new int[6];
@@ -74,9 +61,6 @@ public class sm64portActivity extends SDLActivity {
     private int fitMode = 0;
     private int modeIndex = 0;
     private int refreshIdx = 0;
-    private int onlyEye = -1;
-    private boolean zoffOn;
-    private volatile boolean singleViewOn;
 
     /** Cycle the panel refresh rate: default -> 60 -> 120 Hz. */
     private void cycleRefreshRate() {
@@ -144,20 +128,8 @@ public class sm64portActivity extends SDLActivity {
             args.faceTrackingServerLogLevel = com.leia.core.LogLevel.Error;
         } catch (Throwable ignored) {}
         sdk = LeiaSDK.createSDK(args);
-        // This CNSDK build starts tracking via explicit calls (not InitArgs).
-        // Without it the interlacer stays in 2D and 3D mode shows black.
-        try {
-            sdk.enableFaceTracking(true);
-            sdk.startFaceTracking(true);
-        } catch (Throwable t) {
-            Log.e(TAG, "face tracking start failed", t);
-        }
-        // The SDK initialises asynchronously; enableBacklight() called too early
-        // is silently dropped. Retry until it sticks.
-        enableBacklightRetry(0);
-        Log.i(TAG, "LeiaSDK ready; initialized=" + sdk.isInitialized()
-                + " ftEnabled=" + sdk.isFaceTrackingEnabled()
-                + " ftStarted=" + sdk.isFaceTrackingStarted());
+        sdk.enableBacklight(true);
+        Log.i(TAG, "LeiaSDK ready; initialized=" + sdk.isInitialized());
 
         // Make SDL wait for our surface rather than grabbing its own.
         SDLActivity.mWaitForOverride = true;
@@ -217,29 +189,22 @@ public class sm64portActivity extends SDLActivity {
             @Override
             public void onLayoutChange(View v, int l, int t, int r, int b,
                                        int ol, int ot, int orr, int ob) {
-                int w = v.getWidth(), h = v.getHeight();
-                if (w <= 0 || h <= 0) return;
-                if (w != lastViewW || h != lastViewH) {
-                    lastViewW = w; lastViewH = h;
-                    Log.i(TAG, "VIEW_RESIZED " + w + "x" + h);
-                    // Only (re)create the surface while it does not exist yet.
-                    // Resizing an existing SurfaceTexture after SDL created its
-                    // EGL surface breaks rendering (black screen).
-                    if (!surfaceValid) {
-                        leiaView.removeCallbacks(settleCreate);
-                        leiaView.postDelayed(settleCreate, 600);
-                    } else {
-                        singleViewOn = false;
-        leiaView.setSingleViewMode(false);
-                    }
-                }
+                resizeLeiaSurface(v.getWidth(), v.getHeight());
             }
         });
         // The view may not be laid out yet at this point; retry until it has
         // a real size, then create the surface at that exact geometry.
-        leiaView.postDelayed(settleCreate, 700);
+        leiaView.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if (leiaView.getWidth() > 0) {
+                    resizeLeiaSurface(leiaView.getWidth(), leiaView.getHeight());
+                } else {
+                    leiaView.postDelayed(this, 300);
+                }
+            }
+        }, 200);
 
-        singleViewOn = false;
         leiaView.setSingleViewMode(false);
     }
 
@@ -341,17 +306,13 @@ public class sm64portActivity extends SDLActivity {
         grid.setColumnCount(2);
         grid.setOrientation(android.widget.GridLayout.HORIZONTAL);
         controls.addView(grid);
-        addSlider("IPD", -500, 500, 0, " px", 0);
+        addSlider("IPD", -2560, 2560, 0, " px", 0);
         addSlider("Zero parallax", -1280, 1280, 0, " px", 1);
-        addSlider("Depth", -1000, 1000, 10, " %", 2);
+        addSlider("Depth", -2000, 2000, 1000, " %", 2);
         addSlider("Toe in/out", -100, 100, 0, " %", 17);
-        addSlider("Aspect %", 10, 240, 178, " %", 18);
+        addSlider("Aspect %", 100, 240, 178, " %", 18);
         addSlider("Eye margin%", 50, 100, 100, " %", 14);
-        addSlider("FOV %", 1, 200, 100, " %", 20);
-        addSlider("Near L %", 1, 400, 100, " %", 22);
-        addSlider("Near R %", 1, 400, 100, " %", 23);
-        addSlider("Far L %", 1, 400, 100, " %", 24);
-        addSlider("Far R %", 1, 400, 100, " %", 25);
+        addSlider("FOV %", 50, 150, 100, " %", 20);
         // Hidden for now (kept for later): V%, W-px, H-shift%, V-shift.
         outVal[1] = 100; outVal[3] = 0; outVal[4] = 0;
         startDebugReadout(panel);
@@ -365,7 +326,9 @@ public class sm64portActivity extends SDLActivity {
                 android.widget.RelativeLayout.LayoutParams.WRAP_CONTENT));
 
         android.widget.AbsoluteLayout toggles = new android.widget.AbsoluteLayout(this);
-        String[][] tgl = {{"ZBUF", "15"}, {"WIRE", "16"}, {"SWAP", "4"}, {"SAME", "6"}, {"TINT", "7"}, {"PERF2x", "12"}, {"EYE", "-4"}, {"ZOFF", "-5"}};
+        String[][] tgl = {{"ZBUF", "15"}, {"WIRE", "16"}, {"SWAP", "4"}, {"SAME", "6"}, {"TINT", "7"}, {"PERF2x", "12"}, {"MODE", "-1"},
+        {"RCV0", "-2"}, {"RCV50", "-2"}, {"RCV100", "-2"}, {"SRCFIT", "-3"},
+                {"FILL", "13"}, {"4:3", "13"}, {"16:9", "13"}};
         for (String[] t : tgl) {
             final int which = Integer.parseInt(t[1]);
             final TextView b = new TextView(this);
@@ -381,18 +344,6 @@ public class sm64portActivity extends SDLActivity {
                     boolean on = b.getCurrentTextColor() == 0xFF888888;
                     b.setTextColor(on ? 0xFF66FF99 : 0xFF888888);
                     Log.i(TAG, "toggle " + t[0] + "=" + (on ? 1 : 0));
-                    if (t[0].startsWith("ZOFF")) {
-                        zoffOn = !zoffOn;
-                        nativeSetStereoInt(27, zoffOn ? 1 : 0);
-                        Log.i(TAG, "ZOFF=" + zoffOn);
-                        return;
-                    }
-                    if (t[0].startsWith("EYE")) {
-                        onlyEye = (onlyEye + 2) % 3 - 1;   // -1 -> 0 -> 1 -> -1
-                        nativeSetStereoInt(26, onlyEye);
-                        Log.i(TAG, "onlyEye=" + onlyEye);
-                        return;
-                    }
                     if (t[0].startsWith("MODE")) {
                         modeIndex = (modeIndex + 1) % 4;
                         Log.i(TAG, "interlaceMode -> #" + modeIndex + " (unsupported in this AAR)");
@@ -594,9 +545,7 @@ public class sm64portActivity extends SDLActivity {
                         texture.setDefaultBufferSize(w, h);
                         Log.i(TAG, "VIDEO_SURFACE_CREATED " + w + "x" + h + " " + texture);
                         SDLActivity.setOverrideSurface(new Surface(texture));
-                        singleViewOn = false;
-                        leiaView.setSingleViewMode(false);
-                        Log.i(TAG, "SDL_OVERRIDE_SET sv=0");
+                        Log.i(TAG, "SDL_OVERRIDE_SET");
                     }
                 });
                 surfaceValid = true;
@@ -641,21 +590,6 @@ public class sm64portActivity extends SDLActivity {
         Log.i(TAG, "static SBS test image " + (testOn ? "on" : "off"));
     }
 
-    private void enableBacklightRetry(final int attempt) {
-        if (sdk == null) return;
-        if (sdk.getBacklight() || attempt >= 20) {
-            Log.i(TAG, "BACKLIGHT settled on=" + sdk.getBacklight()
-                    + " attempt=" + attempt + " init=" + sdk.isInitialized());
-            return;
-        }
-        sdk.enableBacklight(true);
-        Log.i(TAG, "BACKLIGHT attempt " + attempt + " init=" + sdk.isInitialized()
-                + " now=" + sdk.getBacklight());
-        new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(new Runnable() {
-            @Override public void run() { enableBacklightRetry(attempt + 1); }
-        }, 500);
-    }
-
     private void setStereoMode(boolean on) {
         stereoOn = on;
         nativeSetStereoMode(1);          // keep the stereo render path either way
@@ -670,8 +604,7 @@ public class sm64portActivity extends SDLActivity {
             sdk.enableBacklight(on);
         }
         if (leiaView != null) {
-            singleViewOn = !on;
-            leiaView.setSingleViewMode(singleViewOn);
+            leiaView.setSingleViewMode(!on);
         }
         Log.i(TAG, "stereo mode " + (on ? "3D" : "2D"));
     }
@@ -692,7 +625,7 @@ public class sm64portActivity extends SDLActivity {
                         + " conv=" + (bars[1].getProgress() - 300)
                         + " depth=" + bars[2].getProgress() + "%"
                         + " src=" + SRC_SIZES[srcIndex][0] + "x" + SRC_SIZES[srcIndex][1]
-                        + " fps=" + nativeGetFps() + " eyeW=" + nativeGetEyeWidth() + " st=" + nativeGetStereoEnabled()
+                        + " eyeW=" + nativeGetEyeWidth() + " st=" + nativeGetStereoEnabled()
                         + " sx=" + (testOn && testView != null ? testView.getScaleX() : leiaView.getScaleX())
                         + " srcW=" + srcW
                         + " vp0x=" + nativeGetVpX(0) + "/" + nativeGetVpW(0)
@@ -728,46 +661,15 @@ public class sm64portActivity extends SDLActivity {
     private native int nativeGetDrawableWidth();
     private native int nativeGetDrawableHeight();
 
-    /** Hide status/nav bars so the interlaced view never gets resized. */
-    private void applyImmersive() {
-        Window w = getWindow();
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            w.setDecorFitsSystemWindows(false);
-            WindowInsetsController c = w.getInsetsController();
-            if (c != null) {
-                c.setSystemBarsBehavior(
-                        WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
-                c.hide(WindowInsets.Type.systemBars());
-            }
-        } else {
-            w.getDecorView().setSystemUiVisibility(
-                    View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-                            | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-                            | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                            | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                            | View.SYSTEM_UI_FLAG_FULLSCREEN
-                            | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
-        }
-    }
-
     @Override
     protected void onResume() {
         super.onResume();
         if (leiaView != null) leiaView.onResume();
         if (sdk != null) {
             sdk.onResume();
-            // The system forces 2D backlight while the screen is off; re-assert
-            // 3D after the SDK has settled (immediate call can be lost).
-            final boolean want3d = stereoOn;
-            new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
-                try {
-                    if (sdk != null) {
-                        sdk.enableBacklight(want3d);
-                        Log.i(TAG, "BACKLIGHT re-asserted " + want3d
-                                + " -> " + sdk.getBacklight());
-                    }
-                } catch (Throwable t) { Log.e(TAG, "backlight", t); }
-            }, 600);
+            // The system forces 2D backlight while the screen is off; put the
+            // panel back into 3D mode after wake.
+            sdk.enableBacklight(stereoOn);
         }
         if (leiaView != null) reapplySourceSize();
     }
@@ -804,18 +706,10 @@ public class sm64portActivity extends SDLActivity {
             case "PERF2x": nativeSetStereoInt(12, perfOn ? 0 : 1); perfOn = !perfOn; break;
             case "SWAP": nativeSetStereoInt(4, swapOn ? 0 : 1); swapOn = !swapOn; break;
             case "SAME": nativeSetStereoInt(6, sameOn ? 0 : 1); sameOn = !sameOn; break;
-            case "BL":
-                runOnUiThread(() -> {
-                    boolean want = !(sdk != null && sdk.getBacklight());
-                    if (sdk != null) sdk.enableBacklight(want);
-                    Log.i(TAG, "BL forced " + want);
-                });
-                break;
             case "NOCULL": nativeSetStereoInt(19, nocullOn ? 0 : 1); nocullOn = !nocullOn; break;
             case "FLAT":
                 runOnUiThread(() -> {
                     flatOn = !flatOn;
-                    singleViewOn = flatOn;
                     leiaView.setSingleViewMode(flatOn);
                     Log.i(TAG, "FLAT singleView=" + flatOn);
                 });
@@ -849,16 +743,14 @@ public class sm64portActivity extends SDLActivity {
     void debugDump() {
         runOnUiThread(() -> {
             Log.i(TAG, "DUMP drawable=" + nativeGetDrawableWidth() + "x" + nativeGetDrawableHeight()
-                    + " fps=" + nativeGetFps() + " eyeW=" + nativeGetEyeWidth() + " st=" + nativeGetStereoEnabled()
+                    + " eyeW=" + nativeGetEyeWidth() + " st=" + nativeGetStereoEnabled()
                     + " fps=" + nativeGetFps()
                     + " view=" + leiaView.getWidth() + "x" + leiaView.getHeight()
                     + " surfaceValid=" + surfaceValid
                     + " stereoOn=" + stereoOn
                     + " tint=" + tintOn + " zbuf=" + zbufOn + " wire=" + wireOn
                     + " perf=" + perfOn + " swap=" + swapOn + " same=" + sameOn
-                    + " nocull=" + nocullOn + " flat=" + flatOn
-                    + " backlight=" + (sdk != null ? sdk.getBacklight() : false)
-                    + " ft=" + (sdk != null ? (sdk.isFaceTrackingStarted() ? 1 : 0) : -1));
+                    + " nocull=" + nocullOn);
         });
     }
 
