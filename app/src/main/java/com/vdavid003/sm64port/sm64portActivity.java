@@ -32,7 +32,7 @@ import org.libsdl.app.SDLActivity;
  */
 public class sm64portActivity extends SDLActivity {
     private static final String TAG = "SM64Leia";
-    private static final String BUILD_NAME = "v21";
+    private static final String BUILD_NAME = "v28";
     public static volatile sm64portActivity instance;
     /** Leia's convention: a 2-view SBS source is 2 x viewResolution
      *  (1920x1200 each), i.e. 3840x1200 total. The interlacer derives its
@@ -188,6 +188,20 @@ public class sm64portActivity extends SDLActivity {
             layout.addView(leiaView, new RelativeLayout.LayoutParams(
                     RelativeLayout.LayoutParams.MATCH_PARENT,
                     RelativeLayout.LayoutParams.MATCH_PARENT));
+
+            // Controls on their own layer, above the interlaced view but below
+            // the debug panel. Screen-space: never per-eye, never letterboxed.
+            touchOverlay = new TouchOverlay(this);
+            layout.addView(touchOverlay, new RelativeLayout.LayoutParams(
+                    RelativeLayout.LayoutParams.MATCH_PARENT,
+                    RelativeLayout.LayoutParams.MATCH_PARENT));
+            try {
+                nativeHideInGameControls(1);
+                Log.i(TAG, "overlay controls active; in-game sprites hidden");
+            } catch (Throwable t) {
+                Log.w(TAG, "hide in-game controls failed", t);
+            }
+
             RelativeLayout.LayoutParams panelParams = new RelativeLayout.LayoutParams(
                     RelativeLayout.LayoutParams.MATCH_PARENT,
                     RelativeLayout.LayoutParams.WRAP_CONTENT);
