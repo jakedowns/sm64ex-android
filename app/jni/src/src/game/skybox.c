@@ -251,7 +251,10 @@ void *create_skybox_ortho_matrix(s8 player) {
     }
 
     if (mtx != NULL) {
-        guOrtho(mtx, left, right, bottom, top, 0.0f, 3.0f, 1.0f);
+        // Put the skybox at the FAR plane. With far=3 the skybox quads (z=-1)
+        // landed at depth ~0.33, in the middle of the depth range, so they
+        // occluded the world (depth 0.9-0.99) under GL_LEQUAL.
+        guOrtho(mtx, left, right, bottom, top, 0.0f, 1.0f, 1.0f);
     } else {
     }
 

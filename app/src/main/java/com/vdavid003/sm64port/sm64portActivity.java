@@ -32,7 +32,7 @@ import org.libsdl.app.SDLActivity;
  */
 public class sm64portActivity extends SDLActivity {
     private static final String TAG = "SM64Leia";
-    private static final String BUILD_NAME = "v20";
+    private static final String BUILD_NAME = "v21";
     public static volatile sm64portActivity instance;
     /** Leia's convention: a 2-view SBS source is 2 x viewResolution
      *  (1920x1200 each), i.e. 3840x1200 total. The interlacer derives its
@@ -308,11 +308,14 @@ public class sm64portActivity extends SDLActivity {
         controls.addView(grid);
         addSlider("IPD", -2560, 2560, 0, " px", 0);
         addSlider("Zero parallax", -1280, 1280, 0, " px", 1);
-        addSlider("Depth", -2000, 2000, 1000, " %", 2);
+        addSlider("Depth", -1000, 1000, 10, " %", 2);
         addSlider("Toe in/out", -100, 100, 0, " %", 17);
-        addSlider("Aspect %", 100, 240, 178, " %", 18);
+        addSlider("Aspect % (in)", 10, 240, 178, " %", 18);
+        addIntSlider("Aspect % (out)", 0, 240, 0, new java.util.function.IntConsumer() {
+            @Override public void accept(int v) { applyOutAspect(v); }
+        });
         addSlider("Eye margin%", 50, 100, 100, " %", 14);
-        addSlider("FOV %", 50, 150, 100, " %", 20);
+        addSlider("FOV %", 1, 200, 100, " %", 20);
         // Hidden for now (kept for later): V%, W-px, H-shift%, V-shift.
         outVal[1] = 100; outVal[3] = 0; outVal[4] = 0;
         startDebugReadout(panel);
@@ -449,6 +452,17 @@ public class sm64portActivity extends SDLActivity {
         addToGrid(label, bar);
     }
 
+    /** OUT aspect: letterbox the woven output layer (0 = off). */
+    private void applyOutAspect(int pct) {
+        if (leiaView == null || leiaView.getWidth() == 0) return;
+        float viewAr = (float) leiaView.getWidth() / (float) leiaView.getHeight();
+        if (pct <= 0) { leiaView.setScaleX(1f); leiaView.setScaleY(1f); return; }
+        float want = pct / 100f;
+        if (want > viewAr) { leiaView.setScaleX(1f); leiaView.setScaleY(viewAr / want); }
+        else { leiaView.setScaleY(1f); leiaView.setScaleX(want / viewAr); }
+        Log.i(TAG, "OUT_AR " + pct + " viewAr=" + viewAr);
+    }
+
     private void applyOutTransform() {
         View v = testOn && testView != null ? testView : leiaView;
         if (v == null) return;
@@ -499,6 +513,27 @@ public class sm64portActivity extends SDLActivity {
         BarDefault(SeekBar b, int d) { bar = b; def = d; }
     }
     private final java.util.List<BarDefault> barDefaults = new java.util.ArrayList<>();
+
+    private void addIntSlider(String name, int min, int max, int initial,
+                              final java.util.function.IntConsumer sink) {
+        final TextView label = new TextView(this);
+        label.setTextColor(Color.WHITE);
+        label.setTextSize(14);
+        label.setText(name + ": " + initial);
+        SeekBar bar = new SeekBar(this);
+        bar.setMax(max - min);
+        bar.setProgress(initial - min);
+        bar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar sb, int progress, boolean fromUser) {
+                int value = progress + min;
+                label.setText(name + ": " + value);
+                sink.accept(value);
+            }
+            @Override public void onStartTrackingTouch(SeekBar sb) {}
+            @Override public void onStopTrackingTouch(SeekBar sb) {}
+        });
+        addToGrid(label, bar);
+    }
 
     private void addToGrid(TextView label, SeekBar bar) {
         android.widget.LinearLayout col = new android.widget.LinearLayout(this);
