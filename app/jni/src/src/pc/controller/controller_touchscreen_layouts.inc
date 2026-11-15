@@ -3,6 +3,12 @@
 
 //DEFAULT
 struct Position GetDefaultJoystickPos() {
+    extern int gfx_touch_float;
+    extern struct Position gStickPos;
+    extern int gStickFloating;
+    if (gfx_touch_float && gStickFloating) {
+        return gStickPos;   // floating thumbstick: follow the thumb
+    }
     struct Position ret = { .x = GFX_DIMENSIONS_RECT_FROM_LEFT_EDGE(60) << 2, .y = 720 };
     return ret;
 }
