@@ -83,7 +83,7 @@ public class sm64portActivity extends SDLActivity {
             lp.preferredDisplayModeId = modeId;
             getWindow().setAttributes(lp);
             try {
-                if (Build.VERSION.SDK_INT >= 30 && leiaView != null
+                if (android.os.Build.VERSION.SDK_INT >= 30 && leiaView != null
                         && leiaView.getHolder().getSurface() != null) {
                     float rate = want == 0 ? 60f : (float) want;
                     leiaView.getHolder().getSurface().setFrameRate(
