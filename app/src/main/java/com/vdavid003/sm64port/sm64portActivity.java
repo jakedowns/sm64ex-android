@@ -261,9 +261,11 @@ public class sm64portActivity extends SDLActivity {
         flat.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                boolean hidden = leiaView.getVisibility() == View.VISIBLE;
-                leiaView.setVisibility(hidden ? View.GONE : View.VISIBLE);
-                Log.i(TAG, "leia view " + (hidden ? "hidden (raw SDL surface)" : "shown"));
+                // Zero-parallax view; hiding the Leia view goes black and cannot
+                // be recovered (SDL renders into Leia's surface, not its own).
+                flatOn = !flatOn;
+                nativeSetStereoInt(21, flatOn ? 1 : 0);
+                Log.i(TAG, "FLAT zeroParallax=" + flatOn);
             }
         });
 
@@ -755,8 +757,8 @@ public class sm64portActivity extends SDLActivity {
             case "FLAT":
                 runOnUiThread(() -> {
                     flatOn = !flatOn;
-                    leiaView.setSingleViewMode(flatOn);
-                    Log.i(TAG, "FLAT singleView=" + flatOn);
+                    nativeSetStereoInt(21, flatOn ? 1 : 0);   // zero parallax
+                    Log.i(TAG, "FLAT zeroParallax=" + flatOn);
                 });
                 break;
             case "3D": runOnUiThread(() -> setStereoMode(!stereoOn)); break;
