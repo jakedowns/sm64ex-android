@@ -194,7 +194,8 @@ int gfx_stereo_flip_y = 0;                // vertical flip of the eye image
 int gfx_stereo_same_both = 0;             // eye 1 reuses eye 0's view (mapping test)
 float gfx_stereo_ipd_px = 140.0f;         // separation at infinity
 float gfx_stereo_convergence_px = 0.0f;   // moves the zero-parallax plane
-static float gfx_stereo_shear = 0.0f;
+float gfx_stereo_shear = 0.0f;   // clip-space shear, used by culling too
+int gfx_stereo_nocull = 0;       // debug: skip frustum culling
 int gfx_stereo_vp[2][2] = {{-1, -1}, {-1, -1}};
 
 #ifdef __ANDROID__
@@ -1892,6 +1893,9 @@ void gfx_run(Gfx *commands) {
     if (gfx_stereo_enabled) {
         for (int eye = 0; eye < 2; eye++) {
             gfx_stereo_eye = eye;
+            // Reset RSP state per eye: a matrix stack left over from eye 0
+            // made eye 1 render from a different camera (view desync).
+            gfx_sp_reset();
             // The game emits its viewport command only once, so eye 1 would
             // inherit eye 0's viewport forever. Force a re-apply each pass.
             rdp.viewport_or_scissor_changed = true;

@@ -731,6 +731,10 @@ static void geo_process_shadow(struct GraphNodeShadow *node) {
  *
  * Since (0,0,0) is unaffected by rotation, columns 0, 1 and 2 are ignored.
  */
+extern int gfx_stereo_enabled;
+extern int gfx_stereo_nocull;
+extern float gfx_stereo_shear;
+
 static int obj_is_in_view(struct GraphNodeObject *node, Mat4 matrix) {
     s16 cullingRadius;
     s16 halfFov; // half of the fov in in-game angle units instead of degrees
@@ -739,6 +743,9 @@ static int obj_is_in_view(struct GraphNodeObject *node, Mat4 matrix) {
 
     if (node->node.flags & GRAPH_RENDER_INVISIBLE) {
         return FALSE;
+    }
+    if (gfx_stereo_nocull) {
+        return TRUE;
     }
 
     geo = node->sharedChild;
@@ -754,6 +761,14 @@ static int obj_is_in_view(struct GraphNodeObject *node, Mat4 matrix) {
     // given the distance from the object to the camera.
 
     hScreenEdge *= GFX_DIMENSIONS_ASPECT_RATIO;
+
+    if (gfx_stereo_enabled) {
+        // The display list is replayed for both eyes with a clip-space shear;
+        // culling must include the union of both eye frusta, otherwise geometry
+        // pops out at the edges while panning.
+        float inflate = 1.0f + fabsf(gfx_stereo_shear);
+        hScreenEdge *= inflate;
+    }
 
     if (geo != NULL && geo->type == GRAPH_NODE_TYPE_CULLING_RADIUS) {
         cullingRadius =

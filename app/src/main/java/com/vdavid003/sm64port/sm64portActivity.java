@@ -56,7 +56,7 @@ public class sm64portActivity extends SDLActivity {
     private TextView debugView;
     private boolean stereoOn = true;
     private boolean testOn = false;
-    private boolean tintOn, zbufOn, wireOn, perfOn, swapOn, sameOn;
+    private boolean tintOn, zbufOn, wireOn, perfOn, swapOn, sameOn, nocullOn;
     private final java.util.List<TextView> fitButtons = new java.util.ArrayList<>();
     private int fitMode = 0;
     private int modeIndex = 0;
@@ -271,16 +271,12 @@ public class sm64portActivity extends SDLActivity {
         grid.setColumnCount(2);
         grid.setOrientation(android.widget.GridLayout.HORIZONTAL);
         controls.addView(grid);
-        addSlider("IPD", -2560, 2560, 100, " px", 0);
-        addSlider("IN shift (=conv)", -1280, 1280, 0, " px", 1);
-        addSlider("Depth", -1000, 1000, 100, " %", 2);
-        addSlider("IN W%", 25, 200, 100, " %", 11);
-        addSlider("IN scale%", 25, 400, 100, " %", 14);
-        addOutSlider("Out scale%", 50, 200, 100, 5);
-        addSlider("Ctl X%", -200, 200, 0, " %", 8);
-        addSlider("Ctl Y%", -200, 200, 0, " %", 9);
-        addSlider("Ctl scale%", 50, 300, 100, " %", 10);
-        addOutSlider("Out H%", 50, 200, 100, 0);
+        addSlider("IPD", -2560, 2560, 0, " px", 0);
+        addSlider("Zero parallax", -1280, 1280, 0, " px", 1);
+        addSlider("Depth", -2000, 2000, 1000, " %", 2);
+        addSlider("Toe in/out", -100, 100, 0, " %", 17);
+        addSlider("Aspect %", 100, 240, 178, " %", 18);
+        addSlider("Eye margin%", 50, 100, 100, " %", 14);
         // Hidden for now (kept for later): V%, W-px, H-shift%, V-shift.
         outVal[1] = 100; outVal[3] = 0; outVal[4] = 0;
         startDebugReadout(panel);
@@ -672,6 +668,7 @@ public class sm64portActivity extends SDLActivity {
             case "PERF2x": nativeSetStereoInt(12, perfOn ? 0 : 1); perfOn = !perfOn; break;
             case "SWAP": nativeSetStereoInt(4, swapOn ? 0 : 1); swapOn = !swapOn; break;
             case "SAME": nativeSetStereoInt(6, sameOn ? 0 : 1); sameOn = !sameOn; break;
+            case "NOCULL": nativeSetStereoInt(19, nocullOn ? 0 : 1); nocullOn = !nocullOn; break;
             case "FLAT":
                 runOnUiThread(() -> leiaView.setVisibility(
                         leiaView.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE));
@@ -711,7 +708,8 @@ public class sm64portActivity extends SDLActivity {
                     + " surfaceValid=" + surfaceValid
                     + " stereoOn=" + stereoOn
                     + " tint=" + tintOn + " zbuf=" + zbufOn + " wire=" + wireOn
-                    + " perf=" + perfOn + " swap=" + swapOn + " same=" + sameOn);
+                    + " perf=" + perfOn + " swap=" + swapOn + " same=" + sameOn
+                    + " nocull=" + nocullOn);
         });
     }
 

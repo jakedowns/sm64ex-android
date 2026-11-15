@@ -723,6 +723,23 @@ void gfx_opengl_stereo_begin(int eye, int w, int h, int cx, int cy, int cw, int 
 
 /* Blit both eye textures into the 2x1 side-by-side default framebuffer. */
 void gfx_opengl_stereo_composite(int w, int h, int full_w, int full_h) {
+    {
+        static long last_ms = 0;
+    static int frames = 0;
+    long now = (long)(frame_count * (1000.0 / 30.0));
+    frames++;
+    // wall-clock timing via clock_gettime
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    long ms = ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+    if (last_ms == 0) last_ms = ms;
+    if (ms - last_ms >= 500) {
+        gfx_stereo_fps = frames * 1000.0f / (float)(ms - last_ms);
+        last_ms = ms;
+        frames = 0;
+    }
+    }
+
     s_fbo_mode = 0;
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glDisable(GL_SCISSOR_TEST);
@@ -913,23 +930,6 @@ static void gfx_opengl_init(void) {
 
 static void gfx_opengl_start_frame(void) {
     frame_count++;
-    {
-        static long last_ms = 0;
-        static int frames = 0;
-        long now = (long)(frame_count * (1000.0 / 30.0));
-        frames++;
-        // wall-clock timing via clock_gettime
-        struct timespec ts;
-        clock_gettime(CLOCK_MONOTONIC, &ts);
-        long ms = ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
-        if (last_ms == 0) last_ms = ms;
-        if (ms - last_ms >= 500) {
-            gfx_stereo_fps = frames * 1000.0f / (float)(ms - last_ms);
-            last_ms = ms;
-            frames = 0;
-        }
-    }
-
 #ifdef __ANDROID__
     if (s_fbo_mode) {
         // Each eye framebuffer is cleared by gfx_opengl_stereo_begin().

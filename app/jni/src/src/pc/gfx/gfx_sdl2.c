@@ -57,6 +57,7 @@ extern int gfx_stereo_debug_tint;
 extern int gfx_stereo_in_scale_pct;
 extern int gfx_stereo_toe_pct;
 extern int gfx_stereo_aspect_pct;
+extern int gfx_stereo_nocull;
 extern int gfx_stereo_zbuf;
 extern int gfx_stereo_wire;
 extern float gfx_stereo_fps;
@@ -129,6 +130,7 @@ Java_com_vdavid003_sm64port_sm64portActivity_nativeSetStereoInt(JNIEnv *env, job
         case 16: gfx_stereo_wire = value; break;
         case 17: gfx_stereo_toe_pct = value; break;
         case 18: gfx_stereo_aspect_pct = value; break;
+        case 19: gfx_stereo_nocull = value; break;
         case 13: gfx_stereo_fit = value; break;
         case 8: gfx_touch_dx = (float) value * 4.0f; break;    // percent -> px (approx)
         case 9: gfx_touch_dy = (float) value * 4.0f; break;
