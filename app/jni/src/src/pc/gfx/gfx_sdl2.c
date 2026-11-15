@@ -63,6 +63,7 @@ extern int gfx_stereo_2d;
 extern int gfx_stereo_near_pct[2];
 extern int gfx_stereo_far_pct[2];
 extern int gfx_stereo_only_eye;
+extern int gfx_stereo_zoff;
 extern int gfx_stereo_zbuf;
 extern int gfx_stereo_wire;
 extern float gfx_stereo_fps;
@@ -143,6 +144,7 @@ Java_com_vdavid003_sm64port_sm64portActivity_nativeSetStereoInt(JNIEnv *env, job
         case 24: gfx_stereo_far_pct[0] = value; break;
         case 25: gfx_stereo_far_pct[1] = value; break;
         case 26: gfx_stereo_only_eye = value; break;
+        case 27: gfx_stereo_zoff = value; break;
         case 13: gfx_stereo_fit = value; break;
         case 8: gfx_touch_dx = (float) value * 4.0f; break;    // percent -> px (approx)
         case 9: gfx_touch_dy = (float) value * 4.0f; break;

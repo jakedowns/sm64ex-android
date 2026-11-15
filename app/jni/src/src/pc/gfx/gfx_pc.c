@@ -204,6 +204,7 @@ float gfx_stereo_cull_inflate = 0.0f;
 int gfx_stereo_near_pct[2] = {100, 100};
 int gfx_stereo_far_pct[2] = {100, 100};
 int gfx_stereo_only_eye = -1;   // -1 = both, 0/1 = render only that eye
+int gfx_stereo_zoff = 0;        // debug: disable depth testing entirely
 int gfx_stereo_nocull = 0;       // debug: skip frustum culling
 int gfx_stereo_vp[2][2] = {{-1, -1}, {-1, -1}};
 

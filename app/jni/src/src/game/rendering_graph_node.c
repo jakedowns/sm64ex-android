@@ -249,6 +249,18 @@ static void geo_process_perspective(struct GraphNodePerspective *node) {
         f32 aspect = (f32) gCurGraphNodeRoot->width / (f32) gCurGraphNodeRoot->height;
 #endif
 
+#ifdef __ANDROID__
+        {
+            static int logged = 0;
+            if (logged < 3) {
+                logged++;
+                extern int __android_log_print(int, const char*, const char*, ...);
+                __android_log_print(4, "SM64PROJ", "fov=%.1f near=%.1f far=%.1f aspect=%.3f",
+                                    (double)node->fov, (double)node->near,
+                                    (double)node->far, (double)aspect);
+            }
+        }
+#endif
         guPerspective(mtx, &perspNorm, node->fov, aspect, node->near, node->far, 1.0f);
         gSPPerspNormalize(gDisplayListHead++, perspNorm);
 

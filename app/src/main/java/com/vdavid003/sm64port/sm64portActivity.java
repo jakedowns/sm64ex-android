@@ -62,6 +62,7 @@ public class sm64portActivity extends SDLActivity {
     private int modeIndex = 0;
     private int refreshIdx = 0;
     private int onlyEye = -1;
+    private boolean zoffOn;
 
     /** Cycle the panel refresh rate: default -> 60 -> 120 Hz. */
     private void cycleRefreshRate() {
@@ -307,9 +308,9 @@ public class sm64portActivity extends SDLActivity {
         grid.setColumnCount(2);
         grid.setOrientation(android.widget.GridLayout.HORIZONTAL);
         controls.addView(grid);
-        addSlider("IPD", -2560, 2560, 0, " px", 0);
+        addSlider("IPD", -500, 500, 0, " px", 0);
         addSlider("Zero parallax", -1280, 1280, 0, " px", 1);
-        addSlider("Depth", -2000, 2000, 1000, " %", 2);
+        addSlider("Depth", -1000, 1000, 10, " %", 2);
         addSlider("Toe in/out", -100, 100, 0, " %", 17);
         addSlider("Aspect %", 10, 240, 178, " %", 18);
         addSlider("Eye margin%", 50, 100, 100, " %", 14);
@@ -331,7 +332,7 @@ public class sm64portActivity extends SDLActivity {
                 android.widget.RelativeLayout.LayoutParams.WRAP_CONTENT));
 
         android.widget.AbsoluteLayout toggles = new android.widget.AbsoluteLayout(this);
-        String[][] tgl = {{"ZBUF", "15"}, {"WIRE", "16"}, {"SWAP", "4"}, {"SAME", "6"}, {"TINT", "7"}, {"PERF2x", "12"}, {"EYE", "-4"}};
+        String[][] tgl = {{"ZBUF", "15"}, {"WIRE", "16"}, {"SWAP", "4"}, {"SAME", "6"}, {"TINT", "7"}, {"PERF2x", "12"}, {"EYE", "-4"}, {"ZOFF", "-5"}};
         for (String[] t : tgl) {
             final int which = Integer.parseInt(t[1]);
             final TextView b = new TextView(this);
@@ -347,6 +348,12 @@ public class sm64portActivity extends SDLActivity {
                     boolean on = b.getCurrentTextColor() == 0xFF888888;
                     b.setTextColor(on ? 0xFF66FF99 : 0xFF888888);
                     Log.i(TAG, "toggle " + t[0] + "=" + (on ? 1 : 0));
+                    if (t[0].startsWith("ZOFF")) {
+                        zoffOn = !zoffOn;
+                        nativeSetStereoInt(27, zoffOn ? 1 : 0);
+                        Log.i(TAG, "ZOFF=" + zoffOn);
+                        return;
+                    }
                     if (t[0].startsWith("EYE")) {
                         onlyEye = (onlyEye + 2) % 3 - 1;   // -1 -> 0 -> 1 -> -1
                         nativeSetStereoInt(26, onlyEye);

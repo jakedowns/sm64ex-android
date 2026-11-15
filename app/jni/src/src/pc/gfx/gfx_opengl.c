@@ -15,6 +15,7 @@ extern int gfx_stereo_toe_pct;
 extern int gfx_stereo_zbuf;
 extern int gfx_stereo_wire;
 extern int gfx_stereo_only_eye;
+extern int gfx_stereo_zoff;
 extern float gfx_stereo_fps;
 
 
@@ -565,16 +566,26 @@ static void gfx_opengl_set_sampler_parameters(int tile, bool linear_filter, uint
     }
 }
 
+// N64 semantics: with the Z-buffer off there are no depth writes at all.
+// GL still writes depth when the test is disabled unless the mask is off, which
+// made the skybox stamp near depth over the whole scene.
+static bool s_depth_test_on = true;
+static bool s_depth_write_wanted = true;
+
 static void gfx_opengl_set_depth_test(bool depth_test) {
+    if (gfx_stereo_zoff) { depth_test = false; }
+    s_depth_test_on = depth_test;
     if (depth_test) {
         glEnable(GL_DEPTH_TEST);
     } else {
         glDisable(GL_DEPTH_TEST);
     }
+    glDepthMask((s_depth_test_on && s_depth_write_wanted) ? GL_TRUE : GL_FALSE);
 }
 
 static void gfx_opengl_set_depth_mask(bool z_upd) {
-    glDepthMask(z_upd ? GL_TRUE : GL_FALSE);
+    s_depth_write_wanted = z_upd;
+    glDepthMask((s_depth_test_on && z_upd) ? GL_TRUE : GL_FALSE);
 }
 
 static void gfx_opengl_set_zmode_decal(bool zmode_decal) {
@@ -719,6 +730,11 @@ void gfx_opengl_stereo_begin(int eye, int w, int h, int cx, int cy, int cw, int 
         s_depth_tex_checked = 1;
         const char *ext = (const char *)glGetString(GL_EXTENSIONS);
         s_depth_tex_mode = 0;   // DISABLED: suspected FBO=0 regression; ZBUF view pending rework
+        {
+            GLint dbits = 0;
+            glGetIntegerv(GL_DEPTH_BITS, &dbits);
+            __android_log_print(ANDROID_LOG_INFO, "SM64FBO", "GL_DEPTH_BITS=%d", dbits);
+        }
         __android_log_print(ANDROID_LOG_INFO, "SM64FBO",
                 "GL_VERSION=%s RENDERER=%s OES_depth_texture=%d",
                 glGetString(GL_VERSION), glGetString(GL_RENDERER),
