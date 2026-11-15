@@ -243,11 +243,13 @@ static void geo_process_perspective(struct GraphNodePerspective *node) {
         u16 perspNorm;
         Mtx *mtx = alloc_display_list(sizeof(*mtx));
 
-#ifdef VERSION_EU
-        f32 aspect = ((f32) gCurGraphNodeRoot->width / (f32) gCurGraphNodeRoot->height) * 1.1f;
-#else
-        f32 aspect = (f32) gCurGraphNodeRoot->width / (f32) gCurGraphNodeRoot->height;
-#endif
+        // Use the ACTUAL render canvas aspect. The root node's width/height are
+        // the fixed 320x240 game dimensions, which gave a 4:3 projection even
+        // when rendering a 16:9 eye canvas (wrong horizontal FOV).
+        f32 aspect = gfx_current_dimensions.aspect_ratio;
+        if (aspect < 0.1f) {
+            aspect = (f32) gCurGraphNodeRoot->width / (f32) gCurGraphNodeRoot->height;
+        }
 
 #ifdef __ANDROID__
         {

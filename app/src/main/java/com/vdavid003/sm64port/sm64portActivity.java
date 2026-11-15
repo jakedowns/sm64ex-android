@@ -3,6 +3,10 @@ package com.vdavid003.sm64port;
 import android.graphics.Color;
 import android.graphics.SurfaceTexture;
 import android.os.Bundle;
+import android.view.WindowInsetsController;
+import android.view.WindowInsets;
+import android.view.Window;
+import android.os.Build;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.Surface;
@@ -45,6 +49,7 @@ public class sm64portActivity extends SDLActivity {
     private InputViewsAsset asset;
     private LinearLayout controls;
     private SurfaceTexture leiaTexture;
+    private int lastViewW, lastViewH;
     private final SeekBar[] bars = new SeekBar[24];
     private final SeekBar[] outBars = new SeekBar[6];
     private final int[] outDefs = new int[6];
@@ -191,7 +196,19 @@ public class sm64portActivity extends SDLActivity {
             @Override
             public void onLayoutChange(View v, int l, int t, int r, int b,
                                        int ol, int ot, int orr, int ob) {
-                resizeLeiaSurface(v.getWidth(), v.getHeight());
+                int w = v.getWidth(), h = v.getHeight();
+                if (w <= 0 || h <= 0) return;
+                if (w != lastViewW || h != lastViewH) {
+                    lastViewW = w; lastViewH = h;
+                    Log.i(TAG, "VIEW_RESIZED " + w + "x" + h);
+                    // Re-assert 3D and keep the producer buffer matched.
+                    leiaView.setSingleViewMode(false);
+                    if (leiaTexture != null) {
+                        leiaTexture.setDefaultBufferSize(w, h);
+                    }
+                    resizeLeiaSurface(w, h);
+                    applyImmersive();
+                }
             }
         });
         // The view may not be laid out yet at this point; retry until it has
@@ -676,6 +693,34 @@ public class sm64portActivity extends SDLActivity {
     private native int nativeGetStereoEnabled();
     private native int nativeGetDrawableWidth();
     private native int nativeGetDrawableHeight();
+
+    /** Hide status/nav bars so the interlaced view never gets resized. */
+    private void applyImmersive() {
+        Window w = getWindow();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            w.setDecorFitsSystemWindows(false);
+            WindowInsetsController c = w.getInsetsController();
+            if (c != null) {
+                c.setSystemBarsBehavior(
+                        WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+                c.hide(WindowInsets.Type.systemBars());
+            }
+        } else {
+            w.getDecorView().setSystemUiVisibility(
+                    View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                            | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                            | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                            | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                            | View.SYSTEM_UI_FLAG_FULLSCREEN
+                            | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
+        }
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus) applyImmersive();
+    }
 
     @Override
     protected void onResume() {
