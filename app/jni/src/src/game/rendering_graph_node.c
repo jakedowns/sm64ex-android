@@ -733,7 +733,7 @@ static void geo_process_shadow(struct GraphNodeShadow *node) {
  */
 extern int gfx_stereo_enabled;
 extern int gfx_stereo_nocull;
-extern float gfx_stereo_shear;
+extern float gfx_stereo_cull_inflate;
 
 static int obj_is_in_view(struct GraphNodeObject *node, Mat4 matrix) {
     s16 cullingRadius;
@@ -763,11 +763,8 @@ static int obj_is_in_view(struct GraphNodeObject *node, Mat4 matrix) {
     hScreenEdge *= GFX_DIMENSIONS_ASPECT_RATIO;
 
     if (gfx_stereo_enabled) {
-        // The display list is replayed for both eyes with a clip-space shear;
-        // culling must include the union of both eye frusta, otherwise geometry
-        // pops out at the edges while panning.
-        float inflate = 1.0f + fabsf(gfx_stereo_shear);
-        hScreenEdge *= inflate;
+        // Display list is replayed for both eyes: cull against the union.
+        hScreenEdge *= (1.0f + gfx_stereo_cull_inflate);
     }
 
     if (geo != NULL && geo->type == GRAPH_NODE_TYPE_CULLING_RADIUS) {

@@ -310,9 +310,9 @@ public class sm64portActivity extends SDLActivity {
         addSlider("Zero parallax", -1280, 1280, 0, " px", 1);
         addSlider("Depth", -2000, 2000, 1000, " %", 2);
         addSlider("Toe in/out", -100, 100, 0, " %", 17);
-        addSlider("Aspect %", 100, 240, 178, " %", 18);
+        addSlider("Aspect %", 10, 240, 178, " %", 18);
         addSlider("Eye margin%", 50, 100, 100, " %", 14);
-        addSlider("FOV %", 50, 150, 100, " %", 20);
+        addSlider("FOV %", 1, 200, 100, " %", 20);
         // Hidden for now (kept for later): V%, W-px, H-shift%, V-shift.
         outVal[1] = 100; outVal[3] = 0; outVal[4] = 0;
         startDebugReadout(panel);
@@ -326,9 +326,7 @@ public class sm64portActivity extends SDLActivity {
                 android.widget.RelativeLayout.LayoutParams.WRAP_CONTENT));
 
         android.widget.AbsoluteLayout toggles = new android.widget.AbsoluteLayout(this);
-        String[][] tgl = {{"ZBUF", "15"}, {"WIRE", "16"}, {"SWAP", "4"}, {"SAME", "6"}, {"TINT", "7"}, {"PERF2x", "12"}, {"MODE", "-1"},
-        {"RCV0", "-2"}, {"RCV50", "-2"}, {"RCV100", "-2"}, {"SRCFIT", "-3"},
-                {"FILL", "13"}, {"4:3", "13"}, {"16:9", "13"}};
+        String[][] tgl = {{"ZBUF", "15"}, {"WIRE", "16"}, {"SWAP", "4"}, {"SAME", "6"}, {"TINT", "7"}, {"PERF2x", "12"}};
         for (String[] t : tgl) {
             final int which = Integer.parseInt(t[1]);
             final TextView b = new TextView(this);
@@ -625,7 +623,7 @@ public class sm64portActivity extends SDLActivity {
                         + " conv=" + (bars[1].getProgress() - 300)
                         + " depth=" + bars[2].getProgress() + "%"
                         + " src=" + SRC_SIZES[srcIndex][0] + "x" + SRC_SIZES[srcIndex][1]
-                        + " eyeW=" + nativeGetEyeWidth() + " st=" + nativeGetStereoEnabled()
+                        + " fps=" + nativeGetFps() + " eyeW=" + nativeGetEyeWidth() + " st=" + nativeGetStereoEnabled()
                         + " sx=" + (testOn && testView != null ? testView.getScaleX() : leiaView.getScaleX())
                         + " srcW=" + srcW
                         + " vp0x=" + nativeGetVpX(0) + "/" + nativeGetVpW(0)
@@ -743,7 +741,7 @@ public class sm64portActivity extends SDLActivity {
     void debugDump() {
         runOnUiThread(() -> {
             Log.i(TAG, "DUMP drawable=" + nativeGetDrawableWidth() + "x" + nativeGetDrawableHeight()
-                    + " eyeW=" + nativeGetEyeWidth() + " st=" + nativeGetStereoEnabled()
+                    + " fps=" + nativeGetFps() + " eyeW=" + nativeGetEyeWidth() + " st=" + nativeGetStereoEnabled()
                     + " fps=" + nativeGetFps()
                     + " view=" + leiaView.getWidth() + "x" + leiaView.getHeight()
                     + " surfaceValid=" + surfaceValid
