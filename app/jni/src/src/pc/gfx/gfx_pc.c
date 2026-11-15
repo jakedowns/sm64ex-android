@@ -182,7 +182,9 @@ int gfx_stereo_out_w = 0;   // 0 = derive from window
 int gfx_stereo_out_h = 0;
 int gfx_stereo_perf = 0;   // 1 = render each eye at half resolution
 int gfx_stereo_fit = 2;    // 0 = fill eye, 1 = 4:3 fit, 2 = 16:9 fit (best)
-int gfx_stereo_aspect_pct = 0;  // 0 = auto; else aspect*100 for the eye canvas
+int gfx_stereo_aspect_pct = 0;
+int gfx_stereo_fov_pct = 100;   // camera FOV scale
+int gfx_stereo_2d = 0;          // 2D mode: keep the stereo path, zero the parallax  // 0 = auto; else aspect*100 for the eye canvas
 int gfx_stereo_toe_pct = 0;    // toe-in (-) / toe-out (+) camera canting
 int gfx_stereo_zbuf = 0;       // render the depth buffer as a gradient
 int gfx_stereo_wire = 0;       // wireframe debug view
@@ -207,6 +209,9 @@ extern void gfx_opengl_stereo_composite(int w, int h, int full_w, int full_h);
 static void gfx_apply_stereo_shear(void) {
     if (!gfx_stereo_enabled) {
         return;
+    }
+    if (gfx_stereo_2d) {
+        return;   // no parallax in 2D mode, but keep the canvas/FOV handling
     }
     // x' = x + shear*w  =>  column 0 += shear * column 3
     for (int i = 0; i < 4; i++) {

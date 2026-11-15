@@ -56,10 +56,37 @@ public class sm64portActivity extends SDLActivity {
     private TextView debugView;
     private boolean stereoOn = true;
     private boolean testOn = false;
-    private boolean tintOn, zbufOn, wireOn, perfOn, swapOn, sameOn, nocullOn;
+    private boolean tintOn, zbufOn, wireOn, perfOn, swapOn, sameOn, nocullOn, flatOn;
     private final java.util.List<TextView> fitButtons = new java.util.ArrayList<>();
     private int fitMode = 0;
     private int modeIndex = 0;
+    private int refreshIdx = 0;
+
+    /** Cycle the panel refresh rate: default -> 60 -> 120 Hz. */
+    private void cycleRefreshRate() {
+        try {
+            android.view.Display d = getWindowManager().getDefaultDisplay();
+            android.view.Display.Mode[] modes = d.getSupportedModes();
+            refreshIdx = (refreshIdx + 1) % 3;
+            int want = refreshIdx == 1 ? 60 : refreshIdx == 2 ? 120 : 0;
+            int modeId = 0;
+            if (want != 0) {
+                for (android.view.Display.Mode m : modes) {
+                    if (Math.round(m.getRefreshRate()) == want) {
+                        modeId = m.getModeId();
+                        break;
+                    }
+                }
+            }
+            android.view.WindowManager.LayoutParams lp = getWindow().getAttributes();
+            lp.preferredDisplayModeId = modeId;
+            getWindow().setAttributes(lp);
+            Log.i(TAG, "refresh -> " + (want == 0 ? "default" : want + "Hz") + " modeId=" + modeId);
+            Log.i(TAG, "refresh " + want + "Hz unavailable");
+        } catch (Throwable t) {
+            Log.e(TAG, "refresh cycle failed", t);
+        }
+    }
     private int stIndex = 0;
     private int tglIndex = 0;
     private InterlacedSurfaceView testView;
@@ -240,6 +267,14 @@ public class sm64portActivity extends SDLActivity {
             }
         });
 
+        TextView fpsBtn = new TextView(this);
+        fpsBtn.setText("FPS");
+        fpsBtn.setTextColor(0xFFCCCCCC);
+        fpsBtn.setTextSize(16);
+        fpsBtn.setPadding(pad, pad / 2, pad, pad / 2);
+        header.addView(fpsBtn, abs(1200, 0, 200, 64));
+        fpsBtn.setOnClickListener(v -> cycleRefreshRate());
+
         TextView test = new TextView(this);
         test.setText("TEST");
         test.setTextColor(0xFFCCCCCC);
@@ -277,6 +312,7 @@ public class sm64portActivity extends SDLActivity {
         addSlider("Toe in/out", -100, 100, 0, " %", 17);
         addSlider("Aspect %", 100, 240, 178, " %", 18);
         addSlider("Eye margin%", 50, 100, 100, " %", 14);
+        addSlider("FOV %", 50, 150, 100, " %", 20);
         // Hidden for now (kept for later): V%, W-px, H-shift%, V-shift.
         outVal[1] = 100; outVal[3] = 0; outVal[4] = 0;
         startDebugReadout(panel);
@@ -336,12 +372,13 @@ public class sm64portActivity extends SDLActivity {
                     }
                 }
             });
-            int bx = 16 + tglIndex * 200;
-            toggles.addView(b, abs(bx, 0, 200, 60));
-            Log.i(TAG, "BTN " + t[0] + " " + bx + " 0 200 60");
+            int bx = 16 + (tglIndex % 7) * 340;
+            int by = (tglIndex / 7) * 64;
+            toggles.addView(b, abs(bx, by, 340, 60));
+            Log.i(TAG, "BTN " + t[0] + " " + bx + " " + by + " 340 60");
             tglIndex++;
         }
-        controls.addView(toggles, new LinearLayout.LayoutParams(-2, 60));
+        controls.addView(toggles, new LinearLayout.LayoutParams(-2, 130));
 
         TextView src = new TextView(this);
         src.setText("SRC");
@@ -555,7 +592,8 @@ public class sm64portActivity extends SDLActivity {
 
     private void setStereoMode(boolean on) {
         stereoOn = on;
-        nativeSetStereoMode(on ? 1 : 0);
+        nativeSetStereoMode(1);          // keep the stereo render path either way
+        nativeSetStereoInt(21, on ? 0 : 1);   // 2D = zero parallax, keep FOV/aspect
         if (modeButton != null) {
             modeButton.setText(on ? "3D" : "2D");
             modeButton.setTextColor(on ? 0xFF66FF99 : 0xFFFF9966);
@@ -670,8 +708,11 @@ public class sm64portActivity extends SDLActivity {
             case "SAME": nativeSetStereoInt(6, sameOn ? 0 : 1); sameOn = !sameOn; break;
             case "NOCULL": nativeSetStereoInt(19, nocullOn ? 0 : 1); nocullOn = !nocullOn; break;
             case "FLAT":
-                runOnUiThread(() -> leiaView.setVisibility(
-                        leiaView.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE));
+                runOnUiThread(() -> {
+                    flatOn = !flatOn;
+                    leiaView.setSingleViewMode(flatOn);
+                    Log.i(TAG, "FLAT singleView=" + flatOn);
+                });
                 break;
             case "3D": runOnUiThread(() -> setStereoMode(!stereoOn)); break;
             case "TEST": runOnUiThread(this::showStaticTestImage); break;
