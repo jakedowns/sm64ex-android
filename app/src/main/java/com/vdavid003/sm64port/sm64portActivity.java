@@ -82,6 +82,17 @@ public class sm64portActivity extends SDLActivity {
             android.view.WindowManager.LayoutParams lp = getWindow().getAttributes();
             lp.preferredDisplayModeId = modeId;
             getWindow().setAttributes(lp);
+            try {
+                if (Build.VERSION.SDK_INT >= 30 && leiaView != null
+                        && leiaView.getHolder().getSurface() != null) {
+                    float rate = want == 0 ? 60f : (float) want;
+                    leiaView.getHolder().getSurface().setFrameRate(
+                            rate, android.view.Surface.FRAME_RATE_COMPATIBILITY_DEFAULT);
+                    Log.i(TAG, "surface frameRate " + rate);
+                }
+            } catch (Throwable t) {
+                Log.e(TAG, "setFrameRate failed", t);
+            }
             Log.i(TAG, "refresh -> " + (want == 0 ? "default" : want + "Hz") + " modeId=" + modeId);
             Log.i(TAG, "refresh " + want + "Hz unavailable");
         } catch (Throwable t) {
@@ -668,6 +679,11 @@ public class sm64portActivity extends SDLActivity {
         h.post(new Runnable() {
             @Override
             public void run() {
+                if (fpsView != null) {
+                    fpsView.setText(nativeGetFps() + " fps"
+                            + "  bl=" + (sdk != null && sdk.getBacklight())
+                            + " ft=" + (sdk != null && sdk.isFaceTrackingStarted()));
+                }
                 debugView.setText(BUILD_NAME + " drawable " + nativeGetDrawableWidth() + "x"
                         + nativeGetDrawableHeight()
                         + "  mode=" + (stereoOn ? "3D" : "2D")
