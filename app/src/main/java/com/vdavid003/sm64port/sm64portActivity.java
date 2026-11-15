@@ -76,6 +76,7 @@ public class sm64portActivity extends SDLActivity {
     private int refreshIdx = 0;
     private int onlyEye = -1;
     private boolean zoffOn;
+    private volatile boolean singleViewOn;
 
     /** Cycle the panel refresh rate: default -> 60 -> 120 Hz. */
     private void cycleRefreshRate() {
@@ -151,7 +152,9 @@ public class sm64portActivity extends SDLActivity {
         } catch (Throwable t) {
             Log.e(TAG, "face tracking start failed", t);
         }
-        sdk.enableBacklight(true);
+        // The SDK initialises asynchronously; enableBacklight() called too early
+        // is silently dropped. Retry until it sticks.
+        enableBacklightRetry(0);
         Log.i(TAG, "LeiaSDK ready; initialized=" + sdk.isInitialized()
                 + " ftEnabled=" + sdk.isFaceTrackingEnabled()
                 + " ftStarted=" + sdk.isFaceTrackingStarted());
@@ -226,7 +229,8 @@ public class sm64portActivity extends SDLActivity {
                         leiaView.removeCallbacks(settleCreate);
                         leiaView.postDelayed(settleCreate, 600);
                     } else {
-                        leiaView.setSingleViewMode(false);
+                        singleViewOn = false;
+        leiaView.setSingleViewMode(false);
                     }
                 }
             }
@@ -235,6 +239,7 @@ public class sm64portActivity extends SDLActivity {
         // a real size, then create the surface at that exact geometry.
         leiaView.postDelayed(settleCreate, 700);
 
+        singleViewOn = false;
         leiaView.setSingleViewMode(false);
     }
 
@@ -589,7 +594,9 @@ public class sm64portActivity extends SDLActivity {
                         texture.setDefaultBufferSize(w, h);
                         Log.i(TAG, "VIDEO_SURFACE_CREATED " + w + "x" + h + " " + texture);
                         SDLActivity.setOverrideSurface(new Surface(texture));
-                        Log.i(TAG, "SDL_OVERRIDE_SET");
+                        singleViewOn = false;
+                        leiaView.setSingleViewMode(false);
+                        Log.i(TAG, "SDL_OVERRIDE_SET sv=0");
                     }
                 });
                 surfaceValid = true;
@@ -634,6 +641,21 @@ public class sm64portActivity extends SDLActivity {
         Log.i(TAG, "static SBS test image " + (testOn ? "on" : "off"));
     }
 
+    private void enableBacklightRetry(final int attempt) {
+        if (sdk == null) return;
+        if (sdk.getBacklight() || attempt >= 20) {
+            Log.i(TAG, "BACKLIGHT settled on=" + sdk.getBacklight()
+                    + " attempt=" + attempt + " init=" + sdk.isInitialized());
+            return;
+        }
+        sdk.enableBacklight(true);
+        Log.i(TAG, "BACKLIGHT attempt " + attempt + " init=" + sdk.isInitialized()
+                + " now=" + sdk.getBacklight());
+        leiaView.postDelayed(new Runnable() {
+            @Override public void run() { enableBacklightRetry(attempt + 1); }
+        }, 500);
+    }
+
     private void setStereoMode(boolean on) {
         stereoOn = on;
         nativeSetStereoMode(1);          // keep the stereo render path either way
@@ -648,7 +670,8 @@ public class sm64portActivity extends SDLActivity {
             sdk.enableBacklight(on);
         }
         if (leiaView != null) {
-            leiaView.setSingleViewMode(!on);
+            singleViewOn = !on;
+            leiaView.setSingleViewMode(singleViewOn);
         }
         Log.i(TAG, "stereo mode " + (on ? "3D" : "2D"));
     }
@@ -790,6 +813,7 @@ public class sm64portActivity extends SDLActivity {
             case "FLAT":
                 runOnUiThread(() -> {
                     flatOn = !flatOn;
+                    singleViewOn = flatOn;
                     leiaView.setSingleViewMode(flatOn);
                     Log.i(TAG, "FLAT singleView=" + flatOn);
                 });
