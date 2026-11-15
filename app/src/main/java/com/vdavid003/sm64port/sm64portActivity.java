@@ -651,7 +651,7 @@ public class sm64portActivity extends SDLActivity {
         sdk.enableBacklight(true);
         Log.i(TAG, "BACKLIGHT attempt " + attempt + " init=" + sdk.isInitialized()
                 + " now=" + sdk.getBacklight());
-        leiaView.postDelayed(new Runnable() {
+        new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(new Runnable() {
             @Override public void run() { enableBacklightRetry(attempt + 1); }
         }, 500);
     }
@@ -759,11 +759,13 @@ public class sm64portActivity extends SDLActivity {
             // The system forces 2D backlight while the screen is off; re-assert
             // 3D after the SDK has settled (immediate call can be lost).
             final boolean want3d = stereoOn;
-            leiaView.postDelayed(() -> {
+            new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
                 try {
-                    sdk.enableBacklight(want3d);
-                    Log.i(TAG, "BACKLIGHT re-asserted " + want3d
-                            + " -> " + sdk.getBacklight());
+                    if (sdk != null) {
+                        sdk.enableBacklight(want3d);
+                        Log.i(TAG, "BACKLIGHT re-asserted " + want3d
+                                + " -> " + sdk.getBacklight());
+                    }
                 } catch (Throwable t) { Log.e(TAG, "backlight", t); }
             }, 600);
         }
