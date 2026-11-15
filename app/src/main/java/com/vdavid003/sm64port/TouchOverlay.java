@@ -144,7 +144,9 @@ public class TouchOverlay extends View {
             sx = (int) ((knobX - stickX) / stickRadius * 127f);
             sy = (int) (-(knobY - stickY) / stickRadius * 127f);
         }
-        sm64portActivity.nativeOverlayInput(stickActive ? 1 : 0, sx, sy, buttons);
+        // The overlay is the sole input source, so always stay active -
+        // otherwise button presses were dropped when the stick wasn't held.
+        sm64portActivity.nativeOverlayInput(1, sx, sy, buttons);
     }
 
     @Override
