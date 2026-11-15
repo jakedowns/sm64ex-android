@@ -318,6 +318,9 @@ public class sm64portActivity extends SDLActivity {
         });
         addSlider("Eye margin%", 50, 100, 100, " %", 14);
         addSlider("FOV %", 1, 200, 100, " %", 20);
+        addSlider("Ctl X%", -200, 200, 0, " %", 8);
+        addSlider("Ctl Y%", -200, 200, 0, " %", 9);
+        addSlider("Ctl scale%", 50, 300, 100, " %", 10);
         // Hidden for now (kept for later): V%, W-px, H-shift%, V-shift.
         outVal[1] = 100; outVal[3] = 0; outVal[4] = 0;
         startDebugReadout(panel);

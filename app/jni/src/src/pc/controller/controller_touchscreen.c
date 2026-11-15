@@ -48,6 +48,11 @@ struct ControlElement {
     int slideTouch;
 };
 
+int gfx_touch_float = 1;
+struct Position gStickPos = { .x = 160, .y = 720 };
+int gStickFloating = 0;
+float gfx_touch_parallax = 0.0f;
+
 #include "controller_touchscreen_layouts.inc"
 
 static struct ControlElement *ControlElements = ControlElementsDefault;
@@ -65,7 +70,16 @@ void touch_down(struct TouchEvent* event) {
             pos = ControlElements[i].GetPos();
             switch (ControlElements[i].type) {
                 case Joystick:
-                    if (TRIGGER_DETECT(JOYSTICK_SIZE)) {
+                    if (gfx_touch_float
+                        && CORRECT_TOUCH_X(event->x) < (LEFT_EDGE + (RIGHT_EDGE - LEFT_EDGE) / 2)) {
+                        // Floating thumbstick: appears where the thumb lands.
+                        gStickPos.x = CORRECT_TOUCH_X(event->x);
+                        gStickPos.y = CORRECT_TOUCH_Y(event->y);
+                        gStickFloating = 1;
+                        ControlElements[i].touchID = event->touchID;
+                        ControlElements[i].joyX = 0;
+                        ControlElements[i].joyY = 0;
+                    } else if (TRIGGER_DETECT(JOYSTICK_SIZE)) {
                         ControlElements[i].touchID = event->touchID;
                         ControlElements[i].joyX = CORRECT_TOUCH_X(event->x) - pos.x;
                         ControlElements[i].joyY = CORRECT_TOUCH_Y(event->y) - pos.y;
@@ -132,6 +146,7 @@ static void handle_touch_up(int i) {//seperated for when the layout changes
     ControlElements[i].touchID = 0;
     switch (ControlElements[i].type) {
         case Joystick:
+            gStickFloating = 0;
             ControlElements[i].joyX = 0;
             ControlElements[i].joyY = 0;
             break;

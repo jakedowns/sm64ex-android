@@ -70,6 +70,7 @@ extern int gfx_stereo_fit;
 extern float gfx_touch_scale;
 extern float gfx_touch_dx;
 extern float gfx_touch_dy;
+extern int gfx_touch_float;
 extern float gfx_stereo_ipd_px;
 extern float gfx_stereo_convergence_px;
 
