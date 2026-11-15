@@ -143,8 +143,18 @@ public class sm64portActivity extends SDLActivity {
             args.faceTrackingServerLogLevel = com.leia.core.LogLevel.Error;
         } catch (Throwable ignored) {}
         sdk = LeiaSDK.createSDK(args);
+        // This CNSDK build starts tracking via explicit calls (not InitArgs).
+        // Without it the interlacer stays in 2D and 3D mode shows black.
+        try {
+            sdk.enableFaceTracking(true);
+            sdk.startFaceTracking(true);
+        } catch (Throwable t) {
+            Log.e(TAG, "face tracking start failed", t);
+        }
         sdk.enableBacklight(true);
-        Log.i(TAG, "LeiaSDK ready; initialized=" + sdk.isInitialized());
+        Log.i(TAG, "LeiaSDK ready; initialized=" + sdk.isInitialized()
+                + " ftEnabled=" + sdk.isFaceTrackingEnabled()
+                + " ftStarted=" + sdk.isFaceTrackingStarted());
 
         // Make SDL wait for our surface rather than grabbing its own.
         SDLActivity.mWaitForOverride = true;
@@ -209,7 +219,6 @@ public class sm64portActivity extends SDLActivity {
                 if (w != lastViewW || h != lastViewH) {
                     lastViewW = w; lastViewH = h;
                     Log.i(TAG, "VIEW_RESIZED " + w + "x" + h);
-                    applyImmersive();
                     // Only (re)create the surface while it does not exist yet.
                     // Resizing an existing SurfaceTexture after SDL created its
                     // EGL surface breaks rendering (black screen).
@@ -719,20 +728,21 @@ public class sm64portActivity extends SDLActivity {
     }
 
     @Override
-    public void onWindowFocusChanged(boolean hasFocus) {
-        super.onWindowFocusChanged(hasFocus);
-        if (hasFocus) applyImmersive();
-    }
-
-    @Override
     protected void onResume() {
         super.onResume();
         if (leiaView != null) leiaView.onResume();
         if (sdk != null) {
             sdk.onResume();
-            // The system forces 2D backlight while the screen is off; put the
-            // panel back into 3D mode after wake.
-            sdk.enableBacklight(stereoOn);
+            // The system forces 2D backlight while the screen is off; re-assert
+            // 3D after the SDK has settled (immediate call can be lost).
+            final boolean want3d = stereoOn;
+            leiaView.postDelayed(() -> {
+                try {
+                    sdk.enableBacklight(want3d);
+                    Log.i(TAG, "BACKLIGHT re-asserted " + want3d
+                            + " -> " + sdk.getBacklight());
+                } catch (Throwable t) { Log.e(TAG, "backlight", t); }
+            }, 600);
         }
         if (leiaView != null) reapplySourceSize();
     }
@@ -769,6 +779,13 @@ public class sm64portActivity extends SDLActivity {
             case "PERF2x": nativeSetStereoInt(12, perfOn ? 0 : 1); perfOn = !perfOn; break;
             case "SWAP": nativeSetStereoInt(4, swapOn ? 0 : 1); swapOn = !swapOn; break;
             case "SAME": nativeSetStereoInt(6, sameOn ? 0 : 1); sameOn = !sameOn; break;
+            case "BL":
+                runOnUiThread(() -> {
+                    boolean want = !(sdk != null && sdk.getBacklight());
+                    if (sdk != null) sdk.enableBacklight(want);
+                    Log.i(TAG, "BL forced " + want);
+                });
+                break;
             case "NOCULL": nativeSetStereoInt(19, nocullOn ? 0 : 1); nocullOn = !nocullOn; break;
             case "FLAT":
                 runOnUiThread(() -> {
@@ -813,7 +830,9 @@ public class sm64portActivity extends SDLActivity {
                     + " stereoOn=" + stereoOn
                     + " tint=" + tintOn + " zbuf=" + zbufOn + " wire=" + wireOn
                     + " perf=" + perfOn + " swap=" + swapOn + " same=" + sameOn
-                    + " nocull=" + nocullOn);
+                    + " nocull=" + nocullOn + " flat=" + flatOn
+                    + " backlight=" + (sdk != null ? sdk.getBacklight() : false)
+                    + " ft=" + (sdk != null ? (sdk.isFaceTrackingStarted() ? 1 : 0) : -1));
         });
     }
 
