@@ -243,12 +243,11 @@ static void geo_process_perspective(struct GraphNodePerspective *node) {
         u16 perspNorm;
         Mtx *mtx = alloc_display_list(sizeof(*mtx));
 
-        // Use the ACTUAL canvas aspect: the root node dims are the fixed
-        // 320x240 game resolution, which forced a 4:3 projection into a 16:9 view.
-        f32 aspect = gfx_current_dimensions.aspect_ratio;
-        if (aspect < 0.1f) {
-            aspect = (f32) gCurGraphNodeRoot->width / (f32) gCurGraphNodeRoot->height;
-        }
+#ifdef VERSION_EU
+        f32 aspect = ((f32) gCurGraphNodeRoot->width / (f32) gCurGraphNodeRoot->height) * 1.1f;
+#else
+        f32 aspect = (f32) gCurGraphNodeRoot->width / (f32) gCurGraphNodeRoot->height;
+#endif
 
         guPerspective(mtx, &perspNorm, node->fov, aspect, node->near, node->far, 1.0f);
         gSPPerspNormalize(gDisplayListHead++, perspNorm);
