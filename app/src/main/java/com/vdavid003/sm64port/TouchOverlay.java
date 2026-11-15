@@ -22,6 +22,7 @@ public class TouchOverlay extends View {
     public static final int BTN_B = 0x4000;
     public static final int BTN_Z = 0x2000;
     public static final int BTN_R = 0x0010;
+    public static final int BTN_START = 0x1000;
 
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
 
@@ -31,16 +32,16 @@ public class TouchOverlay extends View {
     private int stickPointer = -1;
 
     private int buttons;
-    private final int[] btnIds = {BTN_A, BTN_B, BTN_Z, BTN_R};
-    private final String[] btnLabels = {"A", "B", "Z", "R"};
-    private final float[][] btnPos = new float[4][2];
+    private final int[] btnIds = {BTN_A, BTN_B, BTN_Z, BTN_R, BTN_START};
+    private final String[] btnLabels = {"A", "B", "Z", "R", "S"};
+    private final float[][] btnPos = new float[5][2];
     private int buttonPointer = -1;
 
     private final float radius = 90f;      // button radius
     private final float stickRadius = 190f;
     private final float knobRadius = 70f;
 
-    private final int[] pressedPointer = {-1, -1, -1, -1};
+    private final int[] pressedPointer = {-1, -1, -1, -1, -1};
 
     public TouchOverlay(Context c) {
         super(c);
@@ -56,10 +57,11 @@ public class TouchOverlay extends View {
         btnPos[1][0] = w * 0.81f; btnPos[1][1] = h * 0.77f;   // B
         btnPos[2][0] = w * 0.94f; btnPos[2][1] = h * 0.58f;   // Z
         btnPos[3][0] = w * 0.79f; btnPos[3][1] = h * 0.60f;   // R
+        btnPos[4][0] = w * 0.50f; btnPos[4][1] = h * 0.93f;   // START (bottom centre)
     }
 
     private int hitButton(float x, float y) {
-        for (int i = 0; i < 4; i++) {
+        for (int i = 0; i < btnPos.length; i++) {
             float dx = x - btnPos[i][0], dy = y - btnPos[i][1];
             if (dx * dx + dy * dy <= (radius * 1.25f) * (radius * 1.25f)) return i;
         }
@@ -122,7 +124,7 @@ public class TouchOverlay extends View {
                     stickActive = false;
                     stickPointer = -1;
                 }
-                for (int b = 0; b < 4; b++) {
+                for (int b = 0; b < btnIds.length; b++) {
                     if (pressedPointer[b] == id) {
                         buttons &= ~btnIds[b];
                         pressedPointer[b] = -1;
@@ -163,7 +165,7 @@ public class TouchOverlay extends View {
 
         paint.setTextAlign(Paint.Align.CENTER);
         paint.setTextSize(70f);
-        for (int i = 0; i < 4; i++) {
+        for (int i = 0; i < btnIds.length; i++) {
             boolean down = (buttons & btnIds[i]) != 0;
             paint.setStyle(Paint.Style.FILL);
             paint.setColor(down ? 0xCC66FF99 : 0x66FFFFFF);
