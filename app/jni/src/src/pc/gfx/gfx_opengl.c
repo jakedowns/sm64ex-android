@@ -605,6 +605,7 @@ static int    s_fbo_mode = 0;
 static int    s_depth_tex_mode = 0;   // 1 if GL_OES_depth_texture is available
 static int    s_depth_tex_checked = 0;
 #include <string.h>
+#include <stdlib.h>
 #include <time.h>
 static int    s_canvas_x = 0, s_canvas_y = 0;
 static int    s_canvas_w = 1, s_canvas_h = 1;
@@ -622,7 +623,12 @@ static const char *s_comp_vs =
 static const char *s_comp_fs =
     "precision mediump float; varying vec2 vUV; uniform sampler2D uTex;\n"
     "uniform float uMode; uniform vec4 uSolid;\n"
-    "void main(){ gl_FragColor = (uMode > 0.5) ? uSolid : texture2D(uTex, vUV); }\n";
+    "void main(){\n"
+    "  vec4 t = texture2D(uTex, vUV);\n"
+    "  if (uMode > 1.5) gl_FragColor = vec4(t.rrr, 1.0);\n"
+    "  else if (uMode > 0.5) gl_FragColor = uSolid;\n"
+    "  else gl_FragColor = t;\n"
+    "}\n";
 
 static GLuint compile_shader(GLenum type, const char *src) {
     GLuint sh = glCreateShader(type);
@@ -708,7 +714,7 @@ void gfx_opengl_stereo_begin(int eye, int w, int h, int cx, int cy, int cw, int 
     if (s_eye_fbo[0] == 0 && !s_depth_tex_checked) {
         s_depth_tex_checked = 1;
         const char *ext = (const char *)glGetString(GL_EXTENSIONS);
-        s_depth_tex_mode = 0;   // DISABLED: suspected FBO=0 regression; ZBUF view pending rework
+        s_depth_tex_mode = ext && strstr(ext, "GL_OES_depth_texture") != NULL;
         __android_log_print(ANDROID_LOG_INFO, "SM64FBO",
                 "GL_VERSION=%s RENDERER=%s OES_depth_texture=%d",
                 glGetString(GL_VERSION), glGetString(GL_RENDERER),
@@ -872,22 +878,28 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
             glBufferData(GL_ELEMENT_ARRAY_BUFFER,
                          s_wire_capacity * sizeof(GLushort), NULL, GL_STREAM_DRAW);
         }
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, s_wire_ibo);
-        GLushort *idx = (GLushort *)
-                glMapBufferOES(GL_ELEMENT_ARRAY_BUFFER, GL_WRITE_ONLY_OES);
-        if (idx != NULL) {
+        static GLushort *cpu_idx = NULL;
+        static size_t cpu_cap = 0;
+        size_t need = (size_t)buf_vbo_num_tris * 6;
+        if (need > cpu_cap) {
+            free(cpu_idx);
+            cpu_idx = (GLushort *)malloc(need * sizeof(GLushort));
+            cpu_cap = cpu_idx ? need : 0;
+        }
+        if (cpu_idx != NULL) {
             for (size_t t = 0; t < buf_vbo_num_tris; t++) {
                 GLushort b = (GLushort)(3 * t);
-                idx[6 * t + 0] = b + 0;
-                idx[6 * t + 1] = b + 1;
-                idx[6 * t + 2] = b + 1;
-                idx[6 * t + 3] = b + 2;
-                idx[6 * t + 4] = b + 2;
-                idx[6 * t + 5] = b + 0;
+                cpu_idx[6 * t + 0] = b + 0;
+                cpu_idx[6 * t + 1] = b + 1;
+                cpu_idx[6 * t + 2] = b + 1;
+                cpu_idx[6 * t + 3] = b + 2;
+                cpu_idx[6 * t + 4] = b + 2;
+                cpu_idx[6 * t + 5] = b + 0;
             }
-            glUnmapBufferOES(GL_ELEMENT_ARRAY_BUFFER);
-            glDrawElements(GL_LINES, 6 * (GLsizei)buf_vbo_num_tris,
-                           GL_UNSIGNED_SHORT, NULL);
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, s_wire_ibo);
+            glBufferData(GL_ELEMENT_ARRAY_BUFFER, need * sizeof(GLushort),
+                         cpu_idx, GL_STREAM_DRAW);
+            glDrawElements(GL_LINES, (GLsizei)need, GL_UNSIGNED_SHORT, NULL);
         }
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
     } else {
