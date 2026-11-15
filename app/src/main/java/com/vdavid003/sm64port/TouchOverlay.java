@@ -23,6 +23,10 @@ public class TouchOverlay extends View {
     public static final int BTN_Z = 0x2000;
     public static final int BTN_R = 0x0010;
     public static final int BTN_START = 0x1000;
+    public static final int BTN_CUP = 0x0008;
+    public static final int BTN_CDOWN = 0x0004;
+    public static final int BTN_CLEFT = 0x0002;
+    public static final int BTN_CRIGHT = 0x0001;
 
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
 
@@ -43,6 +47,13 @@ public class TouchOverlay extends View {
 
     private final int[] pressedPointer = {-1, -1, -1, -1, -1};
 
+    // C buttons: smaller cluster (up/down/left/right)
+    private final int[] cIds = {BTN_CUP, BTN_CDOWN, BTN_CLEFT, BTN_CRIGHT};
+    private final String[] cLabels = {"^", "v", "<", ">"};
+    private final float[][] cPos = new float[4][2];
+    private final int[] cPressed = {-1, -1, -1, -1};
+    private final float cRadius = 58f;
+
     public TouchOverlay(Context c) {
         super(c);
         setFocusable(false);
@@ -58,12 +69,28 @@ public class TouchOverlay extends View {
         btnPos[2][0] = w * 0.94f; btnPos[2][1] = h * 0.58f;   // Z
         btnPos[3][0] = w * 0.79f; btnPos[3][1] = h * 0.60f;   // R
         btnPos[4][0] = w * 0.50f; btnPos[4][1] = h * 0.93f;   // START (bottom centre)
+
+        // C-button cluster: cross to the left of A/B
+        float cx = w * 0.68f, cy = h * 0.70f, d = cRadius * 1.35f;
+        cPos[0][0] = cx;       cPos[0][1] = cy - d;   // up
+        cPos[1][0] = cx;       cPos[1][1] = cy + d;   // down
+        cPos[2][0] = cx - d;   cPos[2][1] = cy;       // left
+        cPos[3][0] = cx + d;   cPos[3][1] = cy;       // right
     }
 
     private int hitButton(float x, float y) {
         for (int i = 0; i < btnPos.length; i++) {
             float dx = x - btnPos[i][0], dy = y - btnPos[i][1];
             if (dx * dx + dy * dy <= (radius * 1.25f) * (radius * 1.25f)) return i;
+        }
+        return -1;
+    }
+
+    /** Index into cIds for a C-button hit, else -1. */
+    private int hitCButton(float x, float y) {
+        for (int i = 0; i < 4; i++) {
+            float dx = x - cPos[i][0], dy = y - cPos[i][1];
+            if (dx * dx + dy * dy <= (cRadius * 1.3f) * (cRadius * 1.3f)) return i;
         }
         return -1;
     }
@@ -81,9 +108,13 @@ public class TouchOverlay extends View {
                 int id = e.getPointerId(idx);
                 float px = e.getX(idx), py = e.getY(idx);
                 int b = hitButton(px, py);
+                int cb = b < 0 ? hitCButton(px, py) : -1;
                 if (b >= 0) {
                     buttons |= btnIds[b];
                     pressedPointer[b] = id;
+                } else if (cb >= 0) {
+                    buttons |= cIds[cb];
+                    cPressed[cb] = id;
                 } else if (px < getWidth() * 0.45f) {
                     stickActive = true;
                     stickPointer = id;
@@ -128,6 +159,12 @@ public class TouchOverlay extends View {
                     if (pressedPointer[b] == id) {
                         buttons &= ~btnIds[b];
                         pressedPointer[b] = -1;
+                    }
+                }
+                for (int c = 0; c < 4; c++) {
+                    if (cPressed[c] == id) {
+                        buttons &= ~cIds[c];
+                        cPressed[c] = -1;
                     }
                 }
                 pushInput();
@@ -178,6 +215,20 @@ public class TouchOverlay extends View {
             paint.setStyle(Paint.Style.FILL);
             paint.setColor(Color.BLACK);
             c.drawText(btnLabels[i], btnPos[i][0], btnPos[i][1] + 25f, paint);
+        }
+
+        paint.setTextSize(46f);
+        for (int i = 0; i < 4; i++) {
+            boolean down = (buttons & cIds[i]) != 0;
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(down ? 0xCC66FF99 : 0x55FFFFFF);
+            c.drawCircle(cPos[i][0], cPos[i][1], cRadius, paint);
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setColor(0xAA000000);
+            c.drawCircle(cPos[i][0], cPos[i][1], cRadius, paint);
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(Color.BLACK);
+            c.drawText(cLabels[i], cPos[i][0], cPos[i][1] + 16f, paint);
         }
     }
 }
