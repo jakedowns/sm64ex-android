@@ -704,6 +704,24 @@ static void stereo_ensure_resources(int w, int h) {
 }
 
 /* Called by gfx_pc.c before each eye's display list. */
+// The game assumes default GL state. Eye 0 (first pass) inherits whatever the
+// previous frame's eye-1 pass left behind, which made near geometry disappear in
+// the left eye only.
+static void stereo_reset_gl_state(void) {
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LEQUAL);
+    glDepthMask(GL_TRUE);
+    glDepthRangef(0.0f, 1.0f);
+    glDisable(GL_BLEND);
+    glDisable(GL_POLYGON_OFFSET_FILL);
+    glDisable(GL_CULL_FACE);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glDisable(GL_STENCIL_TEST);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glUseProgram(0);
+}
+
 void gfx_opengl_stereo_begin(int eye, int w, int h, int cx, int cy, int cw, int ch) {
     if (s_eye_fbo[0] == 0 && !s_depth_tex_checked) {
         s_depth_tex_checked = 1;
@@ -721,6 +739,7 @@ void gfx_opengl_stereo_begin(int eye, int w, int h, int cx, int cy, int cw, int 
     stereo_ensure_resources(w, h);
     s_fbo_mode = 1;
     glBindFramebuffer(GL_FRAMEBUFFER, s_eye_fbo[eye & 1]);
+    stereo_reset_gl_state();
     glDisable(GL_SCISSOR_TEST);
     glDepthMask(GL_TRUE);
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);

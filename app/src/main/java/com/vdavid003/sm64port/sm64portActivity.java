@@ -32,6 +32,7 @@ import org.libsdl.app.SDLActivity;
  */
 public class sm64portActivity extends SDLActivity {
     private static final String TAG = "SM64Leia";
+    private static final String BUILD_NAME = "v17";
     public static volatile sm64portActivity instance;
     /** Leia's convention: a 2-view SBS source is 2 x viewResolution
      *  (1920x1200 each), i.e. 3840x1200 total. The interlacer derives its
@@ -128,7 +129,7 @@ public class sm64portActivity extends SDLActivity {
         } catch (Throwable ignored) {}
         sdk = LeiaSDK.createSDK(args);
         sdk.enableBacklight(true);
-        Log.i(TAG, "LeiaSDK ready; initialized=" + sdk.isInitialized());
+        Log.i(TAG, "BUILD " + BUILD_NAME + " LeiaSDK ready; initialized=" + sdk.isInitialized());
 
         // Make SDL wait for our surface rather than grabbing its own.
         SDLActivity.mWaitForOverride = true;
@@ -627,7 +628,7 @@ public class sm64portActivity extends SDLActivity {
         h.post(new Runnable() {
             @Override
             public void run() {
-                debugView.setText("drawable " + nativeGetDrawableWidth() + "x"
+                debugView.setText(BUILD_NAME + " drawable " + nativeGetDrawableWidth() + "x"
                         + nativeGetDrawableHeight()
                         + "  mode=" + (stereoOn ? "3D" : "2D")
                         + "  ipd=" + (int) bars[0].getProgress()
