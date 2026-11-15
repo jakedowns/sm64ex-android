@@ -61,6 +61,7 @@ public class sm64portActivity extends SDLActivity {
     private int fitMode = 0;
     private int modeIndex = 0;
     private int refreshIdx = 0;
+    private int onlyEye = -1;
 
     /** Cycle the panel refresh rate: default -> 60 -> 120 Hz. */
     private void cycleRefreshRate() {
@@ -313,6 +314,10 @@ public class sm64portActivity extends SDLActivity {
         addSlider("Aspect %", 10, 240, 178, " %", 18);
         addSlider("Eye margin%", 50, 100, 100, " %", 14);
         addSlider("FOV %", 1, 200, 100, " %", 20);
+        addSlider("Near L %", 1, 400, 100, " %", 22);
+        addSlider("Near R %", 1, 400, 100, " %", 23);
+        addSlider("Far L %", 1, 400, 100, " %", 24);
+        addSlider("Far R %", 1, 400, 100, " %", 25);
         // Hidden for now (kept for later): V%, W-px, H-shift%, V-shift.
         outVal[1] = 100; outVal[3] = 0; outVal[4] = 0;
         startDebugReadout(panel);
@@ -326,7 +331,7 @@ public class sm64portActivity extends SDLActivity {
                 android.widget.RelativeLayout.LayoutParams.WRAP_CONTENT));
 
         android.widget.AbsoluteLayout toggles = new android.widget.AbsoluteLayout(this);
-        String[][] tgl = {{"ZBUF", "15"}, {"WIRE", "16"}, {"SWAP", "4"}, {"SAME", "6"}, {"TINT", "7"}, {"PERF2x", "12"}};
+        String[][] tgl = {{"ZBUF", "15"}, {"WIRE", "16"}, {"SWAP", "4"}, {"SAME", "6"}, {"TINT", "7"}, {"PERF2x", "12"}, {"EYE", "-4"}};
         for (String[] t : tgl) {
             final int which = Integer.parseInt(t[1]);
             final TextView b = new TextView(this);
@@ -342,6 +347,12 @@ public class sm64portActivity extends SDLActivity {
                     boolean on = b.getCurrentTextColor() == 0xFF888888;
                     b.setTextColor(on ? 0xFF66FF99 : 0xFF888888);
                     Log.i(TAG, "toggle " + t[0] + "=" + (on ? 1 : 0));
+                    if (t[0].startsWith("EYE")) {
+                        onlyEye = (onlyEye + 2) % 3 - 1;   // -1 -> 0 -> 1 -> -1
+                        nativeSetStereoInt(26, onlyEye);
+                        Log.i(TAG, "onlyEye=" + onlyEye);
+                        return;
+                    }
                     if (t[0].startsWith("MODE")) {
                         modeIndex = (modeIndex + 1) % 4;
                         Log.i(TAG, "interlaceMode -> #" + modeIndex + " (unsupported in this AAR)");

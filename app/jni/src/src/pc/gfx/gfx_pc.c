@@ -200,6 +200,10 @@ float gfx_stereo_shear = 0.0f;   // clip-space shear, used by culling too
 // Extra frustum margin (NDC) so culling covers BOTH eyes. Computed each frame
 // because culling runs while the display list is built, before any eye pass.
 float gfx_stereo_cull_inflate = 0.0f;
+// Per-eye clip-plane knobs (percent, 100 = untouched) and eye isolation.
+int gfx_stereo_near_pct[2] = {100, 100};
+int gfx_stereo_far_pct[2] = {100, 100};
+int gfx_stereo_only_eye = -1;   // -1 = both, 0/1 = render only that eye
 int gfx_stereo_nocull = 0;       // debug: skip frustum culling
 int gfx_stereo_vp[2][2] = {{-1, -1}, {-1, -1}};
 
@@ -215,6 +219,18 @@ static void gfx_apply_stereo_shear(void) {
     }
     if (gfx_stereo_2d) {
         return;   // no parallax in 2D mode, but keep the canvas/FOV handling
+    }
+    {
+        int e = (gfx_stereo_eye >= 0 && gfx_stereo_eye < 2) ? gfx_stereo_eye : 0;
+        float zs = (float)gfx_stereo_near_pct[e] / 100.0f;
+        float zo = ((float)gfx_stereo_far_pct[e] - 100.0f) / 100.0f;
+        if (zs != 1.0f || zo != 0.0f) {
+            // z' = z*zs + w*zo : moves the near/far clip planes per eye.
+            for (int i = 0; i < 4; i++) {
+                rsp.MP_matrix[i][2] = rsp.MP_matrix[i][2] * zs
+                                    + rsp.MP_matrix[i][3] * zo;
+            }
+        }
     }
     // x' = x + shear*w  =>  column 0 += shear * column 3
     for (int i = 0; i < 4; i++) {
