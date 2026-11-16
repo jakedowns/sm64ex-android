@@ -79,6 +79,10 @@ extern int gfx_hide_touch_controls;
 extern float gfx_stereo_ipd_px;
 extern float gfx_stereo_convergence_px;
 
+// Screen-space FX knobs live in gfx_opengl.c (the pass runs there).
+extern void gfx_opengl_ssfx_set(int which, int value);
+extern int gfx_opengl_ssfx_get(int which);
+
 #include <jni.h>
 
 static float s_base_ipd = 140.0f;
@@ -194,6 +198,20 @@ JNIEXPORT jint JNICALL
 Java_com_vdavid003_sm64port_sm64portActivity_nativeGetStereoEnabled(JNIEnv *env, jobject thiz) {
     (void) env; (void) thiz;
     return gfx_stereo_enabled;
+}
+
+JNIEXPORT void JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeSetSSFX(JNIEnv *env, jobject thiz,
+                                                           jint which, jint value) {
+    (void) env; (void) thiz;
+    gfx_opengl_ssfx_set(which, value);
+}
+
+JNIEXPORT jint JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeGetSSFX(JNIEnv *env, jobject thiz,
+                                                           jint which) {
+    (void) env; (void) thiz;
+    return gfx_opengl_ssfx_get(which);
 }
 #endif
 
