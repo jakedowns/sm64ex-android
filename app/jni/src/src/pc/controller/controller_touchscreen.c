@@ -55,6 +55,13 @@ int gfx_ovl_stick_x = 0;
 int gfx_ovl_stick_y = 0;
 unsigned int gfx_ovl_buttons = 0;
 int gfx_hide_touch_controls = 0;
+
+// Overlay-only buttons (not N64 pad bits). Consumed by the camera code.
+#define OVL_BTN_CAM      0x01000000u   // X: toggle free camera
+#define OVL_BTN_RECENTER 0x02000000u   // Y: recentre / reset view
+u8 camera_mode_button_pressed = 0;
+u8 camera_recenter_button_pressed = 0;
+static unsigned int s_prev_ovl_buttons = 0;
 struct Position gStickPos = { .x = 160, .y = 720 };
 int gStickFloating = 0;
 float gfx_touch_parallax = 0.0f;
@@ -267,11 +274,20 @@ static void touchscreen_init(void) {
 
 static void touchscreen_read(OSContPad *pad) {
     if (gfx_ovl_active) {
+        unsigned int pressed = gfx_ovl_buttons & ~s_prev_ovl_buttons;
+        s_prev_ovl_buttons = gfx_ovl_buttons;
+        if (pressed & OVL_BTN_CAM) {
+            camera_mode_button_pressed = 1;
+        }
+        if (pressed & OVL_BTN_RECENTER) {
+            camera_recenter_button_pressed = 1;
+        }
         pad->stick_x = (s8)gfx_ovl_stick_x;
         pad->stick_y = (s8)gfx_ovl_stick_y;
-        pad->button |= gfx_ovl_buttons;
+        pad->button |= (u16)(gfx_ovl_buttons & 0xFFFFu);
         return;
     }
+    s_prev_ovl_buttons = 0;
     for(int i = 0; i < ControlElementsLength; i++) {
         switch (ControlElements[i].type) {
             case Joystick:

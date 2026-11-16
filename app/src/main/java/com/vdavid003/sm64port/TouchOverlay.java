@@ -27,6 +27,9 @@ public class TouchOverlay extends View {
     public static final int BTN_CDOWN = 0x0004;
     public static final int BTN_CLEFT = 0x0002;
     public static final int BTN_CRIGHT = 0x0001;
+    // Overlay-only camera buttons (not N64 pad bits).
+    public static final int BTN_CAM = 0x01000000;
+    public static final int BTN_RECENTER = 0x02000000;
 
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
 
@@ -54,6 +57,13 @@ public class TouchOverlay extends View {
     private final int[] cPressed = {-1, -1, -1, -1};
     private final float cRadius = 58f;
 
+    // Camera buttons: X toggles free camera, Y recentres.
+    private final int[] camIds = {BTN_CAM, BTN_RECENTER};
+    private final String[] camLabels = {"X", "Y"};
+    private final float[][] camPos = new float[2][2];
+    private final int[] camPressed = {-1, -1};
+    private final float camRadius = 52f;
+
     public TouchOverlay(Context c) {
         super(c);
         setFocusable(false);
@@ -76,6 +86,19 @@ public class TouchOverlay extends View {
         cPos[1][0] = cx;       cPos[1][1] = cy + d;   // down
         cPos[2][0] = cx - d;   cPos[2][1] = cy;       // left
         cPos[3][0] = cx + d;   cPos[3][1] = cy;       // right
+
+        // Camera buttons: upper-right, clear of A/B/Z/R.
+        camPos[0][0] = w * 0.93f; camPos[0][1] = h * 0.40f;   // X
+        camPos[1][0] = w * 0.84f; camPos[1][1] = h * 0.32f;   // Y
+    }
+
+    /** Index into camIds for a camera-button hit, else -1. */
+    private int hitCamButton(float x, float y) {
+        for (int i = 0; i < camIds.length; i++) {
+            float dx = x - camPos[i][0], dy = y - camPos[i][1];
+            if (dx * dx + dy * dy <= (camRadius * 1.3f) * (camRadius * 1.3f)) return i;
+        }
+        return -1;
     }
 
     private int hitButton(float x, float y) {
@@ -109,12 +132,16 @@ public class TouchOverlay extends View {
                 float px = e.getX(idx), py = e.getY(idx);
                 int b = hitButton(px, py);
                 int cb = b < 0 ? hitCButton(px, py) : -1;
+                int cam = (b < 0 && cb < 0) ? hitCamButton(px, py) : -1;
                 if (b >= 0) {
                     buttons |= btnIds[b];
                     pressedPointer[b] = id;
                 } else if (cb >= 0) {
                     buttons |= cIds[cb];
                     cPressed[cb] = id;
+                } else if (cam >= 0) {
+                    buttons |= camIds[cam];
+                    camPressed[cam] = id;
                 } else if (px < getWidth() * 0.45f) {
                     stickActive = true;
                     stickPointer = id;
@@ -165,6 +192,12 @@ public class TouchOverlay extends View {
                     if (cPressed[c] == id) {
                         buttons &= ~cIds[c];
                         cPressed[c] = -1;
+                    }
+                }
+                for (int c = 0; c < camIds.length; c++) {
+                    if (camPressed[c] == id) {
+                        buttons &= ~camIds[c];
+                        camPressed[c] = -1;
                     }
                 }
                 pushInput();
@@ -229,6 +262,21 @@ public class TouchOverlay extends View {
             paint.setStyle(Paint.Style.FILL);
             paint.setColor(Color.BLACK);
             c.drawText(cLabels[i], cPos[i][0], cPos[i][1] + 16f, paint);
+        }
+
+        // Camera buttons (X = free camera toggle, Y = recentre).
+        paint.setTextSize(48f);
+        for (int i = 0; i < camIds.length; i++) {
+            boolean down = (buttons & camIds[i]) != 0;
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(down ? 0xCC66FF99 : 0x44FFFFFF);
+            c.drawCircle(camPos[i][0], camPos[i][1], camRadius, paint);
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setColor(0xAA000000);
+            c.drawCircle(camPos[i][0], camPos[i][1], camRadius, paint);
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(Color.BLACK);
+            c.drawText(camLabels[i], camPos[i][0], camPos[i][1] + 17f, paint);
         }
     }
 }
