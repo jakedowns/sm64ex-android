@@ -177,6 +177,12 @@ float gfx_render_delta = 0.0f;
 // Interpolation factor of the frame being drawn (0 = previous tick, 1 = current).
 float gfx_render_alpha = 1.0f;
 
+// Projection parameters of the last perspective node, sampled in
+// rendering_graph_node.c and consumed by the Android post-processing pass.
+float gfx_cam_near = 100.0f;
+float gfx_cam_far = 30000.0f;
+float gfx_cam_tan_half_fov_y = 0.41421356f;
+
 // --- Stereo (Leia half-width SBS) ------------------------------------------
 // When enabled, each frame is rendered twice into a 2x1 side-by-side buffer:
 // eye 0 on the left half, eye 1 on the right half. The eye separation is

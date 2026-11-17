@@ -15,6 +15,9 @@ extern int gfx_stereo_toe_pct;
 extern int gfx_stereo_zbuf;
 extern int gfx_stereo_wire;
 extern float gfx_stereo_fps;
+extern float gfx_cam_near;
+extern float gfx_cam_far;
+extern float gfx_cam_tan_half_fov_y;
 
 
 
@@ -630,11 +633,455 @@ static const char *s_comp_fs =
     "  else gl_FragColor = t;\n"
     "}\n";
 
+/* ---------------- Screen-space FX (MXAO / CinematicDOF / SSGI-lite) --------
+ * A single fullscreen pass runs per eye after the scene is rendered:
+ *   colour_out = dof(colour) * ao(colour, depth) + gi(colour, depth)
+ * All controls are debug knobs; defaults are off so the v31 path is unchanged.
+ */
+static int s_fx_ao_on = 0;
+static int s_fx_ao_intensity = 100;   // percent
+static int s_fx_ao_radius = 120;      // world units
+static int s_fx_ao_samples = 12;
+static int s_fx_ao_bias = 20;         // world units (self-occlusion reject)
+static int s_fx_ao_power = 150;       // percent (contrast)
+
+static int s_fx_dof_on = 0;
+static int s_fx_dof_focus = 800;      // world units
+static int s_fx_dof_aperture = 100;   // percent
+static int s_fx_dof_maxblur = 12;     // pixels
+static int s_fx_dof_samples = 16;
+
+static int s_fx_gi_on = 0;
+static int s_fx_gi_intensity = 100;   // percent
+static int s_fx_gi_radius = 150;      // world units
+static int s_fx_gi_steps = 6;
+static int s_fx_gi_rays = 4;
+
+static int s_fx_debug = 0;            // 0 off, 1 AO, 2 CoC, 3 GI
+static int s_fx_normal_flip = 0;
+
+static const char *s_fx_vs =
+    "attribute vec2 aPos; attribute vec2 aUV; varying vec2 vUV;\n"
+    "void main(){ vUV = aUV; gl_Position = vec4(aPos, 0.0, 1.0); }\n";
+
+static const char *s_fx_fs =
+    "precision highp float;\n"
+    "varying vec2 vUV;\n"
+    "uniform sampler2D uColor;\n"
+    "uniform sampler2D uDepth;\n"
+    "uniform vec2 uRes;\n"
+    "uniform vec4 uCanvas;\n"
+    "uniform float uNear;\n"
+    "uniform float uFar;\n"
+    "uniform float uTanHalf;\n"
+    "uniform float uAspect;\n"
+    "uniform float uFrame;\n"
+    "uniform float uAOOn;\n"
+    "uniform float uAOIntensity;\n"
+    "uniform float uAORadius;\n"
+    "uniform float uAOSamples;\n"
+    "uniform float uAOBias;\n"
+    "uniform float uAOPower;\n"
+    "uniform float uDOFOn;\n"
+    "uniform float uFocus;\n"
+    "uniform float uAperture;\n"
+    "uniform float uMaxBlur;\n"
+    "uniform float uDOFSamples;\n"
+    "uniform float uGIOn;\n"
+    "uniform float uGIIntensity;\n"
+    "uniform float uGIRadius;\n"
+    "uniform float uGISteps;\n"
+    "uniform float uGIRays;\n"
+    "uniform float uDebug;\n"
+    "uniform float uNormalFlip;\n"
+    "float linZ(float d) {\n"
+    "  float z = d * 2.0 - 1.0;\n"
+    "  return (2.0 * uNear * uFar) / (uFar + uNear - z * (uFar - uNear));\n"
+    "}\n"
+    "vec3 viewPos(vec2 cuv, float z) {\n"
+    "  vec2 ndc = cuv * 2.0 - 1.0;\n"
+    "  return vec3(ndc.x * z * uTanHalf * uAspect,\n"
+    "              ndc.y * z * uTanHalf, -z);\n"
+    "}\n"
+    "vec2 canvasUV(vec2 eyeUV) {\n"
+    "  return (eyeUV * uRes - uCanvas.xy) / uCanvas.zw;\n"
+    "}\n"
+    "void main() {\n"
+    "  vec3 color = texture2D(uColor, vUV).rgb;\n"
+    "  vec2 cuv = canvasUV(vUV);\n"
+    "  if (uDebug < 0.5 && (cuv.x < 0.0 || cuv.x > 1.0 || cuv.y < 0.0 || cuv.y > 1.0)) {\n"
+    "    gl_FragColor = vec4(color, 1.0);\n"
+    "    return;\n"
+    "  }\n"
+    "  float depth = texture2D(uDepth, vUV).r;\n"
+    "  float z = linZ(depth);\n"
+    "  vec3 P = viewPos(cuv, z);\n"
+    "  vec2 tx = 1.0 / uRes;\n"
+    "  float zx = linZ(texture2D(uDepth, vUV + vec2(tx.x, 0.0)).r);\n"
+    "  float zy = linZ(texture2D(uDepth, vUV + vec2(0.0, tx.y)).r);\n"
+    "  vec3 Px = viewPos(canvasUV(vUV + vec2(tx.x, 0.0)), zx);\n"
+    "  vec3 Py = viewPos(canvasUV(vUV + vec2(0.0, tx.y)), zy);\n"
+    "  vec3 N = normalize(cross(Px - P, Py - P));\n"
+    "  if (N.z < 0.0) N = -N;\n"
+    "  if (uNormalFlip > 0.5) N = -N;\n"
+    "  float ao = 1.0;\n"
+    "  if (uAOOn > 0.5) {\n"
+    "    float occ = 0.0;\n"
+    "    float wsum = 0.0;\n"
+    "    float ns = max(uAOSamples, 1.0);\n"
+    "    for (int i = 0; i < 32; i++) {\n"
+    "      if (float(i) >= ns) break;\n"
+    "      float fi = (float(i) + 0.5) / ns;\n"
+    "      float ang = float(i) * 2.39996323 + uFrame * 0.618;\n"
+    "      vec2 dir = vec2(cos(ang), sin(ang));\n"
+    "      float r = uAORadius * fi;\n"
+    "      vec2 ndcOff = dir * r / (z * uTanHalf);\n"
+    "      ndcOff.x /= uAspect;\n"
+    "      vec2 suv = vUV + ndcOff * 0.5 * uCanvas.zw / uRes;\n"
+    "      vec2 scuv = canvasUV(suv);\n"
+    "      wsum += 1.0;\n"
+    "      if (scuv.x < 0.0 || scuv.x > 1.0 || scuv.y < 0.0 || scuv.y > 1.0) continue;\n"
+    "      float sz = linZ(texture2D(uDepth, suv).r);\n"
+    "      if (abs(sz - z) < uAOBias) continue;\n"
+    "      vec3 d = viewPos(scuv, sz) - P;\n"
+    "      float dist = length(d);\n"
+    "      if (dist < 0.001 || dist > uAORadius * 2.0) continue;\n"
+    "      float ndl = max(dot(N, d / dist), 0.0);\n"
+    "      float fall = 1.0 - dist / (uAORadius * 2.0);\n"
+    "      occ += ndl * fall * fall;\n"
+    "    }\n"
+    "    float amount = clamp(occ / max(wsum, 1.0) * (uAOIntensity / 100.0) * 3.0, 0.0, 1.0);\n"
+    "    ao = pow(1.0 - amount, max(uAOPower, 1.0) / 100.0);\n"
+    "  }\n"
+    "  vec3 dofColor = color;\n"
+    "  float cocPx = 0.0;\n"
+    "  if (uDOFOn > 0.5) {\n"
+    "    float coc = abs(z - uFocus) / max(z, 1.0);\n"
+    "    cocPx = clamp(coc * (uAperture / 100.0) * 220.0, 0.0, uMaxBlur);\n"
+    "    if (cocPx > 0.5) {\n"
+    "      vec3 acc = color;\n"
+    "      float ws = 1.0;\n"
+    "      float ns = max(uDOFSamples, 1.0);\n"
+    "      for (int i = 0; i < 32; i++) {\n"
+    "        if (float(i) >= ns) break;\n"
+    "        float fi = (float(i) + 0.5) / ns;\n"
+    "        float ang = float(i) * 2.39996323;\n"
+    "        float rad = sqrt(fi) * cocPx;\n"
+    "        vec2 suv = vUV + vec2(cos(ang), sin(ang)) * rad / uRes;\n"
+    "        vec2 scuv = canvasUV(suv);\n"
+    "        if (scuv.x < 0.0 || scuv.x > 1.0 || scuv.y < 0.0 || scuv.y > 1.0) continue;\n"
+    "        vec3 sc = texture2D(uColor, suv).rgb;\n"
+    "        float sz = linZ(texture2D(uDepth, suv).r);\n"
+    "        float scoc = abs(sz - uFocus) / max(sz, 1.0) * (uAperture / 100.0) * 220.0;\n"
+    "        float w = (sz < z - 1.0 && scoc < 1.0) ? 0.15 : 1.0;\n"
+    "        acc += sc * w; ws += w;\n"
+    "      }\n"
+    "      dofColor = acc / ws;\n"
+    "    }\n"
+    "  }\n"
+    "  vec3 gi = vec3(0.0);\n"
+    "  if (uGIOn > 0.5) {\n"
+    "    float ws = 0.0;\n"
+    "    float nr = max(uGIRays, 1.0);\n"
+    "    float nst = max(uGISteps, 1.0);\n"
+    "    for (int r = 0; r < 8; r++) {\n"
+    "      if (float(r) >= nr) break;\n"
+    "      float ang = (float(r) + 0.5) / nr * 6.2831853 + uFrame * 0.07;\n"
+    "      vec2 dir = vec2(cos(ang), sin(ang));\n"
+    "      for (int s = 1; s <= 12; s++) {\n"
+    "        if (float(s) > nst) break;\n"
+    "        float t = float(s) / nst;\n"
+    "        vec2 ndcOff = dir * (t * uGIRadius) / (z * uTanHalf);\n"
+    "        ndcOff.x /= uAspect;\n"
+    "        vec2 suv = vUV + ndcOff * 0.5 * uCanvas.zw / uRes;\n"
+    "        vec2 scuv = canvasUV(suv);\n"
+    "        if (scuv.x < 0.0 || scuv.x > 1.0 || scuv.y < 0.0 || scuv.y > 1.0) continue;\n"
+    "        float sz = linZ(texture2D(uDepth, suv).r);\n"
+    "        float diff = sz - z;\n"
+    "        if (diff > -uGIRadius * 0.5 && diff < uGIRadius * 2.0) {\n"
+    "          vec3 sc = texture2D(uColor, suv).rgb;\n"
+    "          float dw = exp(-abs(diff) / (uGIRadius + 1.0));\n"
+    "          float tw = 1.0 - t;\n"
+    "          gi += sc * dw * tw;\n"
+    "          ws += dw * tw;\n"
+    "        }\n"
+    "      }\n"
+    "    }\n"
+    "    gi = ws > 0.0 ? gi / ws : vec3(0.0);\n"
+    "  }\n"
+    "  if (uDebug > 2.5) gl_FragColor = vec4(gi * 3.0 * (uGIIntensity / 100.0), 1.0);\n"
+    "  else if (uDebug > 1.5) gl_FragColor = vec4(vec3(clamp(cocPx / max(uMaxBlur, 1.0), 0.0, 1.0)), 1.0);\n"
+    "  else if (uDebug > 0.5) gl_FragColor = vec4(vec3(ao), 1.0);\n"
+    "  else {\n"
+    "    vec3 outc = dofColor * ao + gi * (uGIIntensity / 100.0) * 0.6;\n"
+    "    gl_FragColor = vec4(outc, 1.0);\n"
+    "  }\n"
+    "}\n";
+
+static struct {
+    GLint color, depth, res, canvas, nearv, farv, tanhalf, aspect, frame;
+    GLint ao_on, ao_intensity, ao_radius, ao_samples, ao_bias, ao_power;
+    GLint dof_on, dof_focus, dof_aperture, dof_maxblur, dof_samples;
+    GLint gi_on, gi_intensity, gi_radius, gi_steps, gi_rays;
+    GLint debug, normal_flip;
+} s_fx_u;
+
+static GLuint s_fx_prog = 0;
+static int    s_fx_prog_state = 0;   // 0 = untried, 1 = ok, -1 = failed
+static GLuint s_pp_fbo[2] = {0, 0};
+static GLuint s_pp_tex[2] = {0, 0};
+static int    s_pp_w = 0, s_pp_h = 0;
+
+static int stereo_fx_any(void) {
+    return s_fx_ao_on || s_fx_dof_on || s_fx_gi_on || s_fx_debug != 0;
+}
+
+void gfx_opengl_ssfx_set(int which, int value) {
+    switch (which) {
+        case 1:  s_fx_ao_on = value ? 1 : 0; break;
+        case 2:  s_fx_ao_intensity = value < 0 ? 0 : value; break;
+        case 3:  s_fx_ao_radius = value < 1 ? 1 : value; break;
+        case 4:  s_fx_ao_samples = value < 1 ? 1 : (value > 32 ? 32 : value); break;
+        case 5:  s_fx_ao_bias = value < 0 ? 0 : value; break;
+        case 6:  s_fx_ao_power = value < 1 ? 1 : value; break;
+        case 11: s_fx_dof_on = value ? 1 : 0; break;
+        case 12: s_fx_dof_focus = value < 1 ? 1 : value; break;
+        case 13: s_fx_dof_aperture = value < 0 ? 0 : value; break;
+        case 14: s_fx_dof_maxblur = value < 0 ? 0 : (value > 48 ? 48 : value); break;
+        case 15: s_fx_dof_samples = value < 1 ? 1 : (value > 32 ? 32 : value); break;
+        case 21: s_fx_gi_on = value ? 1 : 0; break;
+        case 22: s_fx_gi_intensity = value < 0 ? 0 : value; break;
+        case 23: s_fx_gi_radius = value < 1 ? 1 : value; break;
+        case 24: s_fx_gi_steps = value < 1 ? 1 : (value > 12 ? 12 : value); break;
+        case 25: s_fx_gi_rays = value < 1 ? 1 : (value > 8 ? 8 : value); break;
+        case 31: s_fx_debug = value < 0 ? 0 : (value > 3 ? 3 : value); break;
+        case 32: s_fx_normal_flip = value ? 1 : 0; break;
+        default: return;
+    }
+    __android_log_print(ANDROID_LOG_INFO, "SM64FX",
+            "set %d=%d -> ao=%d/%d dof=%d/%d gi=%d/%d dbg=%d",
+            which, value, s_fx_ao_on, s_fx_ao_intensity,
+            s_fx_dof_on, s_fx_dof_focus, s_fx_gi_on, s_fx_gi_intensity,
+            s_fx_debug);
+}
+
+int gfx_opengl_ssfx_get(int which) {
+    switch (which) {
+        case 1:  return s_fx_ao_on;
+        case 2:  return s_fx_ao_intensity;
+        case 3:  return s_fx_ao_radius;
+        case 4:  return s_fx_ao_samples;
+        case 5:  return s_fx_ao_bias;
+        case 6:  return s_fx_ao_power;
+        case 11: return s_fx_dof_on;
+        case 12: return s_fx_dof_focus;
+        case 13: return s_fx_dof_aperture;
+        case 14: return s_fx_dof_maxblur;
+        case 15: return s_fx_dof_samples;
+        case 21: return s_fx_gi_on;
+        case 22: return s_fx_gi_intensity;
+        case 23: return s_fx_gi_radius;
+        case 24: return s_fx_gi_steps;
+        case 25: return s_fx_gi_rays;
+        case 31: return s_fx_debug;
+        case 32: return s_fx_normal_flip;
+    }
+    return -1;
+}
+
 static GLuint compile_shader(GLenum type, const char *src) {
     GLuint sh = glCreateShader(type);
     glShaderSource(sh, 1, &src, NULL);
     glCompileShader(sh);
     return sh;
+}
+
+static GLuint compile_shader_checked(GLenum type, const char *src, const char *label) {
+    GLuint sh = compile_shader(type, src);
+    GLint ok = 0;
+    glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);
+    if (!ok) {
+        GLint len = 0;
+        glGetShaderiv(sh, GL_INFO_LOG_LENGTH, &len);
+        char logbuf[2048];
+        if (len > (GLint)sizeof(logbuf)) len = (GLint)sizeof(logbuf);
+        glGetShaderInfoLog(sh, len, NULL, logbuf);
+        __android_log_print(ANDROID_LOG_ERROR, "SM64FX",
+                "FX %s shader failed: %s", label, logbuf);
+        glDeleteShader(sh);
+        return 0;
+    }
+    return sh;
+}
+
+static void stereo_fx_init(void) {
+    if (s_fx_prog_state != 0) return;
+    GLuint vs = compile_shader_checked(GL_VERTEX_SHADER, s_fx_vs, "vertex");
+    GLuint fs = compile_shader_checked(GL_FRAGMENT_SHADER, s_fx_fs, "fragment");
+    if (!vs || !fs) {
+        s_fx_prog_state = -1;
+        if (vs) glDeleteShader(vs);
+        if (fs) glDeleteShader(fs);
+        return;
+    }
+    s_fx_prog = glCreateProgram();
+    glAttachShader(s_fx_prog, vs);
+    glAttachShader(s_fx_prog, fs);
+    glLinkProgram(s_fx_prog);
+    GLint ok = 0;
+    glGetProgramiv(s_fx_prog, GL_LINK_STATUS, &ok);
+    glDeleteShader(vs);
+    glDeleteShader(fs);
+    if (!ok) {
+        __android_log_print(ANDROID_LOG_ERROR, "SM64FX", "FX program link failed");
+        glDeleteProgram(s_fx_prog);
+        s_fx_prog = 0;
+        s_fx_prog_state = -1;
+        return;
+    }
+    s_fx_u.color = glGetUniformLocation(s_fx_prog, "uColor");
+    s_fx_u.depth = glGetUniformLocation(s_fx_prog, "uDepth");
+    s_fx_u.res = glGetUniformLocation(s_fx_prog, "uRes");
+    s_fx_u.canvas = glGetUniformLocation(s_fx_prog, "uCanvas");
+    s_fx_u.nearv = glGetUniformLocation(s_fx_prog, "uNear");
+    s_fx_u.farv = glGetUniformLocation(s_fx_prog, "uFar");
+    s_fx_u.tanhalf = glGetUniformLocation(s_fx_prog, "uTanHalf");
+    s_fx_u.aspect = glGetUniformLocation(s_fx_prog, "uAspect");
+    s_fx_u.frame = glGetUniformLocation(s_fx_prog, "uFrame");
+    s_fx_u.ao_on = glGetUniformLocation(s_fx_prog, "uAOOn");
+    s_fx_u.ao_intensity = glGetUniformLocation(s_fx_prog, "uAOIntensity");
+    s_fx_u.ao_radius = glGetUniformLocation(s_fx_prog, "uAORadius");
+    s_fx_u.ao_samples = glGetUniformLocation(s_fx_prog, "uAOSamples");
+    s_fx_u.ao_bias = glGetUniformLocation(s_fx_prog, "uAOBias");
+    s_fx_u.ao_power = glGetUniformLocation(s_fx_prog, "uAOPower");
+    s_fx_u.dof_on = glGetUniformLocation(s_fx_prog, "uDOFOn");
+    s_fx_u.dof_focus = glGetUniformLocation(s_fx_prog, "uFocus");
+    s_fx_u.dof_aperture = glGetUniformLocation(s_fx_prog, "uAperture");
+    s_fx_u.dof_maxblur = glGetUniformLocation(s_fx_prog, "uMaxBlur");
+    s_fx_u.dof_samples = glGetUniformLocation(s_fx_prog, "uDOFSamples");
+    s_fx_u.gi_on = glGetUniformLocation(s_fx_prog, "uGIOn");
+    s_fx_u.gi_intensity = glGetUniformLocation(s_fx_prog, "uGIIntensity");
+    s_fx_u.gi_radius = glGetUniformLocation(s_fx_prog, "uGIRadius");
+    s_fx_u.gi_steps = glGetUniformLocation(s_fx_prog, "uGISteps");
+    s_fx_u.gi_rays = glGetUniformLocation(s_fx_prog, "uGIRays");
+    s_fx_u.debug = glGetUniformLocation(s_fx_prog, "uDebug");
+    s_fx_u.normal_flip = glGetUniformLocation(s_fx_prog, "uNormalFlip");
+    s_fx_prog_state = 1;
+    __android_log_print(ANDROID_LOG_INFO, "SM64FX", "FX program ready (%u)", s_fx_prog);
+}
+
+static void stereo_ensure_pp(int w, int h) {
+    if (w == s_pp_w && h == s_pp_h && s_pp_fbo[0] != 0) return;
+    for (int i = 0; i < 2; i++) {
+        if (s_pp_fbo[i]) glDeleteFramebuffers(1, &s_pp_fbo[i]);
+        if (s_pp_tex[i]) glDeleteTextures(1, &s_pp_tex[i]);
+        glGenTextures(1, &s_pp_tex[i]);
+        glBindTexture(GL_TEXTURE_2D, s_pp_tex[i]);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, w, h, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glGenFramebuffers(1, &s_pp_fbo[i]);
+        glBindFramebuffer(GL_FRAMEBUFFER, s_pp_fbo[i]);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                               GL_TEXTURE_2D, s_pp_tex[i], 0);
+        __android_log_print(ANDROID_LOG_INFO, "SM64FX",
+                "PP fbo %d=%u tex=%u %dx%d status=0x%x", i, s_pp_fbo[i],
+                s_pp_tex[i], w, h, glCheckFramebufferStatus(GL_FRAMEBUFFER));
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    s_pp_w = w;
+    s_pp_h = h;
+}
+
+/* Runs the post pass for both eyes. Returns 1 if s_pp_tex is valid to composite. */
+static int stereo_fx_pass(void) {
+    if (!stereo_fx_any()) return 0;
+    if (!s_depth_tex_mode) {
+        static int warned = 0;
+        if (!warned) {
+            warned = 1;
+            __android_log_print(ANDROID_LOG_WARN, "SM64FX",
+                    "depth texture unavailable; screen-space FX disabled");
+        }
+        return 0;
+    }
+    stereo_fx_init();
+    if (s_fx_prog_state != 1) return 0;
+    stereo_ensure_pp(s_eye_w, s_eye_h);
+
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
+    glDisable(GL_SCISSOR_TEST);
+    glUseProgram(s_fx_prog);
+
+    glActiveTexture(GL_TEXTURE0);
+    glUniform1i(s_fx_u.color, 0);
+    glActiveTexture(GL_TEXTURE1);
+    glUniform1i(s_fx_u.depth, 1);
+
+    glUniform2f(s_fx_u.res, (float)s_eye_w, (float)s_eye_h);
+    glUniform4f(s_fx_u.canvas, (float)s_canvas_x, (float)s_canvas_y,
+                (float)s_canvas_w, (float)s_canvas_h);
+    glUniform1f(s_fx_u.nearv, gfx_cam_near);
+    glUniform1f(s_fx_u.farv, gfx_cam_far);
+    glUniform1f(s_fx_u.tanhalf, gfx_cam_tan_half_fov_y);
+    glUniform1f(s_fx_u.aspect, (float)s_canvas_w / (float)(s_canvas_h ? s_canvas_h : 1));
+    glUniform1f(s_fx_u.frame, (float)(frame_count & 1023));
+    glUniform1f(s_fx_u.ao_on, s_fx_ao_on ? 1.0f : 0.0f);
+    glUniform1f(s_fx_u.ao_intensity, (float)s_fx_ao_intensity);
+    glUniform1f(s_fx_u.ao_radius, (float)s_fx_ao_radius);
+    glUniform1f(s_fx_u.ao_samples, (float)s_fx_ao_samples);
+    glUniform1f(s_fx_u.ao_bias, (float)s_fx_ao_bias);
+    glUniform1f(s_fx_u.ao_power, (float)s_fx_ao_power);
+    glUniform1f(s_fx_u.dof_on, s_fx_dof_on ? 1.0f : 0.0f);
+    glUniform1f(s_fx_u.dof_focus, (float)s_fx_dof_focus);
+    glUniform1f(s_fx_u.dof_aperture, (float)s_fx_dof_aperture);
+    glUniform1f(s_fx_u.dof_maxblur, (float)s_fx_dof_maxblur);
+    glUniform1f(s_fx_u.dof_samples, (float)s_fx_dof_samples);
+    glUniform1f(s_fx_u.gi_on, s_fx_gi_on ? 1.0f : 0.0f);
+    glUniform1f(s_fx_u.gi_intensity, (float)s_fx_gi_intensity);
+    glUniform1f(s_fx_u.gi_radius, (float)s_fx_gi_radius);
+    glUniform1f(s_fx_u.gi_steps, (float)s_fx_gi_steps);
+    glUniform1f(s_fx_u.gi_rays, (float)s_fx_gi_rays);
+    glUniform1f(s_fx_u.debug, (float)s_fx_debug);
+    glUniform1f(s_fx_u.normal_flip, (float)s_fx_normal_flip);
+
+    static const float quad[] = {
+        -1.0f, -1.0f, 0.0f, 0.0f,
+         1.0f, -1.0f, 1.0f, 0.0f,
+        -1.0f,  1.0f, 0.0f, 1.0f,
+         1.0f,  1.0f, 1.0f, 1.0f,
+    };
+    if (!s_comp_vbo) glGenBuffers(1, &s_comp_vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, s_comp_vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(quad), quad, GL_STREAM_DRAW);
+
+    GLint apos = glGetAttribLocation(s_fx_prog, "aPos");
+    GLint auv = glGetAttribLocation(s_fx_prog, "aUV");
+    glEnableVertexAttribArray(apos);
+    glVertexAttribPointer(apos, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void *)0);
+    glEnableVertexAttribArray(auv);
+    glVertexAttribPointer(auv, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float),
+                          (void *)(2 * sizeof(float)));
+
+    for (int eye = 0; eye < 2; eye++) {
+        glBindFramebuffer(GL_FRAMEBUFFER, s_pp_fbo[eye]);
+        glViewport(0, 0, s_eye_w, s_eye_h);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, s_eye_tex[eye]);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, s_eye_depth[eye]);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    }
+
+    glDisableVertexAttribArray(apos);
+    glDisableVertexAttribArray(auv);
+    glActiveTexture(GL_TEXTURE0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glUseProgram(0);
+    return 1;
 }
 
 static void stereo_ensure_resources(int w, int h) {
@@ -644,7 +1091,10 @@ static void stereo_ensure_resources(int w, int h) {
     for (int i = 0; i < 2; i++) {
         if (s_eye_fbo[i]) glDeleteFramebuffers(1, &s_eye_fbo[i]);
         if (s_eye_tex[i]) glDeleteTextures(1, &s_eye_tex[i]);
-        if (s_eye_depth[i]) glDeleteRenderbuffers(1, &s_eye_depth[i]);
+        if (s_eye_depth[i]) {
+            if (s_depth_tex_mode) glDeleteTextures(1, &s_eye_depth[i]);
+            else glDeleteRenderbuffers(1, &s_eye_depth[i]);
+        }
 
         glGenTextures(1, &s_eye_tex[i]);
         glBindTexture(GL_TEXTURE_2D, s_eye_tex[i]);
@@ -755,6 +1205,10 @@ void gfx_opengl_stereo_composite(int w, int h, int full_w, int full_h) {
     }
     }
 
+    // Post-process each eye (MXAO / CinematicDOF / SSGI-lite) before weaving.
+    // ZBUF is a raw debug view, so it bypasses the FX chain.
+    int fx_ready = gfx_stereo_zbuf ? 0 : stereo_fx_pass();
+
     s_fbo_mode = 0;
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glDisable(GL_SCISSOR_TEST);
@@ -789,7 +1243,8 @@ void gfx_opengl_stereo_composite(int w, int h, int full_w, int full_h) {
     glUniform1f(s_comp_mode, zview ? 2.0f : 0.0f);
     for (int eye = 0; eye < 2; eye++) {
         glViewport(eye * (full_w / 2), 0, full_w / 2, full_h);
-        glBindTexture(GL_TEXTURE_2D, zview ? s_eye_depth[eye] : s_eye_tex[eye]);
+        glBindTexture(GL_TEXTURE_2D, zview ? s_eye_depth[eye]
+                                           : (fx_ready ? s_pp_tex[eye] : s_eye_tex[eye]));
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     }
 

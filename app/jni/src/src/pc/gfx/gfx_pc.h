@@ -11,6 +11,12 @@ struct GfxDimensions {
 
 extern struct GfxDimensions gfx_current_dimensions;
 
+// Camera projection state captured from the display list, used by the
+// Android screen-space post effects to rebuild view-space positions.
+extern float gfx_cam_near;
+extern float gfx_cam_far;
+extern float gfx_cam_tan_half_fov_y;
+
 void gfx_init(struct GfxWindowManagerAPI *wapi, struct GfxRenderingAPI *rapi, const char *window_title);
 void gfx_start_frame(void);
 void gfx_run(Gfx *commands);

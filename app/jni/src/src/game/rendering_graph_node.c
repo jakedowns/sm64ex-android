@@ -351,6 +351,12 @@ static void geo_process_perspective(struct GraphNodePerspective *node) {
 
         guPerspective(mtx, &perspNorm, node->fov, aspect, node->near, node->far, 1.0f);
         guPerspective(prevMtx, &prevPerspNorm, prevFov, aspect, node->near, node->far, 1.0f);
+
+        // Remember the projection so the Android screen-space effects can
+        // linearise the depth buffer and rebuild view-space positions.
+        gfx_cam_near = node->near;
+        gfx_cam_far = node->far;
+        gfx_cam_tan_half_fov_y = tanf(node->fov * 3.14159265f / 360.0f);
         gSPPerspNormalize(gDisplayListHead++, perspNorm);
 
         gSPMatrix(gDisplayListHead++, VIRTUAL_TO_PHYSICAL(mtx),

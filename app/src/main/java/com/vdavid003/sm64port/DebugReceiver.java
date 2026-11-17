@@ -36,6 +36,13 @@ public class DebugReceiver extends BroadcastReceiver {
                 Log.i(TAG, "CMD set k=" + k + " v=" + v);
                 break;
             }
+            case "fx": {
+                int k = intent.getIntExtra("k", -1);
+                int v = intent.getIntExtra("v", 0);
+                a.debugFx(k, v);
+                Log.i(TAG, "CMD fx k=" + k + " v=" + v);
+                break;
+            }
             case "toggle": {
                 String name = intent.getStringExtra("name");
                 a.debugToggle(name);

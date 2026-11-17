@@ -32,7 +32,7 @@ import org.libsdl.app.SDLActivity;
  */
 public class sm64portActivity extends SDLActivity {
     private static final String TAG = "SM64Leia";
-    private static final String BUILD_NAME = "hfr3";
+    private static final String BUILD_NAME = "hfr3+ssfx";
     public static volatile sm64portActivity instance;
     /** Leia's convention: a 2-view SBS source is 2 x viewResolution
      *  (1920x1200 each), i.e. 3840x1200 total. The interlacer derives its
@@ -58,6 +58,14 @@ public class sm64portActivity extends SDLActivity {
     private TouchOverlay touchOverlay;
     private android.widget.ScrollView scrollerRef;
     private TextView debugView;
+    private LinearLayout tabContent;
+    private final java.util.List<View> tabViews = new java.util.ArrayList<>();
+    private final java.util.List<TextView> tabButtons = new java.util.ArrayList<>();
+    private final java.util.List<TextView> fxDebugButtons = new java.util.ArrayList<>();
+    private final java.util.List<Integer> fxDebugModes = new java.util.ArrayList<>();
+    private TextView aoToggle, dofToggle, giToggle;
+    private boolean aoOn, dofOn, giOn;
+    private int fxDebug = 0;
     private boolean stereoOn = true;
     private boolean testOn = false;
     private boolean tintOn, zbufOn, wireOn, perfOn, swapOn, sameOn, nocullOn, flatOn, analogOn;
@@ -369,6 +377,23 @@ public class sm64portActivity extends SDLActivity {
         });
         panel.addView(header);
 
+        // Tab bar: one page per effect family. The stereo page keeps all the
+        // original Leia knobs; the other pages are screen-space FX knobs.
+        LinearLayout tabBar = new LinearLayout(this);
+        tabBar.setOrientation(LinearLayout.HORIZONTAL);
+        tabBar.setPadding(dp(4), 0, dp(4), 0);
+        addTabButton(tabBar, "STEREO");
+        addTabButton(tabBar, "MXAO");
+        addTabButton(tabBar, "C.DOF");
+        addTabButton(tabBar, "SSGI");
+        panel.addView(tabBar);
+
+        tabContent = new LinearLayout(this);
+        tabContent.setOrientation(LinearLayout.VERTICAL);
+        panel.addView(tabContent, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+
         // Scrolling container so sliders/buttons never run off screen.
         controls = new LinearLayout(this);
         controls.setOrientation(LinearLayout.VERTICAL);
@@ -379,20 +404,14 @@ public class sm64portActivity extends SDLActivity {
         int maxH = (int) (getResources().getDisplayMetrics().heightPixels * 0.42f);
         scroller.setFillViewport(false);
         scrollerRef = scroller;
-        // Collapsed by default: the open panel covers the bottom of the screen
-        // and swallowed taps meant for the overlay's START button.
-        scroller.setVisibility(android.view.View.GONE);
-        panel.addView(scroller, new LinearLayout.LayoutParams(
+        tabContent.addView(scroller, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 Math.min(900, maxH)));
-        hide.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                boolean show = scroller.getVisibility() != android.view.View.VISIBLE;
-                scroller.setVisibility(show ? android.view.View.VISIBLE : android.view.View.GONE);
-                hide.setText(show ? "HIDE" : "SHOW");
-            }
-        });
+        tabViews.add(scroller);
+        // Collapsed by default: the open panel covers the bottom of the screen
+        // and swallowed taps meant for the overlay's START button. HIDE/SHOW
+        // toggles all tab pages at once (see the hide listener below).
+        tabContent.setVisibility(android.view.View.GONE);
 
         grid = new android.widget.GridLayout(this);
         grid.setColumnCount(2);
@@ -478,6 +497,9 @@ public class sm64portActivity extends SDLActivity {
         }
         controls.addView(toggles, new LinearLayout.LayoutParams(-2, 130));
 
+        buildFxTabs();
+        selectTab(0);
+
         TextView src = new TextView(this);
         src.setText("SRC");
         src.setTextColor(0xFFCCCCCC);
@@ -510,12 +532,159 @@ public class sm64portActivity extends SDLActivity {
         hide.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                boolean show = scrollerRef.getVisibility() != View.VISIBLE;
-                scrollerRef.setVisibility(show ? View.VISIBLE : View.GONE);
+                boolean show = tabContent.getVisibility() != View.VISIBLE;
+                tabContent.setVisibility(show ? View.VISIBLE : View.GONE);
                 ((TextView) v).setText(show ? "HIDE" : "SHOW");
             }
         });
         return panel;
+    }
+
+    // ---- Debug panel tabs ---------------------------------------------------
+
+    private void addTabButton(LinearLayout bar, String label) {
+        TextView b = new TextView(this);
+        b.setText(label);
+        b.setTextSize(15);
+        b.setTextColor(0xFF888888);
+        b.setPadding(dp(14), dp(6), dp(14), dp(6));
+        final int idx = tabButtons.size();
+        b.setOnClickListener(v -> selectTab(idx));
+        bar.addView(b);
+        tabButtons.add(b);
+    }
+
+    private void selectTab(int idx) {
+        for (int i = 0; i < tabViews.size(); i++) {
+            tabViews.get(i).setVisibility(i == idx ? View.VISIBLE : View.GONE);
+        }
+        for (int i = 0; i < tabButtons.size(); i++) {
+            tabButtons.get(i).setTextColor(i == idx ? 0xFF66FF99 : 0xFF888888);
+        }
+    }
+
+    /** Creates (and appends) a new scrollable tab page and makes it current. */
+    private LinearLayout beginTab() {
+        android.widget.ScrollView sc = new android.widget.ScrollView(this);
+        sc.setFillViewport(false);
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        sc.addView(content, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+        int maxH = (int) (getResources().getDisplayMetrics().heightPixels * 0.42f);
+        tabContent.addView(sc, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, Math.min(900, maxH)));
+        tabViews.add(sc);
+        controls = content;
+        grid = new android.widget.GridLayout(this);
+        grid.setColumnCount(2);
+        grid.setOrientation(android.widget.GridLayout.HORIZONTAL);
+        content.addView(grid);
+        return content;
+    }
+
+    private void buildFxTabs() {
+        // --- MXAO-style ambient occlusion ---
+        beginTab();
+        aoToggle = addFxToggle("MXAO ENABLE", 1, aoOn);
+        addFxSlider("Intensity", 0, 300, 100, " %", 2);
+        addFxSlider("Radius", 10, 500, 120, " u", 3);
+        addFxSlider("Samples", 4, 32, 12, "", 4);
+        addFxSlider("Bias", 0, 100, 20, " u", 5);
+        addFxSlider("Power", 50, 400, 150, " %", 6);
+        addFxDebugButton("SHOW AO", 1);
+
+        // --- Cinematic DOF ---
+        beginTab();
+        dofToggle = addFxToggle("CINEMATIC DOF", 11, dofOn);
+        addFxSlider("Focus", 50, 5000, 800, " u", 12);
+        addFxSlider("Aperture", 0, 300, 100, " %", 13);
+        addFxSlider("Max blur", 0, 40, 12, " px", 14);
+        addFxSlider("Samples", 4, 32, 16, "", 15);
+        addFxDebugButton("SHOW CoC", 2);
+
+        // --- Screen-space GI (SSGI/RTGI-style) ---
+        beginTab();
+        giToggle = addFxToggle("SSGI ENABLE", 21, giOn);
+        addFxSlider("Intensity", 0, 300, 100, " %", 22);
+        addFxSlider("Radius", 10, 500, 150, " u", 23);
+        addFxSlider("Steps", 2, 12, 6, "", 24);
+        addFxSlider("Rays", 2, 8, 4, "", 25);
+        addFxDebugButton("SHOW GI", 3);
+    }
+
+    /** FX slider: writes straight to the native post pass via nativeSetSSFX. */
+    private void addFxSlider(String name, int min, int max, int initial, String unit,
+                             final int key) {
+        final TextView label = new TextView(this);
+        label.setTextColor(Color.WHITE);
+        label.setTextSize(14);
+        label.setText(name + ": " + initial + unit);
+
+        SeekBar bar = new SeekBar(this);
+        bar.setMax(max - min);
+        bar.setProgress(initial - min);
+        bar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                int value = progress + min;
+                label.setText(name + ": " + value + unit);
+                nativeSetSSFX(key, value);
+            }
+            @Override public void onStartTrackingTouch(SeekBar seekBar) {}
+            @Override public void onStopTrackingTouch(SeekBar seekBar) {}
+        });
+        barDefaults.add(new BarDefault(bar, initial - min));
+        addToGrid(label, bar);
+        nativeSetSSFX(key, initial);
+    }
+
+    private TextView addFxToggle(String name, final int key, boolean initial) {
+        final TextView b = new TextView(this);
+        b.setText(name + ": " + (initial ? "ON" : "OFF"));
+        b.setTextSize(16);
+        b.setTextColor(initial ? 0xFF66FF99 : 0xFF888888);
+        b.setPadding(dp(4), dp(8), dp(4), dp(8));
+        b.setOnClickListener(v -> {
+            boolean on = b.getCurrentTextColor() != 0xFF66FF99;
+            applyFxToggle(b, name, key, on);
+        });
+        controls.addView(b);
+        nativeSetSSFX(key, initial ? 1 : 0);
+        return b;
+    }
+
+    private void applyFxToggle(TextView b, String name, int key, boolean on) {
+        b.setText(name + ": " + (on ? "ON" : "OFF"));
+        b.setTextColor(on ? 0xFF66FF99 : 0xFF888888);
+        nativeSetSSFX(key, on ? 1 : 0);
+        if (key == 1) aoOn = on;
+        else if (key == 11) dofOn = on;
+        else if (key == 21) giOn = on;
+        Log.i(TAG, "FX toggle " + name + "=" + (on ? 1 : 0));
+    }
+
+    private void addFxDebugButton(String name, final int mode) {
+        TextView b = new TextView(this);
+        b.setText(name);
+        b.setTextSize(14);
+        b.setTextColor(0xFF888888);
+        b.setPadding(dp(4), dp(6), dp(4), dp(6));
+        b.setOnClickListener(v -> setFxDebug(mode));
+        controls.addView(b);
+        fxDebugButtons.add(b);
+        fxDebugModes.add(mode);
+    }
+
+    private void setFxDebug(int mode) {
+        fxDebug = (fxDebug == mode) ? 0 : mode;
+        nativeSetSSFX(31, fxDebug);
+        for (int i = 0; i < fxDebugButtons.size(); i++) {
+            boolean active = fxDebugModes.get(i) == fxDebug;
+            fxDebugButtons.get(i).setTextColor(active ? 0xFFFFAA33 : 0xFF888888);
+        }
+        Log.i(TAG, "fxDebug=" + fxDebug);
     }
 
     /** Output-layer transform knobs. kind: 0=H% 1=V% 2=Wpx 3=Hshift 4=Vshift */
@@ -785,6 +954,10 @@ public class sm64portActivity extends SDLActivity {
     private native void nativeSetStereoMode(int enabled);
     private native void nativeSetStereoInt(int which, int value);
 
+    /** Screen-space FX knobs, implemented by the per-eye post pass. */
+    private native void nativeSetSSFX(int which, int value);
+    private native int nativeGetSSFX(int which);
+
     /** 11 = interlacer source width as a percentage of the panel width. */
     private volatile int srcH = 1200;
 
@@ -852,9 +1025,42 @@ public class sm64portActivity extends SDLActivity {
         }
     }
 
+    void debugFx(int k, int v) {
+        nativeSetSSFX(k, v);
+        Log.i(TAG, "FX set " + k + "=" + v);
+    }
+
     void debugToggle(String name) {
         if (name == null) return;
         switch (name) {
+            case "MXAO":
+                runOnUiThread(() -> {
+                    aoOn = !aoOn;
+                    if (aoToggle != null) applyFxToggle(aoToggle, "MXAO ENABLE", 1, aoOn);
+                    else nativeSetSSFX(1, aoOn ? 1 : 0);
+                });
+                break;
+            case "CDOF":
+                runOnUiThread(() -> {
+                    dofOn = !dofOn;
+                    if (dofToggle != null) applyFxToggle(dofToggle, "CINEMATIC DOF", 11, dofOn);
+                    else nativeSetSSFX(11, dofOn ? 1 : 0);
+                });
+                break;
+            case "SSGI":
+                runOnUiThread(() -> {
+                    giOn = !giOn;
+                    if (giToggle != null) applyFxToggle(giToggle, "SSGI ENABLE", 21, giOn);
+                    else nativeSetSSFX(21, giOn ? 1 : 0);
+                });
+                break;
+            case "FXDBG":
+                runOnUiThread(() -> {
+                    fxDebug = (fxDebug + 1) % 4;
+                    nativeSetSSFX(31, fxDebug);
+                    Log.i(TAG, "fxDebug=" + fxDebug);
+                });
+                break;
             case "TINT": nativeSetStereoInt(7, tintOn ? 0 : 1); tintOn = !tintOn; break;
             case "ZBUF": nativeSetStereoInt(15, zbufOn ? 0 : 1); zbufOn = !zbufOn; break;
             case "WIRE": nativeSetStereoInt(16, wireOn ? 0 : 1); wireOn = !wireOn; break;
@@ -929,7 +1135,9 @@ public class sm64portActivity extends SDLActivity {
                     + " tint=" + tintOn + " zbuf=" + zbufOn + " wire=" + wireOn
                     + " perf=" + perfOn + " swap=" + swapOn + " same=" + sameOn
                     + " nocull=" + nocullOn
-                        + " hfr=" + nativeGetHfrMtxCount() + "/" + nativeGetHfrInterp());
+                        + " hfr=" + nativeGetHfrMtxCount() + "/" + nativeGetHfrInterp()
+                    + " mxao=" + nativeGetSSFX(1) + " cdof=" + nativeGetSSFX(11)
+                    + " ssgi=" + nativeGetSSFX(21) + " fxdbg=" + nativeGetSSFX(31));
         });
     }
 
