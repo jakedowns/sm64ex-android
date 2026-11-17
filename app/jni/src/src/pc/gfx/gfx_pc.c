@@ -223,6 +223,7 @@ int gfx_stereo_same_both = 0;             // eye 1 reuses eye 0's view (mapping 
 float gfx_stereo_ipd_px = 140.0f;         // separation at infinity
 float gfx_stereo_convergence_px = 0.0f;   // moves the zero-parallax plane
 float gfx_stereo_shear = 0.0f;   // clip-space shear, used by culling too
+float gfx_stereo_eye_sign = 1.0f; // +1 for the left/eye-0 pass, -1 for the other
 int gfx_stereo_nocull = 0;       // debug: skip frustum culling
 int gfx_stereo_vp[2][2] = {{-1, -1}, {-1, -1}};
 
@@ -259,7 +260,10 @@ static void gfx_apply_stereo_shear(void) {
     if (gfx_stereo_toe_pct != 0) {
         // Camera canting: shift x proportionally to z (rotate the eye about
         // the vertical axis). Positive = toe-out, negative = toe-in.
-        float toe = gfx_stereo_toe_pct / 100.0f * 0.25f;
+        // The two eyes must cant in *opposite* directions (mirrored), so the
+        // pair converges/diverges around the centre instead of both eyes
+        // looking the same way.
+        float toe = gfx_stereo_toe_pct / 100.0f * 0.25f * gfx_stereo_eye_sign;
         for (int i = 0; i < 4; i++) {
             rsp.MP_matrix[i][0] += toe * rsp.MP_matrix[i][2];
         }
@@ -1978,6 +1982,8 @@ void gfx_run(Gfx *commands) {
             int v = (gfx_stereo_same_both || gfx_stereo_swap_eyes) ? (eye ^ (gfx_stereo_same_both ? 0 : 1)) : eye;
             float off = (v == 0 ? 0.5f : -0.5f) * gfx_stereo_ipd_px - gfx_stereo_convergence_px;
             gfx_stereo_shear = off * 2.0f / (float)gfx_stereo_eye_width;
+            // Mirrored sign for per-eye effects (toe-in/out canting).
+            gfx_stereo_eye_sign = (v == 0) ? 1.0f : -1.0f;
 #ifdef __ANDROID__
             // Render this eye into its own FBO (own color + depth).
             gfx_opengl_stereo_begin(eye, gfx_stereo_eye_width, gfx_stereo_full_h,
