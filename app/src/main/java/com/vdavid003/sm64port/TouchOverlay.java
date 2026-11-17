@@ -68,7 +68,7 @@ public class TouchOverlay extends View {
         btnPos[1][0] = w * 0.81f; btnPos[1][1] = h * 0.77f;   // B
         btnPos[2][0] = w * 0.94f; btnPos[2][1] = h * 0.58f;   // Z
         btnPos[3][0] = w * 0.79f; btnPos[3][1] = h * 0.60f;   // R
-        btnPos[4][0] = w * 0.50f; btnPos[4][1] = h * 0.93f;   // START (bottom centre)
+        btnPos[4][0] = w * 0.50f; btnPos[4][1] = h * 0.88f;   // START (bottom centre)
 
         // C-button cluster: cross to the left of A/B
         float cx = w * 0.68f, cy = h * 0.70f, d = cRadius * 1.35f;

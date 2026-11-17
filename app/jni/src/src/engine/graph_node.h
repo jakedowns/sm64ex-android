@@ -127,6 +127,8 @@ struct GraphNodePerspective
     /*0x1C*/ f32 fov;   // horizontal field of view in degrees
     /*0x20*/ s16 near;  // near clipping plane
     /*0x22*/ s16 far;   // far clipping plane
+    f32 prevFov;        // HFR: fov of the previous tick
+    u32 prevTimestamp;  // HFR: gGlobalTimer of the previous tick
 };
 
 /** An entry in the master list. It is a linked list of display lists
@@ -203,6 +205,11 @@ struct GraphNodeCamera
     /*0x1C*/ Vec3f pos;
     /*0x28*/ Vec3f focus;
     /*0x34*/ void *matrixPtr; // pointer to look-at matrix of this camera as a Mat4
+    // HFR: previous tick's camera, used to interpolate the extra frames.
+    Vec3f prevPos;
+    Vec3f prevFocus;
+    u32 prevTimestamp;
+    void *prevMatrixPtr; // previous tick's look-at matrix (Mat4)
     /*0x38*/ s16 roll; // roll in look at matrix. Doesn't account for light direction unlike rollScreen.
     /*0x3A*/ s16 rollScreen; // rolls screen while keeping the light direction consistent
 };
@@ -243,7 +250,9 @@ struct GraphNodeRotation
     /*0x00*/ struct GraphNode node;
     /*0x14*/ void *displayList;
     /*0x18*/ Vec3s rotation;
-    u8 pad1E[2];
+    // HFR: previous tick's rotation, used to interpolate the extra frames.
+    Vec3s prevRotation;
+    u32 prevTimestamp;
 };
 
 /** GraphNode part that transforms itself and its children based on animation

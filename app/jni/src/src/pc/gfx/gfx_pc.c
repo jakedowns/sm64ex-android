@@ -169,6 +169,14 @@ static struct RenderingState {
 
 struct GfxDimensions gfx_current_dimensions;
 
+// HFR: the display list built by the last 30 Hz sim tick, re-rendered by the
+// extra frames when the render rate is above 30 Hz.
+Gfx *gfx_current_dlist = NULL;
+// Interpolation factor in [0,1) between the previous and current sim tick.
+float gfx_render_delta = 0.0f;
+// Interpolation factor of the frame being drawn (0 = previous tick, 1 = current).
+float gfx_render_alpha = 1.0f;
+
 // --- Stereo (Leia half-width SBS) ------------------------------------------
 // When enabled, each frame is rendered twice into a 2x1 side-by-side buffer:
 // eye 0 on the left half, eye 1 on the right half. The eye separation is
@@ -1945,6 +1953,15 @@ void gfx_run(Gfx *commands) {
     //printf("Process %f %f\n", t1, t1 - t0);
     gfx_wapi->swap_buffers_begin();
 #endif
+}
+
+void gfx_render_last(void) {
+    extern void gfx_patch_frame(float);
+
+    if (gfx_current_dlist != NULL) {
+        gfx_patch_frame(gfx_render_alpha);
+        gfx_run(gfx_current_dlist);
+    }
 }
 
 void gfx_end_frame(void) {

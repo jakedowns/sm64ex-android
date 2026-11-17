@@ -1,4 +1,5 @@
 #include <ultra64.h>
+#include <string.h>
 
 #include "sm64.h"
 #include "gfx_dimensions.h"
@@ -52,6 +53,7 @@ struct GeoAnimState {
     /*0x04*/ f32 translationMultiplier;
     /*0x08*/ u16 *attribute;
     /*0x0C*/ s16 *data;
+    s16 prevFrame; // HFR
 };
 
 // For some reason, this is a GeoAnimState struct, but the current state consists
@@ -61,6 +63,7 @@ struct GeoAnimState gGeoTempState;
 u8 gCurAnimType;
 u8 gCurAnimEnabled;
 s16 gCurrAnimFrame;
+s16 gPrevAnimFrame; // HFR: previous tick's animation frame
 f32 gCurAnimTranslationMultiplier;
 u16 *gCurrAnimAttribute;
 s16 *gCurAnimData;
@@ -121,6 +124,91 @@ struct GraphNodeRoot *gCurGraphNodeRoot = NULL;
 struct GraphNodeMasterList *gCurGraphNodeMasterList = NULL;
 struct GraphNodePerspective *gCurGraphNodeCamFrustum = NULL;
 struct GraphNodeCamera *gCurGraphNodeCamera = NULL;
+
+// ---- HFR frame interpolation ---------------------------------------------
+// The simulation runs at a fixed 30 Hz and builds one display list per tick.
+// Extra frames replay that list, with every transform matrix in it lerped
+// between the previous and the current tick. Two float matrix stacks are
+// built in lockstep (this tick and the previous tick); each gSPMatrix that
+// ends up in the list is recorded together with the previous tick's matrix
+// and pointed at a scratch matrix which gfx_patch_frame() fills in.
+//
+// Note: on this build Mtx is float[4][4] (guMtxF2L is a memcpy), so a Mtx and
+// a Mat4 have the same layout and can be blended directly.
+
+Mat4 gMatStackPrev[32];
+
+typedef struct {
+    Mtx *dst;      // matrix the display list command points at
+    Mtx cur;       // this tick's matrix
+    Mtx prev;      // previous tick's matrix
+} HfrMtxEntry;
+
+// Fixed capacity: overflowing entries simply keep their current matrix.
+#define HFR_MAX_MTX 4096
+static HfrMtxEntry sMtxTbl[HFR_MAX_MTX];
+static s32 sMtxTblSize;
+
+// True when the stored previous tick really is the tick before this one.
+// A gap means the node was skipped, teleported or reloaded: don't lerp.
+static int hfr_prev_valid(u32 prevTimestamp) {
+    return gGlobalTimer == prevTimestamp + 1;
+}
+
+// Registers a matrix that a display list command points at. The display list
+// keeps pointing at `dst`; gfx_patch_frame() overwrites it in place, so the
+// current tick stays available in this table for the next blend.
+static void hfr_record(Mtx *dst, Mtx *prev) {
+    HfrMtxEntry *e;
+
+    if (sMtxTblSize >= HFR_MAX_MTX) {
+        return;
+    }
+    e = &sMtxTbl[sMtxTblSize++];
+    e->dst = dst;
+    memcpy(&e->cur, dst, sizeof(Mtx));
+    memcpy(&e->prev, prev, sizeof(Mtx));
+}
+
+// Blends every recorded matrix between the previous and the current tick.
+// alpha = 0 shows the previous tick, alpha = 1 the current one.
+void gfx_patch_frame(float alpha) {
+    s32 i, j;
+
+    if (alpha < 0.0f) alpha = 0.0f;
+    if (alpha > 1.0f) alpha = 1.0f;
+    for (i = 0; i < sMtxTblSize; i++) {
+        HfrMtxEntry *e = &sMtxTbl[i];
+        f32 *out = e->dst->m[0];
+        const f32 *cur = e->cur.m[0];
+        const f32 *prev = e->prev.m[0];
+
+        for (j = 0; j < 16; j++) {
+            out[j] = prev[j] + (cur[j] - prev[j]) * alpha;
+        }
+    }
+}
+
+static void hfr_reset(void) {
+    sMtxTblSize = 0;
+}
+
+// Number of matrices interpolated in the last built display list.
+int gfx_hfr_mtx_count(void) {
+    return sMtxTblSize;
+}
+
+// Distance (squared) above which a jump is a teleport rather than motion.
+#define HFR_SNAP_DIST_SQ 4000000.0f
+
+static f32 hfr_dist_sq(Vec3f a, Vec3f b) {
+    f32 dx = a[0] - b[0];
+    f32 dy = a[1] - b[1];
+    f32 dz = a[2] - b[2];
+
+    return dx * dx + dy * dy + dz * dz;
+}
+
 struct GraphNodeObject *gCurGraphNodeObject = NULL;
 struct GraphNodeHeldObject *gCurGraphNodeHeldObject = NULL;
 u16 gAreaUpdateCounter = 0;
@@ -184,6 +272,9 @@ static void geo_append_display_list(void *displayList, s16 layer) {
             alloc_only_pool_alloc(gDisplayListHeap, sizeof(struct DisplayListNode));
 
         listNode->transform = gMatStackFixed[gMatStackIndex];
+        // HFR: the master list will point at this matrix, so register it for
+        // interpolation together with the previous tick's transform.
+        hfr_record(listNode->transform, gMatStackPrev[gMatStackIndex]);
         listNode->displayList = displayList;
         listNode->next = 0;
         if (gCurGraphNodeMasterList->listHeads[layer] == 0) {
@@ -240,8 +331,10 @@ static void geo_process_perspective(struct GraphNodePerspective *node) {
         node->fnNode.func(GEO_CONTEXT_RENDER, &node->fnNode.node, gMatStack[gMatStackIndex]);
     }
     if (node->fnNode.node.children != NULL) {
-        u16 perspNorm;
+        u16 perspNorm, prevPerspNorm;
         Mtx *mtx = alloc_display_list(sizeof(*mtx));
+        Mtx *prevMtx = alloc_display_list(sizeof(*prevMtx));
+        f32 prevFov;
 
         // Real canvas aspect (root dims are the fixed 320x240 game resolution,
         // which forced a 4:3 projection into a 16:9 view).
@@ -250,10 +343,19 @@ static void geo_process_perspective(struct GraphNodePerspective *node) {
             aspect = (f32) gCurGraphNodeRoot->width / (f32) gCurGraphNodeRoot->height;
         }
 
+        // HFR: the fov is animated by the camera (zoom out at speed), so it
+        // has to be interpolated as well.
+        prevFov = hfr_prev_valid(node->prevTimestamp) ? node->prevFov : node->fov;
+        node->prevFov = node->fov;
+        node->prevTimestamp = gGlobalTimer;
+
         guPerspective(mtx, &perspNorm, node->fov, aspect, node->near, node->far, 1.0f);
+        guPerspective(prevMtx, &prevPerspNorm, prevFov, aspect, node->near, node->far, 1.0f);
         gSPPerspNormalize(gDisplayListHead++, perspNorm);
 
-        gSPMatrix(gDisplayListHead++, VIRTUAL_TO_PHYSICAL(mtx), G_MTX_PROJECTION | G_MTX_LOAD | G_MTX_NOPUSH);
+        gSPMatrix(gDisplayListHead++, VIRTUAL_TO_PHYSICAL(mtx),
+                  G_MTX_PROJECTION | G_MTX_LOAD | G_MTX_NOPUSH);
+        hfr_record(mtx, prevMtx);
 
         gCurGraphNodeCamFrustum = node;
         geo_process_node_and_siblings(node->fnNode.node.children);
@@ -307,6 +409,8 @@ static void geo_process_camera(struct GraphNodeCamera *node) {
     Mat4 cameraTransform;
     Mtx *rollMtx = alloc_display_list(sizeof(*rollMtx));
     Mtx *mtx = alloc_display_list(sizeof(*mtx));
+    Vec3f prevPos;
+    Vec3f prevFocus;
 
     if (node->fnNode.func != NULL) {
         node->fnNode.func(GEO_CONTEXT_RENDER, &node->fnNode.node, gMatStack[gMatStackIndex]);
@@ -315,14 +419,35 @@ static void geo_process_camera(struct GraphNodeCamera *node) {
 
     gSPMatrix(gDisplayListHead++, VIRTUAL_TO_PHYSICAL(rollMtx), G_MTX_PROJECTION | G_MTX_MUL | G_MTX_NOPUSH);
 
+    // HFR: the view matrix is baked into every modelview matrix below, so
+    // interpolating the previous-tick stack also smooths the camera.
+    if (hfr_prev_valid(node->prevTimestamp)) {
+        vec3f_copy(prevPos, node->prevPos);
+        vec3f_copy(prevFocus, node->prevFocus);
+        // A big jump is a camera cut (warp, door, cutscene), not motion.
+        if (hfr_dist_sq(prevPos, node->pos) > 500000.0f) {
+            vec3f_copy(prevPos, node->pos);
+            vec3f_copy(prevFocus, node->focus);
+        }
+    } else {
+        vec3f_copy(prevPos, node->pos);
+        vec3f_copy(prevFocus, node->focus);
+    }
+    vec3f_copy(node->prevPos, node->pos);
+    vec3f_copy(node->prevFocus, node->focus);
+    node->prevTimestamp = gGlobalTimer;
+
     mtxf_lookat(cameraTransform, node->pos, node->focus, node->roll);
     mtxf_mul(gMatStack[gMatStackIndex + 1], cameraTransform, gMatStack[gMatStackIndex]);
+    mtxf_lookat(cameraTransform, prevPos, prevFocus, node->roll);
+    mtxf_mul(gMatStackPrev[gMatStackIndex + 1], cameraTransform, gMatStackPrev[gMatStackIndex]);
     gMatStackIndex++;
     mtxf_to_mtx(mtx, gMatStack[gMatStackIndex]);
     gMatStackFixed[gMatStackIndex] = mtx;
     if (node->fnNode.node.children != 0) {
         gCurGraphNodeCamera = node;
         node->matrixPtr = gMatStack[gMatStackIndex];
+        node->prevMatrixPtr = gMatStackPrev[gMatStackIndex];
         geo_process_node_and_siblings(node->fnNode.node.children);
         gCurGraphNodeCamera = NULL;
     }
@@ -343,6 +468,7 @@ static void geo_process_translation_rotation(struct GraphNodeTranslationRotation
     vec3s_to_vec3f(translation, node->translation);
     mtxf_rotate_zxy_and_translate(mtxf, translation, node->rotation);
     mtxf_mul(gMatStack[gMatStackIndex + 1], mtxf, gMatStack[gMatStackIndex]);
+    mtxf_mul(gMatStackPrev[gMatStackIndex + 1], mtxf, gMatStackPrev[gMatStackIndex]);
     gMatStackIndex++;
     mtxf_to_mtx(mtx, gMatStack[gMatStackIndex]);
     gMatStackFixed[gMatStackIndex] = mtx;
@@ -368,6 +494,7 @@ static void geo_process_translation(struct GraphNodeTranslation *node) {
     vec3s_to_vec3f(translation, node->translation);
     mtxf_rotate_zxy_and_translate(mtxf, translation, gVec3sZero);
     mtxf_mul(gMatStack[gMatStackIndex + 1], mtxf, gMatStack[gMatStackIndex]);
+    mtxf_mul(gMatStackPrev[gMatStackIndex + 1], mtxf, gMatStackPrev[gMatStackIndex]);
     gMatStackIndex++;
     mtxf_to_mtx(mtx, gMatStack[gMatStackIndex]);
     gMatStackFixed[gMatStackIndex] = mtx;
@@ -387,10 +514,23 @@ static void geo_process_translation(struct GraphNodeTranslation *node) {
  */
 static void geo_process_rotation(struct GraphNodeRotation *node) {
     Mat4 mtxf;
+    Vec3s prevRotation;
     Mtx *mtx = alloc_display_list(sizeof(*mtx));
+
+    // HFR: angles are interpolated at the source (shortest arc) so the blend
+    // never takes the long way round.
+    if (hfr_prev_valid(node->prevTimestamp)) {
+        vec3s_copy(prevRotation, node->prevRotation);
+    } else {
+        vec3s_copy(prevRotation, node->rotation);
+    }
+    vec3s_copy(node->prevRotation, node->rotation);
+    node->prevTimestamp = gGlobalTimer;
 
     mtxf_rotate_zxy_and_translate(mtxf, gVec3fZero, node->rotation);
     mtxf_mul(gMatStack[gMatStackIndex + 1], mtxf, gMatStack[gMatStackIndex]);
+    mtxf_rotate_zxy_and_translate(mtxf, gVec3fZero, prevRotation);
+    mtxf_mul(gMatStackPrev[gMatStackIndex + 1], mtxf, gMatStackPrev[gMatStackIndex]);
     gMatStackIndex++;
     mtxf_to_mtx(mtx, gMatStack[gMatStackIndex]);
     gMatStackFixed[gMatStackIndex] = mtx;
@@ -415,6 +555,7 @@ static void geo_process_scale(struct GraphNodeScale *node) {
 
     vec3f_set(scaleVec, node->scale, node->scale, node->scale);
     mtxf_scale_vec3f(gMatStack[gMatStackIndex + 1], gMatStack[gMatStackIndex], scaleVec);
+    mtxf_scale_vec3f(gMatStackPrev[gMatStackIndex + 1], gMatStackPrev[gMatStackIndex], scaleVec);
     gMatStackIndex++;
     mtxf_to_mtx(mtx, gMatStack[gMatStackIndex]);
     gMatStackFixed[gMatStackIndex] = mtx;
@@ -441,12 +582,22 @@ static void geo_process_billboard(struct GraphNodeBillboard *node) {
     vec3s_to_vec3f(translation, node->translation);
     mtxf_billboard(gMatStack[gMatStackIndex], gMatStack[gMatStackIndex - 1], translation,
                    gCurGraphNodeCamera->roll);
+    mtxf_billboard(gMatStackPrev[gMatStackIndex], gMatStackPrev[gMatStackIndex - 1], translation,
+                   gCurGraphNodeCamera->roll);
     if (gCurGraphNodeHeldObject != NULL) {
         mtxf_scale_vec3f(gMatStack[gMatStackIndex], gMatStack[gMatStackIndex],
                          gCurGraphNodeHeldObject->objNode->header.gfx.scale);
+        mtxf_scale_vec3f(gMatStackPrev[gMatStackIndex], gMatStackPrev[gMatStackIndex],
+                         gCurGraphNodeHeldObject->objNode->header.gfx.scale);
     } else if (gCurGraphNodeObject != NULL) {
+        Vec3f *prevScale = &gCurGraphNodeObject->prevScale;
+
         mtxf_scale_vec3f(gMatStack[gMatStackIndex], gMatStack[gMatStackIndex],
                          gCurGraphNodeObject->scale);
+        if (!hfr_prev_valid(gCurGraphNodeObject->prevScaleTimestamp)) {
+            prevScale = &gCurGraphNodeObject->scale;
+        }
+        mtxf_scale_vec3f(gMatStackPrev[gMatStackIndex], gMatStackPrev[gMatStackIndex], *prevScale);
     }
 
     mtxf_to_mtx(mtx, gMatStack[gMatStackIndex]);
@@ -526,6 +677,51 @@ static void geo_process_background(struct GraphNodeBackground *node) {
     }
 }
 
+// Walks one entry of the animation stream and returns the part's local
+// translation/rotation. The stream position (animAttribute) advances, so the
+// previous tick and the current tick must each be walked from the same start.
+static void anim_process(Vec3f translation, Vec3s rotation, u8 *animType, s16 animFrame,
+                         u16 **animAttribute) {
+    if (*animType == ANIM_TYPE_TRANSLATION) {
+        translation[0] += gCurAnimData[retrieve_animation_index(animFrame, animAttribute)]
+                          * gCurAnimTranslationMultiplier;
+        translation[1] += gCurAnimData[retrieve_animation_index(animFrame, animAttribute)]
+                          * gCurAnimTranslationMultiplier;
+        translation[2] += gCurAnimData[retrieve_animation_index(animFrame, animAttribute)]
+                          * gCurAnimTranslationMultiplier;
+        *animType = ANIM_TYPE_ROTATION;
+    } else {
+        if (*animType == ANIM_TYPE_LATERAL_TRANSLATION) {
+            translation[0] +=
+                gCurAnimData[retrieve_animation_index(animFrame, animAttribute)]
+                * gCurAnimTranslationMultiplier;
+            *animAttribute += 2;
+            translation[2] +=
+                gCurAnimData[retrieve_animation_index(animFrame, animAttribute)]
+                * gCurAnimTranslationMultiplier;
+            *animType = ANIM_TYPE_ROTATION;
+        } else {
+            if (*animType == ANIM_TYPE_VERTICAL_TRANSLATION) {
+                *animAttribute += 2;
+                translation[1] +=
+                    gCurAnimData[retrieve_animation_index(animFrame, animAttribute)]
+                    * gCurAnimTranslationMultiplier;
+                *animAttribute += 2;
+                *animType = ANIM_TYPE_ROTATION;
+            } else if (*animType == ANIM_TYPE_NO_TRANSLATION) {
+                *animAttribute += 6;
+                *animType = ANIM_TYPE_ROTATION;
+            }
+        }
+    }
+
+    if (*animType == ANIM_TYPE_ROTATION) {
+        rotation[0] = gCurAnimData[retrieve_animation_index(animFrame, animAttribute)];
+        rotation[1] = gCurAnimData[retrieve_animation_index(animFrame, animAttribute)];
+        rotation[2] = gCurAnimData[retrieve_animation_index(animFrame, animAttribute)];
+    }
+}
+
 /**
  * Render an animated part. The current animation state is not part of the node
  * but set in global variables. If an animated part is skipped, everything afterwards desyncs.
@@ -533,51 +729,27 @@ static void geo_process_background(struct GraphNodeBackground *node) {
 static void geo_process_animated_part(struct GraphNodeAnimatedPart *node) {
     Mat4 matrix;
     Vec3s rotation;
+    Vec3s prevRotation;
     Vec3f translation;
+    Vec3f prevTranslation;
     Mtx *matrixPtr = alloc_display_list(sizeof(*matrixPtr));
+    u16 *animAttribute = gCurrAnimAttribute;
+    u8 animType = gCurAnimType;
 
     vec3s_copy(rotation, gVec3sZero);
     vec3f_set(translation, node->translation[0], node->translation[1], node->translation[2]);
-    if (gCurAnimType == ANIM_TYPE_TRANSLATION) {
-        translation[0] += gCurAnimData[retrieve_animation_index(gCurrAnimFrame, &gCurrAnimAttribute)]
-                          * gCurAnimTranslationMultiplier;
-        translation[1] += gCurAnimData[retrieve_animation_index(gCurrAnimFrame, &gCurrAnimAttribute)]
-                          * gCurAnimTranslationMultiplier;
-        translation[2] += gCurAnimData[retrieve_animation_index(gCurrAnimFrame, &gCurrAnimAttribute)]
-                          * gCurAnimTranslationMultiplier;
-        gCurAnimType = ANIM_TYPE_ROTATION;
-    } else {
-        if (gCurAnimType == ANIM_TYPE_LATERAL_TRANSLATION) {
-            translation[0] +=
-                gCurAnimData[retrieve_animation_index(gCurrAnimFrame, &gCurrAnimAttribute)]
-                * gCurAnimTranslationMultiplier;
-            gCurrAnimAttribute += 2;
-            translation[2] +=
-                gCurAnimData[retrieve_animation_index(gCurrAnimFrame, &gCurrAnimAttribute)]
-                * gCurAnimTranslationMultiplier;
-            gCurAnimType = ANIM_TYPE_ROTATION;
-        } else {
-            if (gCurAnimType == ANIM_TYPE_VERTICAL_TRANSLATION) {
-                gCurrAnimAttribute += 2;
-                translation[1] +=
-                    gCurAnimData[retrieve_animation_index(gCurrAnimFrame, &gCurrAnimAttribute)]
-                    * gCurAnimTranslationMultiplier;
-                gCurrAnimAttribute += 2;
-                gCurAnimType = ANIM_TYPE_ROTATION;
-            } else if (gCurAnimType == ANIM_TYPE_NO_TRANSLATION) {
-                gCurrAnimAttribute += 6;
-                gCurAnimType = ANIM_TYPE_ROTATION;
-            }
-        }
-    }
+    vec3s_copy(prevRotation, rotation);
+    vec3f_copy(prevTranslation, translation);
 
-    if (gCurAnimType == ANIM_TYPE_ROTATION) {
-        rotation[0] = gCurAnimData[retrieve_animation_index(gCurrAnimFrame, &gCurrAnimAttribute)];
-        rotation[1] = gCurAnimData[retrieve_animation_index(gCurrAnimFrame, &gCurrAnimAttribute)];
-        rotation[2] = gCurAnimData[retrieve_animation_index(gCurrAnimFrame, &gCurrAnimAttribute)];
-    }
+    // HFR: walk the same stream for the previous frame first, then for the
+    // current one (which also advances the real stream state as before).
+    anim_process(prevTranslation, prevRotation, &animType, gPrevAnimFrame, &animAttribute);
+    anim_process(translation, rotation, &gCurAnimType, gCurrAnimFrame, &gCurrAnimAttribute);
+
     mtxf_rotate_xyz_and_translate(matrix, translation, rotation);
     mtxf_mul(gMatStack[gMatStackIndex + 1], matrix, gMatStack[gMatStackIndex]);
+    mtxf_rotate_xyz_and_translate(matrix, prevTranslation, prevRotation);
+    mtxf_mul(gMatStackPrev[gMatStackIndex + 1], matrix, gMatStackPrev[gMatStackIndex]);
     gMatStackIndex++;
     mtxf_to_mtx(matrixPtr, gMatStack[gMatStackIndex]);
     gMatStackFixed[gMatStackIndex] = matrixPtr;
@@ -612,6 +784,19 @@ void geo_set_animation_globals(struct GraphNodeObject_sub *node, s32 hasAnimatio
     }
 
     gCurrAnimFrame = node->animFrame;
+    // HFR: the previous frame is only usable if it belongs to the same
+    // animation and the previous tick (otherwise the blend would smear
+    // across an animation change).
+    if (node->prevAnimPtr == anim && node->prevAnimID == node->animID
+        && hfr_prev_valid(node->prevAnimFrameTimestamp)) {
+        gPrevAnimFrame = node->prevAnimFrame;
+    } else {
+        gPrevAnimFrame = node->animFrame;
+    }
+    node->prevAnimPtr = anim;
+    node->prevAnimID = node->animID;
+    node->prevAnimFrame = node->animFrame;
+    node->prevAnimFrameTimestamp = gGlobalTimer;
     gCurAnimEnabled = (anim->flags & ANIM_FLAG_5) == 0;
     gCurrAnimAttribute = segmented_to_virtual((void *) anim->index);
     gCurAnimData = segmented_to_virtual((void *) anim->values);
@@ -632,6 +817,7 @@ static void geo_process_shadow(struct GraphNodeShadow *node) {
     Gfx *shadowList;
     Mat4 mtxf;
     Vec3f shadowPos;
+    Vec3f prevShadowPos;
     Vec3f animOffset;
     f32 objScale;
     f32 shadowScale;
@@ -677,6 +863,20 @@ static void geo_process_shadow(struct GraphNodeShadow *node) {
             }
         }
 
+        // HFR: the shadow position is not part of the node hierarchy, so it
+        // needs its own previous-tick value.
+        if (gCurGraphNodeHeldObject != NULL) {
+            vec3f_copy(prevShadowPos, shadowPos);
+        } else {
+            if (hfr_prev_valid(gCurGraphNodeObject->prevShadowPosTimestamp)) {
+                vec3f_copy(prevShadowPos, gCurGraphNodeObject->prevShadowPos);
+            } else {
+                vec3f_copy(prevShadowPos, shadowPos);
+            }
+            vec3f_copy(gCurGraphNodeObject->prevShadowPos, shadowPos);
+            gCurGraphNodeObject->prevShadowPosTimestamp = gGlobalTimer;
+        }
+
         shadowList = create_shadow_below_xyz(shadowPos[0], shadowPos[1], shadowPos[2], shadowScale,
                                              node->shadowSolidity, node->shadowType);
         if (shadowList != NULL) {
@@ -686,6 +886,8 @@ static void geo_process_shadow(struct GraphNodeShadow *node) {
             mtxf_mul(gMatStack[gMatStackIndex], mtxf, gCurGraphNodeCamera->matrixPtr);
             mtxf_to_mtx(mtx, gMatStack[gMatStackIndex]);
             gMatStackFixed[gMatStackIndex] = mtx;
+            mtxf_translate(mtxf, prevShadowPos);
+            mtxf_mul(gMatStackPrev[gMatStackIndex], mtxf, gCurGraphNodeCamera->prevMatrixPtr);
             if (gShadowAboveWaterOrLava == 1) {
                 geo_append_display_list((void *) VIRTUAL_TO_PHYSICAL(shadowList), 4);
             } else if (gMarioOnIceOrCarpet == 1) {
@@ -807,24 +1009,70 @@ static int obj_is_in_view(struct GraphNodeObject *node, Mat4 matrix) {
 static void geo_process_object(struct Object *node) {
     Mat4 mtxf;
     s32 hasAnimation = (node->header.gfx.node.flags & GRAPH_RENDER_HAS_ANIMATION) != 0;
+    Vec3f prevPos;
+    Vec3s prevAngle;
+    Vec3f prevScale;
 
     if (node->header.gfx.unk18 == gCurGraphNodeRoot->areaIndex) {
+        // HFR: this tick's transform is stored for the next tick to blend
+        // from. A teleport (respawn, warp, object recycling) is snapped
+        // instead, otherwise objects would streak across the level.
+        if (hfr_prev_valid(node->header.gfx.prevTimestamp)) {
+            vec3f_copy(prevPos, node->header.gfx.prevPos);
+            vec3s_copy(prevAngle, node->header.gfx.prevAngle);
+            if (hfr_dist_sq(prevPos, node->header.gfx.pos) > HFR_SNAP_DIST_SQ) {
+                vec3f_copy(prevPos, node->header.gfx.pos);
+                vec3s_copy(prevAngle, node->header.gfx.angle);
+            }
+        } else {
+            vec3f_copy(prevPos, node->header.gfx.pos);
+            vec3s_copy(prevAngle, node->header.gfx.angle);
+        }
+        vec3f_copy(node->header.gfx.prevPos, node->header.gfx.pos);
+        vec3s_copy(node->header.gfx.prevAngle, node->header.gfx.angle);
+        node->header.gfx.prevTimestamp = gGlobalTimer;
+
         if (node->header.gfx.throwMatrix != NULL) {
-            mtxf_mul(gMatStack[gMatStackIndex + 1], (void *) node->header.gfx.throwMatrix,
-                     gMatStack[gMatStackIndex]);
+            Mat4 *throwMtx = (Mat4 *) node->header.gfx.throwMatrix;
+
+            mtxf_mul(gMatStack[gMatStackIndex + 1], *throwMtx, gMatStack[gMatStackIndex]);
+            if (hfr_prev_valid(node->header.gfx.prevThrowMatrixTimestamp)) {
+                mtxf_mul(gMatStackPrev[gMatStackIndex + 1], node->header.gfx.prevThrowMatrix,
+                         gMatStackPrev[gMatStackIndex]);
+            } else {
+                mtxf_mul(gMatStackPrev[gMatStackIndex + 1], *throwMtx, gMatStackPrev[gMatStackIndex]);
+            }
+            mtxf_copy(node->header.gfx.prevThrowMatrix, *throwMtx);
+            node->header.gfx.prevThrowMatrixTimestamp = gGlobalTimer;
         } else if (node->header.gfx.node.flags & GRAPH_RENDER_CYLBOARD) {
             mtxf_cylboard(gMatStack[gMatStackIndex + 1], gMatStack[gMatStackIndex],
                            node->header.gfx.pos, gCurGraphNodeCamera->roll);
+            mtxf_cylboard(gMatStackPrev[gMatStackIndex + 1], gMatStackPrev[gMatStackIndex],
+                           prevPos, gCurGraphNodeCamera->roll);
         } else if (node->header.gfx.node.flags & GRAPH_RENDER_BILLBOARD) {
             mtxf_billboard(gMatStack[gMatStackIndex + 1], gMatStack[gMatStackIndex],
                            node->header.gfx.pos, gCurGraphNodeCamera->roll);
+            mtxf_billboard(gMatStackPrev[gMatStackIndex + 1], gMatStackPrev[gMatStackIndex],
+                           prevPos, gCurGraphNodeCamera->roll);
         } else {
             mtxf_rotate_zxy_and_translate(mtxf, node->header.gfx.pos, node->header.gfx.angle);
             mtxf_mul(gMatStack[gMatStackIndex + 1], mtxf, gMatStack[gMatStackIndex]);
+            mtxf_rotate_zxy_and_translate(mtxf, prevPos, prevAngle);
+            mtxf_mul(gMatStackPrev[gMatStackIndex + 1], mtxf, gMatStackPrev[gMatStackIndex]);
         }
+
+        if (hfr_prev_valid(node->header.gfx.prevScaleTimestamp)) {
+            vec3f_copy(prevScale, node->header.gfx.prevScale);
+        } else {
+            vec3f_copy(prevScale, node->header.gfx.scale);
+        }
+        vec3f_copy(node->header.gfx.prevScale, node->header.gfx.scale);
+        node->header.gfx.prevScaleTimestamp = gGlobalTimer;
 
         mtxf_scale_vec3f(gMatStack[gMatStackIndex + 1], gMatStack[gMatStackIndex + 1],
                          node->header.gfx.scale);
+        mtxf_scale_vec3f(gMatStackPrev[gMatStackIndex + 1], gMatStackPrev[gMatStackIndex + 1],
+                         prevScale);
         node->header.gfx.throwMatrix = gMatStack[++gMatStackIndex];
         node->header.gfx.cameraToObject[0] = gMatStack[gMatStackIndex][3][0];
         node->header.gfx.cameraToObject[1] = gMatStack[gMatStackIndex][3][1];
@@ -849,6 +1097,11 @@ static void geo_process_object(struct Object *node) {
             if (node->header.gfx.node.children != NULL) {
                 geo_process_node_and_siblings(node->header.gfx.node.children);
             }
+        } else {
+            // Not drawn this tick: don't interpolate when it comes back.
+            node->header.gfx.prevTimestamp = 0;
+            node->header.gfx.prevScaleTimestamp = 0;
+            node->header.gfx.prevThrowMatrixTimestamp = 0;
         }
 
         gMatStackIndex--;
@@ -903,6 +1156,10 @@ void geo_process_held_object(struct GraphNodeHeldObject *node) {
         mtxf_mul(gMatStack[gMatStackIndex + 1], mat, gMatStack[gMatStackIndex + 1]);
         mtxf_scale_vec3f(gMatStack[gMatStackIndex + 1], gMatStack[gMatStackIndex + 1],
                          node->objNode->header.gfx.scale);
+        // HFR: the held object follows the interpolated parent.
+        mtxf_mul(gMatStackPrev[gMatStackIndex + 1], mat, gMatStackPrev[gMatStackIndex]);
+        mtxf_scale_vec3f(gMatStackPrev[gMatStackIndex + 1], gMatStackPrev[gMatStackIndex + 1],
+                         node->objNode->header.gfx.scale);
         if (node->fnNode.func != NULL) {
             node->fnNode.func(GEO_CONTEXT_HELD_OBJ, &node->fnNode.node,
                               (struct AllocOnlyPool *) gMatStack[gMatStackIndex + 1]);
@@ -916,6 +1173,7 @@ void geo_process_held_object(struct GraphNodeHeldObject *node) {
         gGeoTempState.translationMultiplier = gCurAnimTranslationMultiplier;
         gGeoTempState.attribute = gCurrAnimAttribute;
         gGeoTempState.data = gCurAnimData;
+        gGeoTempState.prevFrame = gPrevAnimFrame;
         gCurAnimType = 0;
         gCurGraphNodeHeldObject = (void *) node;
         if (node->objNode->header.gfx.unk38.curAnim != NULL) {
@@ -930,6 +1188,7 @@ void geo_process_held_object(struct GraphNodeHeldObject *node) {
         gCurAnimTranslationMultiplier = gGeoTempState.translationMultiplier;
         gCurrAnimAttribute = gGeoTempState.attribute;
         gCurAnimData = gGeoTempState.data;
+        gPrevAnimFrame = gGeoTempState.prevFrame;
         gMatStackIndex--;
     }
 
@@ -1057,6 +1316,7 @@ void geo_process_root(struct GraphNodeRoot *node, Vp *b, Vp *c, s32 clearColor) 
         initialMatrix = alloc_display_list(sizeof(*initialMatrix));
         gMatStackIndex = 0;
         gCurAnimType = 0;
+        hfr_reset();
         vec3s_set(viewport->vp.vtrans, node->x * 4, node->y * 4, 511);
         vec3s_set(viewport->vp.vscale, node->width * 4, node->height * 4, 511);
         if (b != NULL) {
@@ -1071,6 +1331,7 @@ void geo_process_root(struct GraphNodeRoot *node, Vp *b, Vp *c, s32 clearColor) 
         }
 
         mtxf_identity(gMatStack[gMatStackIndex]);
+        mtxf_identity(gMatStackPrev[gMatStackIndex]);
         mtxf_to_mtx(initialMatrix, gMatStack[gMatStackIndex]);
         gMatStackFixed[gMatStackIndex] = initialMatrix;
         gSPViewport(gDisplayListHead++, VIRTUAL_TO_PHYSICAL(viewport));

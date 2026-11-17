@@ -72,7 +72,13 @@ static bool inited = false;
 #include "game/display.h" // for gGlobalTimer
 void send_display_list(struct SPTask *spTask) {
     if (!inited) return;
-    gfx_run((Gfx *)spTask->task.t.data_ptr);
+    extern Gfx *gfx_current_dlist;
+    extern float gfx_render_alpha;
+    extern void gfx_patch_frame(float);
+
+    gfx_current_dlist = (Gfx *)spTask->task.t.data_ptr;
+    gfx_patch_frame(gfx_render_alpha);
+    gfx_run(gfx_current_dlist);
 }
 
 #define printf

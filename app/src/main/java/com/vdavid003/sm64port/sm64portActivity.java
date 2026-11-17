@@ -32,7 +32,7 @@ import org.libsdl.app.SDLActivity;
  */
 public class sm64portActivity extends SDLActivity {
     private static final String TAG = "SM64Leia";
-    private static final String BUILD_NAME = "v31";
+    private static final String BUILD_NAME = "hfr3";
     public static volatile sm64portActivity instance;
     /** Leia's convention: a 2-view SBS source is 2 x viewResolution
      *  (1920x1200 each), i.e. 3840x1200 total. The interlacer derives its
@@ -53,6 +53,8 @@ public class sm64portActivity extends SDLActivity {
     private android.widget.GridLayout grid;
     private TextView modeButton;
     private TextView fpsView;
+    private TextView fpsButton;
+    private TextView interpButton;
     private TouchOverlay touchOverlay;
     private android.widget.ScrollView scrollerRef;
     private TextView debugView;
@@ -65,6 +67,42 @@ public class sm64portActivity extends SDLActivity {
     private int refreshIdx = 0;
 
     /** Cycle the panel refresh rate: default -> 60 -> 120 Hz. */
+    private int fpsMode = 0;
+    private boolean interpOn = true;
+
+    /** Cycle render rate: 30 -> 60 -> 120 -> uncapped, and match panel refresh. */
+    private void cycleFpsMode() {
+        fpsMode = (fpsMode + 1) % 4;
+        try {
+            nativeSetFpsMode(fpsMode);
+            String label = fpsMode == 0 ? "30" : fpsMode == 1 ? "60"
+                    : fpsMode == 2 ? "120" : "uncapped";
+            Log.i(TAG, "FPS_MODE " + label);
+            if (fpsButton != null) fpsButton.setText("FPS " + label);
+            int hz = fpsMode == 0 ? 30 : fpsMode == 1 ? 60 : fpsMode == 2 ? 120 : 120;
+            applyPanelRefresh(hz);
+        } catch (Throwable t) {
+            Log.e(TAG, "fps mode failed", t);
+        }
+    }
+
+    private void applyPanelRefresh(int hz) {
+        try {
+            android.view.Display d = getWindowManager().getDefaultDisplay();
+            android.view.Display.Mode[] modes = d.getSupportedModes();
+            int modeId = 0;
+            for (android.view.Display.Mode m : modes) {
+                if (Math.round(m.getRefreshRate()) == hz) { modeId = m.getModeId(); break; }
+            }
+            android.view.WindowManager.LayoutParams lp = getWindow().getAttributes();
+            lp.preferredDisplayModeId = modeId;
+            getWindow().setAttributes(lp);
+            Log.i(TAG, "panel refresh -> " + hz + "Hz modeId=" + modeId);
+        } catch (Throwable t) {
+            Log.e(TAG, "panel refresh failed", t);
+        }
+    }
+
     private void cycleRefreshRate() {
         try {
             android.view.Display d = getWindowManager().getDefaultDisplay();
@@ -251,8 +289,8 @@ public class sm64portActivity extends SDLActivity {
         title.setTextSize(16);
         header.addView(title, abs(16, 4, 300, 60));
 
-        TextView hide = new TextView(this);
-        hide.setText("HIDE");
+        final TextView hide = new TextView(this);
+        hide.setText("SHOW");
         hide.setTextColor(0xFF66CCFF);
         hide.setTextSize(16);
         hide.setPadding(pad, pad / 2, pad, pad / 2);
@@ -295,13 +333,28 @@ public class sm64portActivity extends SDLActivity {
             }
         });
 
+        TextView interpBtn = new TextView(this);
+        interpButton = interpBtn;
+        interpBtn.setText("INTERP ON");
+        interpBtn.setTextColor(0xFFCCCCCC);
+        interpBtn.setTextSize(16);
+        interpBtn.setPadding(pad, pad / 2, pad, pad / 2);
+        header.addView(interpBtn, abs(200, 0, 260, 64));
+        interpBtn.setOnClickListener(v -> {
+            interpOn = !interpOn;
+            nativeSetHfrInterp(interpOn ? 1 : 0);
+            interpBtn.setText(interpOn ? "INTERP ON" : "INTERP OFF");
+            Log.i(TAG, "INTERP " + interpOn);
+        });
+
         TextView fpsBtn = new TextView(this);
-        fpsBtn.setText("FPS");
+        fpsButton = fpsBtn;
+        fpsBtn.setText("FPS 30");
         fpsBtn.setTextColor(0xFFCCCCCC);
         fpsBtn.setTextSize(16);
         fpsBtn.setPadding(pad, pad / 2, pad, pad / 2);
         header.addView(fpsBtn, abs(1200, 0, 200, 64));
-        fpsBtn.setOnClickListener(v -> cycleRefreshRate());
+        fpsBtn.setOnClickListener(v -> cycleFpsMode());
 
         TextView test = new TextView(this);
         test.setText("TEST");
@@ -326,9 +379,20 @@ public class sm64portActivity extends SDLActivity {
         int maxH = (int) (getResources().getDisplayMetrics().heightPixels * 0.42f);
         scroller.setFillViewport(false);
         scrollerRef = scroller;
+        // Collapsed by default: the open panel covers the bottom of the screen
+        // and swallowed taps meant for the overlay's START button.
+        scroller.setVisibility(android.view.View.GONE);
         panel.addView(scroller, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 Math.min(900, maxH)));
+        hide.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                boolean show = scroller.getVisibility() != android.view.View.VISIBLE;
+                scroller.setVisibility(show ? android.view.View.VISIBLE : android.view.View.GONE);
+                hide.setText(show ? "HIDE" : "SHOW");
+            }
+        });
 
         grid = new android.widget.GridLayout(this);
         grid.setColumnCount(2);
@@ -738,6 +802,11 @@ public class sm64portActivity extends SDLActivity {
     private native int nativeGetFps();
 
     static native void nativeOverlayInput(int active, int sx, int sy, int buttons);
+    static native void nativeSetFpsMode(int mode);
+    static native int nativeGetFpsMode();
+    static native void nativeSetHfrInterp(int on);
+    static native int nativeGetHfrInterp();
+    static native int nativeGetHfrMtxCount();
     static native void nativeHideInGameControls(int hide);
     private native int nativeGetVpX(int eye);
     private native int nativeGetVpW(int eye);
@@ -798,10 +867,29 @@ public class sm64portActivity extends SDLActivity {
                     Log.i(TAG, "FLAT zeroParallax=" + flatOn);
                 });
                 break;
+            case "INTERP":
+                runOnUiThread(() -> {
+                    interpOn = !interpOn;
+                    nativeSetHfrInterp(interpOn ? 1 : 0);
+                    Log.i(TAG, "INTERP " + interpOn);
+                });
+                break;
             case "3D": runOnUiThread(() -> setStereoMode(!stereoOn)); break;
             case "TEST": runOnUiThread(this::showStaticTestImage); break;
             default: Log.w(TAG, "unknown toggle " + name);
         }
+    }
+
+    void debugSetFps(int mode) {
+        runOnUiThread(() -> {
+            fpsMode = mode & 3;
+            nativeSetFpsMode(fpsMode);
+            if (fpsButton != null) {
+                fpsButton.setText("FPS " + (fpsMode == 0 ? "30" : fpsMode == 1 ? "60"
+                        : fpsMode == 2 ? "120" : "MAX"));
+            }
+            Log.i(TAG, "FPS_MODE(set) " + fpsMode);
+        });
     }
 
     void debugReinit() {
@@ -834,7 +922,8 @@ public class sm64portActivity extends SDLActivity {
                     + " stereoOn=" + stereoOn
                     + " tint=" + tintOn + " zbuf=" + zbufOn + " wire=" + wireOn
                     + " perf=" + perfOn + " swap=" + swapOn + " same=" + sameOn
-                    + " nocull=" + nocullOn);
+                    + " nocull=" + nocullOn
+                        + " hfr=" + nativeGetHfrMtxCount() + "/" + nativeGetHfrInterp());
         });
     }
 

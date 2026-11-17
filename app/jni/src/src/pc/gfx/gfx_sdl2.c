@@ -76,6 +76,9 @@ extern int gfx_ovl_stick_x;
 extern int gfx_ovl_stick_y;
 extern unsigned int gfx_ovl_buttons;
 extern int gfx_hide_touch_controls;
+extern int gfx_fps_mode;
+extern int gfx_hfr_interp;
+extern float gfx_render_delta;
 extern float gfx_stereo_ipd_px;
 extern float gfx_stereo_convergence_px;
 
@@ -178,6 +181,38 @@ Java_com_vdavid003_sm64port_sm64portActivity_nativeHideInGameControls(JNIEnv *en
     gfx_hide_touch_controls = hide;
 }
 
+JNIEXPORT void JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeSetFpsMode(JNIEnv *env, jclass clazz, jint mode) {
+    (void) env; (void) clazz;
+    extern void gfx_set_fps_mode(int);
+    gfx_set_fps_mode(mode);
+}
+
+JNIEXPORT jint JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeGetFpsMode(JNIEnv *env, jclass clazz) {
+    (void) env; (void) clazz;
+    return gfx_fps_mode;
+}
+
+JNIEXPORT void JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeSetHfrInterp(JNIEnv *env, jclass clazz, jint on) {
+    (void) env; (void) clazz;
+    gfx_hfr_interp = on ? 1 : 0;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeGetHfrInterp(JNIEnv *env, jclass clazz) {
+    (void) env; (void) clazz;
+    return gfx_hfr_interp;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeGetHfrMtxCount(JNIEnv *env, jclass clazz) {
+    (void) env; (void) clazz;
+    extern int gfx_hfr_mtx_count(void);
+    return gfx_hfr_mtx_count();
+}
+
 JNIEXPORT jint JNICALL
 Java_com_vdavid003_sm64port_sm64portActivity_nativeGetFps(JNIEnv *env, jobject thiz) {
     (void) env; (void) thiz;
@@ -198,6 +233,30 @@ Java_com_vdavid003_sm64port_sm64portActivity_nativeGetStereoEnabled(JNIEnv *env,
 #endif
 
 static const Uint32 FRAME_TIME = 1000 / FRAMERATE;
+
+// HFR: render-rate mode (simulation always stays at 30 Hz).
+int gfx_fps_mode = 0;
+// HFR: 0 disables frame interpolation (useful for A/B comparison).
+int gfx_hfr_interp = 1;
+
+void gfx_set_fps_mode(int mode) {
+    if (mode < 0) mode = 0;
+    if (mode > 3) mode = 3;
+    gfx_fps_mode = mode;
+}
+
+static double gfx_now_secs(void) {
+    return (double)SDL_GetPerformanceCounter() / (double)SDL_GetPerformanceFrequency();
+}
+
+static double gfx_target_frame_secs(void) {
+    switch (gfx_fps_mode) {
+        case 1: return 1.0 / 60.0;
+        case 2: return 1.0 / 120.0;
+        case 3: return 0.0;          // uncapped
+        default: return 1.0 / 30.0;
+    }
+}
 
 static SDL_Window *wnd;
 static SDL_GLContext ctx = NULL;
@@ -388,11 +447,61 @@ static void gfx_sdl_init(const char *window_title) {
 }
 
 static void gfx_sdl_main_loop(void (*run_one_game_iter)(void)) {
-    Uint32 t = SDL_GetTicks();
-    run_one_game_iter();
-    t = SDL_GetTicks() - t;
-    if (t < FRAME_TIME && configWindow.vsync <= 1)
-        SDL_Delay(FRAME_TIME - t);
+    extern void gfx_render_last(void);
+    extern void gfx_start_frame(void);
+    extern float gfx_render_delta;
+    extern float gfx_render_alpha;
+
+    static double last = 0.0;
+    static double acc = 0.0;
+    const double TICK = 1.0 / 30.0;      // fixed simulation step
+
+    double now = gfx_now_secs();
+    if (last == 0.0) last = now;
+    double dt = now - last;
+    last = now;
+    if (dt < 0.0) dt = 0.0;
+    if (dt > 0.1) dt = 0.1;              // clamp after resume/pause
+
+    acc += dt;
+
+    // In HFR modes the picture runs one simulation tick behind, so that every
+    // frame can be blended between two known states. Alpha therefore starts at
+    // 0 right after a tick and grows to 1 just before the next one.
+    gfx_render_alpha = (gfx_fps_mode > 0 && gfx_hfr_interp) ? 0.0f : 1.0f;
+
+    int sims = 0;
+    while (acc >= TICK) {
+        run_one_game_iter();             // sim + one render (gfx_run inside)
+        acc -= TICK;
+        sims++;
+        if (sims >= 3) {                 // never spiral
+            acc = 0.0;
+            break;
+        }
+    }
+    gfx_render_delta = (float)(acc / TICK);
+
+    // Render-rate above 30 Hz: present extra frames from the last display list.
+    if (gfx_fps_mode > 0) {
+        double target = gfx_target_frame_secs();
+        if (sims == 0) {
+            gfx_render_alpha = gfx_hfr_interp ? gfx_render_delta : 1.0f;
+            gfx_start_frame();
+            gfx_render_last();
+        }
+        if (target > 0.0) {
+            double next = now + target;
+            double t;
+            while ((t = gfx_now_secs()) < next) {
+                double remain = next - t;
+                if (remain > 0.002) SDL_Delay((Uint32)((remain - 0.001) * 1000.0));
+            }
+        }
+    } else if (configWindow.vsync <= 1) {
+        double t = gfx_now_secs() - now;
+        if (t < TICK) SDL_Delay((Uint32)((TICK - t) * 1000.0));
+    }
 }
 
 static void gfx_sdl_get_dimensions(uint32_t *width, uint32_t *height) {

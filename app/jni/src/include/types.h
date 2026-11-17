@@ -116,6 +116,11 @@ struct GraphNodeObject_sub
     /*0x0A 0x42*/ u16 animTimer;
     /*0x0C 0x44*/ s32 animFrameAccelAssist;
     /*0x10 0x48*/ s32 animAccel;
+    // HFR: previous tick's animation frame, used to interpolate animated parts.
+    s16 prevAnimFrame;
+    s16 prevAnimID;
+    u32 prevAnimFrameTimestamp;
+    struct Animation *prevAnimPtr;
 };
 
 struct GraphNodeObject
@@ -131,6 +136,16 @@ struct GraphNodeObject
     /*0x4C*/ struct SpawnInfo *unk4C;
     /*0x50*/ void *throwMatrix; // matrix ptr
     /*0x54*/ Vec3f cameraToObject;
+    // HFR: previous tick's transform, used to interpolate the extra frames.
+    Vec3s prevAngle;
+    Vec3f prevPos;
+    u32 prevTimestamp;
+    Vec3f prevScale;
+    u32 prevScaleTimestamp;
+    Vec3f prevShadowPos;
+    u32 prevShadowPosTimestamp;
+    Mat4 prevThrowMatrix;
+    u32 prevThrowMatrixTimestamp;
 };
 
 struct ObjectNode
