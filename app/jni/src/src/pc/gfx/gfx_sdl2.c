@@ -81,6 +81,10 @@ extern unsigned int gfx_ovl_buttons;
 extern int gfx_hide_touch_controls;
 extern int gfx_fps_mode;
 extern int gfx_hfr_interp;
+// UI-after-post knobs (defined in gfx_pc.c).
+extern int gfx_ui_post;
+extern int gfx_ui_parallax;
+extern int gfx_ui_buf;
 extern float gfx_render_delta;
 extern float gfx_stereo_ipd_px;
 extern float gfx_stereo_convergence_px;
@@ -152,6 +156,10 @@ Java_com_vdavid003_sm64port_sm64portActivity_nativeSetStereoInt(JNIEnv *env, job
         case 20: gfx_stereo_fov_pct = value; break;
         case 21: gfx_stereo_2d = value; break;
         case 13: gfx_stereo_fit = value; break;
+        case 30: configStayInLevel = value != 0; break;
+        case 35: gfx_ui_post = value; break;
+        case 36: gfx_ui_parallax = value; break;
+        case 37: gfx_ui_buf = value; break;
         case 8: gfx_touch_dx = (float) value * 4.0f; break;    // percent -> px (approx)
         case 9: gfx_touch_dy = (float) value * 4.0f; break;
         case 10: gfx_touch_scale = (float) value / 100.0f; break;

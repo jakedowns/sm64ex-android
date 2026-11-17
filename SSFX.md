@@ -60,3 +60,37 @@ FX knob keys (`cmd fx`):
 - DOF is a single-pass spiral gather (no separate bokeh/CoC passes).
 - AO/GI need the depth texture; if `GL_OES_depth_texture` is missing the pass
   logs a warning and stays disabled.
+
+## UI after the post pass (UIPOST)
+
+By default the frame's display list is split in `render_game()`: everything up
+to the HUD scissor is the 3D scene, everything after is 2D UI (HUD, cannon
+reticle, dialogs, Peach letter, pause menu, text labels, transitions, native
+touch controls, borders). `gfx_run()` renders the scene range into the eye FBO
+and the UI range into a second per-eye RGBA buffer (`gfx_opengl_ui_begin/end`),
+then composites:
+
+    out = scene.rgb * (1 - ui.a) + ui.rgb      (UI buffer is premultiplied)
+
+so MXAO/DOF/SSGI never see, blur or bleed into the HUD.
+
+- `UIPOST` (default ON) — split + composite; OFF reproduces the v32 whole-frame
+  FX path.
+- `UIPAR` (default OFF) — OFF renders the UI screen-locked (no IPD shear, both
+  eyes identical); ON keeps the legacy per-eye sheared UI.
+- `UIBUF` (default OFF) — shows the captured UI buffer over a dimmed scene, to
+  verify that every element landed in the UI range.
+- Fallback: if there is no area / no scene this frame (`gGfxHasScene == 0`) the
+  whole-list path is used.
+
+Stereo-int keys (`cmd set --ei k ... --ei v ...`): `30` STAY,
+`35` UIPOST, `36` UIPARALLAX, `37` UIBUF. Dump fields: `stay=`, `uipost=`,
+`uipar=`, `uibuf=`. UI FBO creation is logged as `SM64FBO ui <eye> fbo=...`.
+
+## Stay in level after a star (STAY)
+
+`configStayInLevel` (`stay_in_level` in `sm64config.txt`, off by default) makes
+`interact_star_or_key()` route normal stars through the vanilla no-exit path
+(star dance → save prompt → idle) instead of the star-exit warp, so the course
+keeps running; 100-coin stars already behaved that way. Toggle with the `STAY`
+panel button or `cmd toggle --es name STAY`.

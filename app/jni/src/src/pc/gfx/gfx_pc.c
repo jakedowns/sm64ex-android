@@ -183,6 +183,18 @@ float gfx_cam_near = 100.0f;
 float gfx_cam_far = 30000.0f;
 float gfx_cam_tan_half_fov_y = 0.41421356f;
 
+// --- UI after post ----------------------------------------------------------
+// render_game() records where the 3D scene ends and the 2D UI begins in the
+// frame's display list. The scene is rendered through the screen-space FX pass
+// and the UI into its own per-eye buffer, so AO/DOF/GI cannot touch the HUD,
+// dialogs, menus or transitions.
+Gfx *gGfxUiStart = NULL;    // first UI command, or NULL if there is no split
+int gGfxHasScene = 0;       // a 3D scene was rendered this frame
+int gfx_ui_post = 1;        // UIPOST: split the list and composite UI after FX
+int gfx_ui_parallax = 0;    // UIPARALLAX: 0 = screen-locked UI, 1 = legacy shear
+int gfx_ui_buf = 0;         // UIBUF: debug view of the captured UI buffer
+int gfx_ui_pass = 0;        // set while the UI range is replayed
+
 // --- Stereo (Leia half-width SBS) ------------------------------------------
 // When enabled, each frame is rendered twice into a 2x1 side-by-side buffer:
 // eye 0 on the left half, eye 1 on the right half. The eye separation is
@@ -217,7 +229,9 @@ int gfx_stereo_vp[2][2] = {{-1, -1}, {-1, -1}};
 #ifdef __ANDROID__
 // Implemented in gfx_opengl.c: one framebuffer per eye + SBS composite.
 extern void gfx_opengl_stereo_begin(int eye, int w, int h, int cx, int cy, int cw, int ch);
-extern void gfx_opengl_stereo_composite(int w, int h, int full_w, int full_h);
+extern void gfx_opengl_stereo_composite(int w, int h, int full_w, int full_h, int has_ui);
+extern void gfx_opengl_ui_begin(int eye, int w, int h, int cx, int cy, int cw, int ch);
+extern void gfx_opengl_ui_end(void);
 #endif
 
 static void gfx_apply_stereo_shear(void) {
@@ -226,6 +240,11 @@ static void gfx_apply_stereo_shear(void) {
     }
     if (gfx_stereo_2d) {
         return;   // no parallax in 2D mode, but keep the canvas/FOV handling
+    }
+    if (gfx_ui_pass && !gfx_ui_parallax) {
+        // Screen-locked UI: identical projection for both eyes, so the HUD
+        // sits on the display plane instead of drifting with the eye offset.
+        return;
     }
     // x' = x + shear*w  =>  column 0 += shear * column 3
     for (int i = 0; i < 4; i++) {
@@ -1586,9 +1605,16 @@ static inline void *seg_addr(uintptr_t w1) {
 #define C0(pos, width) ((cmd->words.w0 >> (pos)) & ((1U << width) - 1))
 #define C1(pos, width) ((cmd->words.w1 >> (pos)) & ((1U << width) - 1))
 
-static void gfx_run_dl(Gfx* cmd) {
+static void gfx_run_dl(Gfx* cmd);
+
+// Runs a display list until `end` (exclusive) or G_ENDDL. Only the top-level
+// loop checks `end`; nested G_DL sublists still terminate on their own.
+static void gfx_run_dl_range(Gfx* cmd, Gfx* end) {
     int dummy = 0;
     for (;;) {
+        if (end != NULL && cmd == end) {
+            return;
+        }
         uint32_t opcode = cmd->words.w0 >> 24;
         
         switch (opcode) {
@@ -1792,6 +1818,10 @@ static void gfx_run_dl(Gfx* cmd) {
     }
 }
 
+static void gfx_run_dl(Gfx* cmd) {
+    gfx_run_dl_range(cmd, NULL);
+}
+
 static void gfx_sp_reset() {
     rsp.modelview_matrix_stack_size = 1;
     rsp.current_num_lights = 2;
@@ -1898,6 +1928,25 @@ void gfx_start_frame(void) {
     gfx_current_dimensions.aspect_ratio = (float)gfx_current_dimensions.width / (float)gfx_current_dimensions.height;
 }
 
+// The screen-space post pass and the composite draw with their own program,
+// textures and GL state, which the pipeline's caches know nothing about.
+// Drop the caches that no longer match GL so the next frame re-applies them.
+static void gfx_invalidate_state(void) {
+    gfx_rapi->unload_shader(rendering_state.shader_program);
+    rendering_state.shader_program = NULL;
+    // Bring GL and the caches back in sync: the post pass leaves depth test on,
+    // blending off and depth writes enabled.
+    gfx_rapi->set_depth_test(true);
+    rendering_state.depth_test = true;
+    gfx_rapi->set_depth_mask(true);
+    rendering_state.depth_mask = true;
+    gfx_rapi->set_use_alpha(false);
+    rendering_state.alpha_blend = false;
+    // Impossible viewport/scissor: the next frame always re-applies them.
+    memset(&rendering_state.viewport, 0, sizeof(rendering_state.viewport));
+    memset(&rendering_state.scissor, 0, sizeof(rendering_state.scissor));
+}
+
 void gfx_run(Gfx *commands) {
     gfx_sp_reset();
     
@@ -1910,6 +1959,14 @@ void gfx_run(Gfx *commands) {
     dropped_frame = false;
     
     if (gfx_stereo_enabled) {
+#ifdef __ANDROID__
+        // Split the frame's list at the UI marker when UIPOST is on: the scene
+        // goes through the FX pass, the UI is captured separately and
+        // composited afterwards (never post-processed, never sampled by FX).
+        int split = gfx_ui_post && gGfxHasScene && gGfxUiStart != NULL;
+#else
+        int split = 0;
+#endif
         for (int eye = 0; eye < 2; eye++) {
             gfx_stereo_eye = eye;
             // Reset RSP state per eye: a matrix stack left over from eye 0
@@ -1929,13 +1986,26 @@ void gfx_run(Gfx *commands) {
 #else
             gfx_rapi->start_frame();
 #endif
-            gfx_run_dl(commands);
+            gfx_run_dl_range(commands, split ? gGfxUiStart : NULL);
             gfx_flush();
+#ifdef __ANDROID__
+            if (split) {
+                gfx_opengl_ui_begin(eye, gfx_stereo_eye_width, gfx_stereo_full_h,
+                        gfx_stereo_canvas[0], gfx_stereo_canvas[1],
+                        gfx_stereo_canvas[2], gfx_stereo_canvas[3]);
+                gfx_ui_pass = 1;
+                gfx_run_dl_range(gGfxUiStart, NULL);
+                gfx_ui_pass = 0;
+                gfx_flush();
+                gfx_opengl_ui_end();
+            }
+#endif
         }
 #ifdef __ANDROID__
-        gfx_opengl_stereo_composite(0, 0, gfx_stereo_full_w, gfx_stereo_full_h);
+        gfx_opengl_stereo_composite(0, 0, gfx_stereo_full_w, gfx_stereo_full_h, split);
 #endif
         gfx_stereo_eye = 0;
+        gfx_invalidate_state();
         gfx_wapi->swap_buffers_begin();
         return;
     }

@@ -54,6 +54,8 @@ extern bool         configEnableCamera;
 extern bool         configCameraMouse;
 #endif
 extern bool         configHUD;
+// Keep Mario in the course after collecting a star (no star-exit warp).
+extern bool         configStayInLevel;
 #ifdef DISCORDRPC
 extern bool         configDiscordRPC;
 #endif

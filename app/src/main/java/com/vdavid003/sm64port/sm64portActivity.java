@@ -69,6 +69,8 @@ public class sm64portActivity extends SDLActivity {
     private boolean stereoOn = true;
     private boolean testOn = false;
     private boolean tintOn, zbufOn, wireOn, perfOn, swapOn, sameOn, nocullOn, flatOn, analogOn;
+    private boolean stayOn, uiParallaxOn, uiBufOn;
+    private boolean uiPostOn = true;
     private final java.util.List<TextView> fitButtons = new java.util.ArrayList<>();
     private int fitMode = 0;
     private int modeIndex = 0;
@@ -443,14 +445,15 @@ public class sm64portActivity extends SDLActivity {
                 android.widget.RelativeLayout.LayoutParams.WRAP_CONTENT));
 
         android.widget.AbsoluteLayout toggles = new android.widget.AbsoluteLayout(this);
-        String[][] tgl = {{"ZBUF", "15"}, {"WIRE", "16"}, {"SWAP", "4"}, {"SAME", "6"}, {"TINT", "7"}, {"PERF2x", "12"}, {"MODE", "-1"},
-        {"RCV0", "-2"}, {"RCV50", "-2"}, {"RCV100", "-2"}, {"SRCFIT", "-3"},
+        String[][] tgl = {{"ZBUF", "15"}, {"WIRE", "16"}, {"SWAP", "4"}, {"SAME", "6"}, {"TINT", "7"}, {"PERF2x", "12"}, {"STAY", "30"},
+                {"UIPOST", "35"}, {"UIPAR", "36"}, {"UIBUF", "37"}, {"SRCFIT", "-3"},
                 {"FILL", "13"}, {"4:3", "13"}, {"16:9", "13"}};
         for (String[] t : tgl) {
             final int which = Integer.parseInt(t[1]);
             final TextView b = new TextView(this);
             b.setText(t[0]);
-            b.setTextColor(0xFF888888);
+            // UIPOST defaults to on in the renderer; keep the button in sync.
+            b.setTextColor(t[0].equals("UIPOST") ? 0xFF66FF99 : 0xFF888888);
             b.setTextSize(14);
             b.setPadding(pad, pad / 2, pad, pad / 2);
             final int id = System.identityHashCode(b);
@@ -1072,6 +1075,26 @@ public class sm64portActivity extends SDLActivity {
                 analogOn = !analogOn;
                 if (touchOverlay != null) touchOverlay.setAnalogMode(analogOn);
                 break;
+            case "STAY":
+                stayOn = !stayOn;
+                nativeSetStereoInt(30, stayOn ? 1 : 0);
+                Log.i(TAG, "STAY=" + stayOn);
+                break;
+            case "UIPOST":
+                uiPostOn = !uiPostOn;
+                nativeSetStereoInt(35, uiPostOn ? 1 : 0);
+                Log.i(TAG, "UIPOST=" + uiPostOn);
+                break;
+            case "UIPARALLAX":
+                uiParallaxOn = !uiParallaxOn;
+                nativeSetStereoInt(36, uiParallaxOn ? 1 : 0);
+                Log.i(TAG, "UIPARALLAX=" + uiParallaxOn);
+                break;
+            case "UIBUF":
+                uiBufOn = !uiBufOn;
+                nativeSetStereoInt(37, uiBufOn ? 1 : 0);
+                Log.i(TAG, "UIBUF=" + uiBufOn);
+                break;
             case "FLAT":
                 runOnUiThread(() -> {
                     flatOn = !flatOn;
@@ -1137,7 +1160,9 @@ public class sm64portActivity extends SDLActivity {
                     + " nocull=" + nocullOn
                         + " hfr=" + nativeGetHfrMtxCount() + "/" + nativeGetHfrInterp()
                     + " mxao=" + nativeGetSSFX(1) + " cdof=" + nativeGetSSFX(11)
-                    + " ssgi=" + nativeGetSSFX(21) + " fxdbg=" + nativeGetSSFX(31));
+                    + " ssgi=" + nativeGetSSFX(21) + " fxdbg=" + nativeGetSSFX(31)
+                    + " stay=" + stayOn + " uipost=" + uiPostOn
+                    + " uipar=" + uiParallaxOn + " uibuf=" + uiBufOn);
         });
     }
 

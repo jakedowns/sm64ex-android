@@ -616,6 +616,7 @@ static int    s_canvas_w = 1, s_canvas_h = 1;
 static GLuint s_comp_prog = 0, s_comp_vbo = 0;
 static GLint  s_comp_pos = -1, s_comp_uv = -1, s_comp_tex = -1;
 static GLint  s_comp_mode = -1, s_comp_solid = -1, s_comp_scale = -1;
+static GLint  s_comp_ui = -1, s_comp_hasui = -1, s_comp_uibuf = -1;
 int gfx_stereo_in_scale_pct = 100;   // pre-scale of each eye inside the SBS buffer
 int gfx_stereo_debug_tint = 0;   // 1 = 50% red/blue overlay per half
 
@@ -626,11 +627,16 @@ static const char *s_comp_vs =
 static const char *s_comp_fs =
     "precision mediump float; varying vec2 vUV; uniform sampler2D uTex;\n"
     "uniform float uMode; uniform vec4 uSolid;\n"
+    "uniform sampler2D uUI; uniform float uHasUI; uniform float uUIBuf;\n"
     "void main(){\n"
     "  vec4 t = texture2D(uTex, vUV);\n"
-    "  if (uMode > 1.5) gl_FragColor = vec4(t.rrr, 1.0);\n"
+    "  vec4 ui = texture2D(uUI, vUV);\n"
+    "  float a = uHasUI > 0.5 ? ui.a : 0.0;\n"          // premultiplied coverage
+    "  vec3 urgb = uHasUI > 0.5 ? ui.rgb : vec3(0.0);\n"
+    "  if (uUIBuf > 0.5) gl_FragColor = vec4(urgb + t.rgb * 0.2 * (1.0 - a), 1.0);\n"
+    "  else if (uMode > 1.5) gl_FragColor = vec4(vec3(t.r) * (1.0 - a) + urgb, 1.0);\n"
     "  else if (uMode > 0.5) gl_FragColor = uSolid;\n"
-    "  else gl_FragColor = t;\n"
+    "  else gl_FragColor = vec4(t.rgb * (1.0 - a) + urgb, 1.0);\n"
     "}\n";
 
 /* ---------------- Screen-space FX (MXAO / CinematicDOF / SSGI-lite) --------
@@ -1152,11 +1158,85 @@ static void stereo_ensure_resources(int w, int h) {
         s_comp_mode = glGetUniformLocation(s_comp_prog, "uMode");
         s_comp_scale = glGetUniformLocation(s_comp_prog, "uScale");
         s_comp_solid = glGetUniformLocation(s_comp_prog, "uSolid");
+        s_comp_ui = glGetUniformLocation(s_comp_prog, "uUI");
+        s_comp_hasui = glGetUniformLocation(s_comp_prog, "uHasUI");
+        s_comp_uibuf = glGetUniformLocation(s_comp_prog, "uUIBuf");
         glDeleteShader(vs);
         glDeleteShader(fs);
         __android_log_print(ANDROID_LOG_INFO, "SM64FBO", "composite prog=%u pos=%d uv=%d",
                             s_comp_prog, s_comp_pos, s_comp_uv);
     }
+}
+
+/* ---------------- UI after post: per-eye UI buffer ----------------
+ * The 2D UI range of the frame (HUD, dialogs, menus, transitions, borders) is
+ * rendered here instead of into the eye buffer, so the FX pass never sees it.
+ * RGBA so the composite can use alpha as premultiplied coverage.
+ */
+static GLuint s_ui_fbo[2] = {0, 0};
+static GLuint s_ui_tex[2] = {0, 0};
+static GLuint s_ui_depth[2] = {0, 0};
+static int    s_ui_w = 0, s_ui_h = 0;
+
+static void stereo_ensure_ui_resources(int w, int h) {
+    if (w == s_ui_w && h == s_ui_h && s_ui_fbo[0] != 0) {
+        return;
+    }
+    for (int i = 0; i < 2; i++) {
+        if (s_ui_fbo[i]) glDeleteFramebuffers(1, &s_ui_fbo[i]);
+        if (s_ui_tex[i]) glDeleteTextures(1, &s_ui_tex[i]);
+        if (s_ui_depth[i]) glDeleteRenderbuffers(1, &s_ui_depth[i]);
+
+        glGenTextures(1, &s_ui_tex[i]);
+        glBindTexture(GL_TEXTURE_2D, s_ui_tex[i]);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+        glGenFramebuffers(1, &s_ui_fbo[i]);
+        glBindFramebuffer(GL_FRAMEBUFFER, s_ui_fbo[i]);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                               GL_TEXTURE_2D, s_ui_tex[i], 0);
+
+        // Own depth buffer: the scene depth texture is read by the FX pass.
+        glGenRenderbuffers(1, &s_ui_depth[i]);
+        glBindRenderbuffer(GL_RENDERBUFFER, s_ui_depth[i]);
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT16, w, h);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+                                  GL_RENDERBUFFER, s_ui_depth[i]);
+
+        GLenum st = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+        __android_log_print(ANDROID_LOG_INFO, "SM64FBO", "ui %d fbo=%u tex=%u %dx%d status=0x%x",
+                            i, s_ui_fbo[i], s_ui_tex[i], w, h, st);
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    s_ui_w = w;
+    s_ui_h = h;
+}
+
+/* Called by gfx_pc.c after the scene range, before the UI range. */
+void gfx_opengl_ui_begin(int eye, int w, int h, int cx, int cy, int cw, int ch) {
+    stereo_ensure_ui_resources(w, h);
+    s_fbo_mode = 1;
+    glBindFramebuffer(GL_FRAMEBUFFER, s_ui_fbo[eye & 1]);
+    glDisable(GL_SCISSOR_TEST);
+    glDepthMask(GL_TRUE);
+    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(0, 0, w, h);
+    glViewport(cx, cy, cw, ch);
+    // Keep the colour premultiplied by coverage, and accumulate coverage in
+    // alpha: the buffer starts at (0,0,0,0) and is composited as
+    // ui.rgb + scene.rgb * (1 - ui.a).
+    glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+}
+
+void gfx_opengl_ui_end(void) {
+    // Restore the blend function the game pipeline assumes.
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 }
 
 /* Called by gfx_pc.c before each eye's display list. */
@@ -1186,8 +1266,11 @@ void gfx_opengl_stereo_begin(int eye, int w, int h, int cx, int cy, int cw, int 
     glViewport(cx, cy, cw, ch);
 }
 
-/* Blit both eye textures into the 2x1 side-by-side default framebuffer. */
-void gfx_opengl_stereo_composite(int w, int h, int full_w, int full_h) {
+/* Blit both eye textures (with the UI composited on top) into the 2x1 SBS
+ * default framebuffer. `has_ui` says whether the UI buffer was captured. */
+extern int gfx_ui_buf;
+
+void gfx_opengl_stereo_composite(int w, int h, int full_w, int full_h, int has_ui) {
     {
         static long last_ms = 0;
     static int frames = 0;
@@ -1219,6 +1302,9 @@ void gfx_opengl_stereo_composite(int w, int h, int full_w, int full_h) {
     glUseProgram(s_comp_prog);
     glActiveTexture(GL_TEXTURE0);
     glUniform1i(s_comp_tex, 0);
+    glUniform1i(s_comp_ui, 1);
+    glUniform1f(s_comp_hasui, has_ui ? 1.0f : 0.0f);
+    glUniform1f(s_comp_uibuf, gfx_ui_buf ? 1.0f : 0.0f);
 
     static const float quad[] = {
         -1.0f, -1.0f, 0.0f, 0.0f,
@@ -1242,11 +1328,16 @@ void gfx_opengl_stereo_composite(int w, int h, int full_w, int full_h) {
     int zview = gfx_stereo_zbuf && s_depth_tex_mode;
     glUniform1f(s_comp_mode, zview ? 2.0f : 0.0f);
     for (int eye = 0; eye < 2; eye++) {
+        GLuint scene_tex = zview ? s_eye_depth[eye]
+                                 : (fx_ready ? s_pp_tex[eye] : s_eye_tex[eye]);
         glViewport(eye * (full_w / 2), 0, full_w / 2, full_h);
-        glBindTexture(GL_TEXTURE_2D, zview ? s_eye_depth[eye]
-                                           : (fx_ready ? s_pp_tex[eye] : s_eye_tex[eye]));
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, scene_tex);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, (has_ui && s_ui_tex[eye]) ? s_ui_tex[eye] : scene_tex);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     }
+    glActiveTexture(GL_TEXTURE0);
 
     if (gfx_stereo_debug_tint) {
         // 50% red over the left half, 50% blue over the right half: shows

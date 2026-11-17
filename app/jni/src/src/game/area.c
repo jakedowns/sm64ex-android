@@ -367,7 +367,17 @@ void play_transition_after_delay(s16 transType, s16 time, u8 red, u8 green, u8 b
     play_transition(transType, time, red, green, blue);
 }
 
+// UI-after-post marker (defined in src/pc/gfx/gfx_pc.c). The renderer splits
+// the frame's display list here: everything before is the 3D scene (which goes
+// through the screen-space FX pass), everything after is 2D UI (which does not).
+extern Gfx *gGfxUiStart;
+extern int gGfxHasScene;
+
 void render_game(void) {
+    // Reset every frame: the display list pools are reused.
+    gGfxUiStart = NULL;
+    gGfxHasScene = 0;
+
     if (gCurrentArea != NULL && !gWarpTransition.pauseRendering) {
         geo_process_root(gCurrentArea->unk04, D_8032CE74, D_8032CE78, gFBSetColor);
 
@@ -375,6 +385,10 @@ void render_game(void) {
 
         gDPSetScissor(gDisplayListHead++, G_SC_NON_INTERLACE, 0, BORDER_HEIGHT, SCREEN_WIDTH,
                       SCREEN_HEIGHT - BORDER_HEIGHT);
+        // Mark the split after the HUD scissor, before any HUD geometry, so
+        // the UI pass inherits the same scissor box.
+        gGfxUiStart = gDisplayListHead;
+        gGfxHasScene = 1;
         render_hud();
 
         gDPSetScissor(gDisplayListHead++, G_SC_NON_INTERLACE, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);

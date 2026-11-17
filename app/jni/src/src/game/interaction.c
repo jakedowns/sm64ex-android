@@ -1,6 +1,7 @@
 #include <ultra64.h>
 
 #include "sm64.h"
+#include "pc/configfile.h"
 #include "interaction.h"
 #include "camera.h"
 #include "level_update.h"
@@ -762,7 +763,11 @@ u32 interact_water_ring(struct MarioState *m, UNUSED u32 interactType, struct Ob
 u32 interact_star_or_key(struct MarioState *m, UNUSED u32 interactType, struct Object *o) {
     u32 starIndex;
     u32 starGrabAction = ACT_STAR_DANCE_EXIT;
-    u32 noExit = (o->oInteractionSubtype & INT_SUBTYPE_NO_EXIT) != 0;
+    // "Stay in level" routes normal stars through the vanilla no-exit path
+    // (star dance -> save prompt -> idle), so music/counters/saving behave
+    // exactly like the 100-coin star.
+    u32 noExit = configStayInLevel
+              || (o->oInteractionSubtype & INT_SUBTYPE_NO_EXIT) != 0;
     u32 grandStar = (o->oInteractionSubtype & INT_SUBTYPE_GRAND_STAR) != 0;
 
     if (m->health >= 0x100) {

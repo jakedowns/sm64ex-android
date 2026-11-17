@@ -89,6 +89,7 @@ bool         configCameraMouse   = false;
 #endif
 unsigned int configSkipIntro     = 0;
 bool         configHUD           = true;
+bool         configStayInLevel   = false;
 #ifdef DISCORDRPC
 bool         configDiscordRPC    = true;
 #endif
@@ -121,6 +122,7 @@ static const struct ConfigOption options[] = {
     {.name = "key_stickright",       .type = CONFIG_TYPE_BIND, .uintValue = configKeyStickRight},
     {.name = "stick_deadzone",       .type = CONFIG_TYPE_UINT, .uintValue = &configStickDeadzone},
     {.name = "rumble_strength",      .type = CONFIG_TYPE_UINT, .uintValue = &configRumbleStrength},
+    {.name = "stay_in_level",        .type = CONFIG_TYPE_BOOL, .boolValue = &configStayInLevel},
     #ifdef EXTERNAL_DATA
     {.name = "precache",             .type = CONFIG_TYPE_BOOL, .boolValue = &configPrecacheRes},
     #endif
