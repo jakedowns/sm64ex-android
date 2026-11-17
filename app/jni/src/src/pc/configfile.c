@@ -89,7 +89,7 @@ bool         configCameraMouse   = false;
 #endif
 unsigned int configSkipIntro     = 0;
 bool         configHUD           = true;
-bool         configStayInLevel   = false;
+bool         configStayInLevel   = true;
 #ifdef DISCORDRPC
 bool         configDiscordRPC    = true;
 #endif

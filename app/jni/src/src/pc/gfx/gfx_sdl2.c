@@ -85,6 +85,7 @@ extern int gfx_hfr_interp;
 extern int gfx_ui_post;
 extern int gfx_ui_parallax;
 extern int gfx_ui_buf;
+extern float gfx_ui_depth_px;
 extern float gfx_render_delta;
 extern float gfx_stereo_ipd_px;
 extern float gfx_stereo_convergence_px;
@@ -160,6 +161,7 @@ Java_com_vdavid003_sm64port_sm64portActivity_nativeSetStereoInt(JNIEnv *env, job
         case 35: gfx_ui_post = value; break;
         case 36: gfx_ui_parallax = value; break;
         case 37: gfx_ui_buf = value; break;
+        case 38: gfx_ui_depth_px = (float) value; break;
         case 8: gfx_touch_dx = (float) value * 4.0f; break;    // percent -> px (approx)
         case 9: gfx_touch_dy = (float) value * 4.0f; break;
         case 10: gfx_touch_scale = (float) value / 100.0f; break;
@@ -237,6 +239,24 @@ Java_com_vdavid003_sm64port_sm64portActivity_nativeGetHfrInterp(JNIEnv *env, jcl
 }
 
 JNIEXPORT jint JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeGetCamMode(JNIEnv *env, jclass clazz) {
+    (void) env; (void) clazz;
+#ifdef BETTERCAMERA
+    extern u8 newcam_active;
+    return newcam_active ? 1 : 0;
+#else
+    return 0;
+#endif
+}
+
+JNIEXPORT void JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeToggleCamMode(JNIEnv *env, jclass clazz) {
+    (void) env; (void) clazz;
+    extern u8 camera_mode_button_pressed;
+    camera_mode_button_pressed = 1;
+}
+
+JNIEXPORT jint JNICALL
 Java_com_vdavid003_sm64port_sm64portActivity_nativeGetHfrMtxCount(JNIEnv *env, jclass clazz) {
     (void) env; (void) clazz;
     extern int gfx_hfr_mtx_count(void);
@@ -279,7 +299,8 @@ Java_com_vdavid003_sm64port_sm64portActivity_nativeGetSSFX(JNIEnv *env, jobject 
 static const Uint32 FRAME_TIME = 1000 / FRAMERATE;
 
 // HFR: render-rate mode (simulation always stays at 30 Hz).
-int gfx_fps_mode = 0;
+// 0 = 30, 1 = 60, 2 = 120, 3 = uncapped. 120 Hz by default.
+int gfx_fps_mode = 2;
 // HFR: 0 disables frame interpolation (useful for A/B comparison).
 int gfx_hfr_interp = 1;
 

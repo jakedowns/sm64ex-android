@@ -102,7 +102,7 @@ u8 newcam_aggression; //How much the camera tries to centre itself to Mario's fa
 u8 newcam_analogue; //Wether to accept inputs from a player 2 joystick, and then disables C button input.
 u8 newcam_mouse; // Whether to accept mouse input
 s16 newcam_distance_values[] = {750,1250,2000};
-u8 newcam_active = 1; // basically the thing that governs if newcam is on.
+u8 newcam_active = 0; // 1 = free camera; X on the overlay toggles it
 u16 newcam_mode;
 u16 newcam_intendedmode = 0; // which camera mode the camera's going to try to be in when not forced into another.
 u16 newcam_modeflags;

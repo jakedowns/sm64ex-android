@@ -69,15 +69,16 @@ public class sm64portActivity extends SDLActivity {
     private boolean stereoOn = true;
     private boolean testOn = false;
     private boolean tintOn, zbufOn, wireOn, perfOn, swapOn, sameOn, nocullOn, flatOn, analogOn;
-    private boolean stayOn, uiParallaxOn, uiBufOn;
+    private boolean stayOn = true, uiParallaxOn, uiBufOn;
     private boolean uiPostOn = true;
+    private int overlayAlphaPct = 100;
     private final java.util.List<TextView> fitButtons = new java.util.ArrayList<>();
     private int fitMode = 0;
     private int modeIndex = 0;
     private int refreshIdx = 0;
 
     /** Cycle the panel refresh rate: default -> 60 -> 120 Hz. */
-    private int fpsMode = 0;
+    private int fpsMode = 2;   // 120 Hz render rate by default
     private boolean interpOn = true;
 
     /** Cycle render rate: 30 -> 60 -> 120 -> uncapped, and match panel refresh. */
@@ -359,7 +360,7 @@ public class sm64portActivity extends SDLActivity {
 
         TextView fpsBtn = new TextView(this);
         fpsButton = fpsBtn;
-        fpsBtn.setText("FPS 30");
+        fpsBtn.setText("FPS 120");
         fpsBtn.setTextColor(0xFFCCCCCC);
         fpsBtn.setTextSize(16);
         fpsBtn.setPadding(pad, pad / 2, pad, pad / 2);
@@ -419,9 +420,10 @@ public class sm64portActivity extends SDLActivity {
         grid.setColumnCount(2);
         grid.setOrientation(android.widget.GridLayout.HORIZONTAL);
         controls.addView(grid);
-        addSlider("IPD", -2560, 2560, 0, " px", 0);
+        addSlider("IPD", -300, 300, 0, " px", 0);
         addSlider("Zero parallax", -1280, 1280, 0, " px", 1);
-        addSlider("Depth", -1000, 1000, 10, " %", 2);
+        addSlider("Depth", -200, 200, 10, " %", 2);
+        addSlider("UI depth", -60, 60, 0, " px", 38);
         addSlider("Toe in/out", -100, 100, 0, " %", 17);
         addSlider("Aspect % (in)", 10, 240, 178, " %", 18);
         addIntSlider("Aspect % (out)", 0, 240, 0, new java.util.function.IntConsumer() {
@@ -429,9 +431,9 @@ public class sm64portActivity extends SDLActivity {
         });
         addSlider("Eye margin%", 50, 100, 100, " %", 14);
         addSlider("FOV %", 1, 200, 100, " %", 20);
-        addSlider("Ctl X%", -200, 200, 0, " %", 8);
-        addSlider("Ctl Y%", -200, 200, 0, " %", 9);
-        addSlider("Ctl scale%", 50, 300, 100, " %", 10);
+        addIntSlider("Ctl opacity", 10, 100, 100, new java.util.function.IntConsumer() {
+            @Override public void accept(int v) { applyOverlayAlpha(v); }
+        });
         // Hidden for now (kept for later): V%, W-px, H-shift%, V-shift.
         outVal[1] = 100; outVal[3] = 0; outVal[4] = 0;
         startDebugReadout(panel);
@@ -446,14 +448,15 @@ public class sm64portActivity extends SDLActivity {
 
         android.widget.AbsoluteLayout toggles = new android.widget.AbsoluteLayout(this);
         String[][] tgl = {{"ZBUF", "15"}, {"WIRE", "16"}, {"SWAP", "4"}, {"SAME", "6"}, {"TINT", "7"}, {"PERF2x", "12"}, {"STAY", "30"},
-                {"UIPOST", "35"}, {"UIPAR", "36"}, {"UIBUF", "37"}, {"SRCFIT", "-3"},
+                {"UIPOST", "35"}, {"UIPAR", "36"}, {"UIBUF", "37"},
                 {"FILL", "13"}, {"4:3", "13"}, {"16:9", "13"}};
         for (String[] t : tgl) {
             final int which = Integer.parseInt(t[1]);
             final TextView b = new TextView(this);
             b.setText(t[0]);
             // UIPOST defaults to on in the renderer; keep the button in sync.
-            b.setTextColor(t[0].equals("UIPOST") ? 0xFF66FF99 : 0xFF888888);
+            b.setTextColor((t[0].equals("UIPOST") || t[0].equals("STAY"))
+                    ? 0xFF66FF99 : 0xFF888888);
             b.setTextSize(14);
             b.setPadding(pad, pad / 2, pad, pad / 2);
             final int id = System.identityHashCode(b);
@@ -688,6 +691,15 @@ public class sm64portActivity extends SDLActivity {
             fxDebugButtons.get(i).setTextColor(active ? 0xFFFFAA33 : 0xFF888888);
         }
         Log.i(TAG, "fxDebug=" + fxDebug);
+    }
+
+    /** Opacity of the floating touch-control overlay (percent). */
+    private void applyOverlayAlpha(int pct) {
+        overlayAlphaPct = pct;
+        if (touchOverlay != null) {
+            touchOverlay.setOverlayAlpha(pct / 100f);
+        }
+        Log.i(TAG, "overlay alpha " + pct);
     }
 
     /** Output-layer transform knobs. kind: 0=H% 1=V% 2=Wpx 3=Hshift 4=Vshift */
@@ -983,6 +995,8 @@ public class sm64portActivity extends SDLActivity {
     static native void nativeSetHfrInterp(int on);
     static native int nativeGetHfrInterp();
     static native int nativeGetHfrMtxCount();
+    static native int nativeGetCamMode();
+    static native void nativeToggleCamMode();
     static native void nativeOverlayStick2(int rx, int ry);
     static native void nativeOverlayAnalog(int on);
     static native void nativeHideInGameControls(int hide);
@@ -1003,6 +1017,7 @@ public class sm64portActivity extends SDLActivity {
             sdk.enableBacklight(stereoOn);
         }
         if (leiaView != null) reapplySourceSize();
+        applyPanelRefresh(fpsMode == 0 ? 30 : fpsMode == 1 ? 60 : 120);
     }
 
     @Override
@@ -1019,7 +1034,9 @@ public class sm64portActivity extends SDLActivity {
     // ---- runtime debug control (see DebugReceiver) -------------------------
     void debugSet(int k, int v) {
         if (k < 0) return;
-        if (k == 11) {
+        if (k == 39) {
+            applyOverlayAlpha(v);
+        } else if (k == 11) {
             applySourceWidthPercent(v);
         } else if (k >= 8) {
             nativeSetStereoInt(k, v);
@@ -1074,6 +1091,10 @@ public class sm64portActivity extends SDLActivity {
             case "ANALOG":
                 analogOn = !analogOn;
                 if (touchOverlay != null) touchOverlay.setAnalogMode(analogOn);
+                break;
+            case "CAM":
+                nativeToggleCamMode();
+                Log.i(TAG, "CAM toggle -> " + nativeGetCamMode());
                 break;
             case "STAY":
                 stayOn = !stayOn;
@@ -1162,6 +1183,7 @@ public class sm64portActivity extends SDLActivity {
                     + " mxao=" + nativeGetSSFX(1) + " cdof=" + nativeGetSSFX(11)
                     + " ssgi=" + nativeGetSSFX(21) + " fxdbg=" + nativeGetSSFX(31)
                     + " stay=" + stayOn + " uipost=" + uiPostOn
+                    + " cam=" + nativeGetCamMode() + " ctlA=" + overlayAlphaPct
                     + " uipar=" + uiParallaxOn + " uibuf=" + uiBufOn);
         });
     }

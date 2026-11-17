@@ -64,6 +64,9 @@ public class TouchOverlay extends View {
     private final int[] camPressed = {-1, -1};
     private final float camRadius = 52f;
 
+    // Overall opacity of the control layer (0.1 .. 1.0).
+    private float overlayAlpha = 1f;
+
     // Right-hand control: 4 C buttons, or an analog camera stick.
     private boolean analogMode;
     private boolean rstickActive;
@@ -78,6 +81,14 @@ public class TouchOverlay extends View {
         setClickable(false);
         // The view must receive touches over the whole panel.
         setWillNotDraw(false);
+    }
+
+    /** Overall opacity of the floating controls (1.0 = fully opaque). */
+    public void setOverlayAlpha(float a) {
+        if (a < 0.05f) a = 0.05f;
+        if (a > 1f) a = 1f;
+        overlayAlpha = a;
+        invalidate();
     }
 
     /** Switch the right-hand control between C buttons and an analog stick. */
@@ -282,6 +293,10 @@ public class TouchOverlay extends View {
         super.onDraw(c);
         if (btnPos[0][0] == 0) layoutButtons();
 
+        // One layer for the whole control set so "Ctl opacity" can fade it.
+        int layer = c.saveLayerAlpha(0f, 0f, getWidth(), getHeight(),
+                (int) (overlayAlpha * 255f));
+
         paint.setStyle(Paint.Style.STROKE);
         paint.setStrokeWidth(6f);
         paint.setColor(0x88FFFFFF);
@@ -344,12 +359,15 @@ public class TouchOverlay extends View {
         paint.setTextSize(38f);
         c.drawText(analogMode ? "ANA" : "C", modePos[0], modePos[1] + 13f, paint);
 
-        // Camera buttons (X = free camera toggle, Y = recentre).
+        // Camera buttons (X = free camera toggle, Y = recentre). X turns solid
+        // green while the free camera is active, so the mode is always visible.
         paint.setTextSize(48f);
+        boolean freeCam = sm64portActivity.nativeGetCamMode() != 0;
         for (int i = 0; i < camIds.length; i++) {
             boolean down = (buttons & camIds[i]) != 0;
+            boolean on = (i == 0) && freeCam;
             paint.setStyle(Paint.Style.FILL);
-            paint.setColor(down ? 0xCC66FF99 : 0x44FFFFFF);
+            paint.setColor(on ? 0xEE33DD55 : (down ? 0xCC66FF99 : 0x44FFFFFF));
             c.drawCircle(camPos[i][0], camPos[i][1], camRadius, paint);
             paint.setStyle(Paint.Style.STROKE);
             paint.setColor(0xAA000000);
@@ -358,5 +376,7 @@ public class TouchOverlay extends View {
             paint.setColor(Color.BLACK);
             c.drawText(camLabels[i], camPos[i][0], camPos[i][1] + 17f, paint);
         }
+
+        c.restoreToCount(layer);
     }
 }

@@ -224,6 +224,9 @@ float gfx_stereo_ipd_px = 140.0f;         // separation at infinity
 float gfx_stereo_convergence_px = 0.0f;   // moves the zero-parallax plane
 float gfx_stereo_shear = 0.0f;   // clip-space shear, used by culling too
 float gfx_stereo_eye_sign = 1.0f; // +1 for the left/eye-0 pass, -1 for the other
+// UI-after-post: apparent depth of the UI layer, in pixels of disparity per eye
+// (positive = in front of the screen plane, negative = behind).
+float gfx_ui_depth_px = 0.0f;
 int gfx_stereo_nocull = 0;       // debug: skip frustum culling
 int gfx_stereo_vp[2][2] = {{-1, -1}, {-1, -1}};
 
@@ -235,6 +238,18 @@ extern void gfx_opengl_ui_begin(int eye, int w, int h, int cx, int cy, int cw, i
 extern void gfx_opengl_ui_end(void);
 #endif
 
+// UI depth: shift each eye's copy of the UI in opposite directions so the
+// layer sits at its own perceived Z (positive = in front of the screen).
+static void gfx_apply_ui_depth(void) {
+    if (gfx_ui_depth_px == 0.0f) {
+        return;
+    }
+    float s = gfx_stereo_eye_sign * gfx_ui_depth_px * 2.0f / (float) gfx_stereo_eye_width;
+    for (int i = 0; i < 4; i++) {
+        rsp.MP_matrix[i][0] += s * rsp.MP_matrix[i][3];
+    }
+}
+
 static void gfx_apply_stereo_shear(void) {
     if (!gfx_stereo_enabled) {
         return;
@@ -245,6 +260,8 @@ static void gfx_apply_stereo_shear(void) {
     if (gfx_ui_pass && !gfx_ui_parallax) {
         // Screen-locked UI: identical projection for both eyes, so the HUD
         // sits on the display plane instead of drifting with the eye offset.
+        // Its own depth offset still applies.
+        gfx_apply_ui_depth();
         return;
     }
     // x' = x + shear*w  =>  column 0 += shear * column 3
@@ -267,6 +284,10 @@ static void gfx_apply_stereo_shear(void) {
         for (int i = 0; i < 4; i++) {
             rsp.MP_matrix[i][0] += toe * rsp.MP_matrix[i][2];
         }
+    }
+    if (gfx_ui_pass) {
+        // Legacy sheared UI: add its own depth offset on top of the shear.
+        gfx_apply_ui_depth();
     }
 }
 
@@ -1980,7 +2001,11 @@ void gfx_run(Gfx *commands) {
             // inherit eye 0's viewport forever. Force a re-apply each pass.
             rdp.viewport_or_scissor_changed = true;
             int v = (gfx_stereo_same_both || gfx_stereo_swap_eyes) ? (eye ^ (gfx_stereo_same_both ? 0 : 1)) : eye;
-            float off = (v == 0 ? 0.5f : -0.5f) * gfx_stereo_ipd_px - gfx_stereo_convergence_px;
+            // Convergence moves the zero-parallax plane: both eyes are
+            // shifted *towards each other* by the same amount. A common
+            // offset (what this used to do) just trucks the pair sideways.
+            float half = 0.5f * gfx_stereo_ipd_px - gfx_stereo_convergence_px;
+            float off = (v == 0 ? half : -half);
             gfx_stereo_shear = off * 2.0f / (float)gfx_stereo_eye_width;
             // Mirrored sign for per-eye effects (toe-in/out canting).
             gfx_stereo_eye_sign = (v == 0) ? 1.0f : -1.0f;
