@@ -53,6 +53,9 @@ int gfx_touch_float = 1;
 int gfx_ovl_active = 0;
 int gfx_ovl_stick_x = 0;
 int gfx_ovl_stick_y = 0;
+int gfx_ovl_right_x = 0;
+int gfx_ovl_right_y = 0;
+int gfx_ovl_analog = 0;
 unsigned int gfx_ovl_buttons = 0;
 int gfx_hide_touch_controls = 0;
 

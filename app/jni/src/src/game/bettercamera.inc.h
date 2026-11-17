@@ -328,11 +328,18 @@ static void newcam_rotate_button(void)
     }
 
 
-    if (newcam_analogue == 1) //There's not much point in keeping this behind a check, but it wouldn't hurt, just incase any 2player shenanigans ever happen, it makes it easy to disable.
+    if (newcam_analogue == 1 || gfx_ovl_analog) //There's not much point in keeping this behind a check, but it wouldn't hurt, just incase any 2player shenanigans ever happen, it makes it easy to disable.
     { //The joystick values cap at 80, so divide by 8 to get the same net result at maximum turn as the button
-        intendedXMag = gPlayer2Controller->stickX*1.25;
-        intendedYMag = gPlayer2Controller->stickY*1.25;
-        if (ABS(gPlayer2Controller->stickX) > 20 && newcam_modeflags & NC_FLAG_XTURN)
+        s16 camStickX = gPlayer2Controller->stickX;
+        s16 camStickY = gPlayer2Controller->stickY;
+        /* Android overlay right stick replaces the player-2 stick. */
+        if (gfx_ovl_analog && gfx_ovl_active) {
+            camStickX = (s16) gfx_ovl_right_x;
+            camStickY = (s16) gfx_ovl_right_y;
+        }
+        intendedXMag = camStickX*1.25;
+        intendedYMag = camStickY*1.25;
+        if (ABS(camStickX) > 20 && newcam_modeflags & NC_FLAG_XTURN)
         {
             if (newcam_modeflags & NC_FLAG_8D)
             {
@@ -343,7 +350,7 @@ static void newcam_rotate_button(void)
                     #ifndef nosound
                     play_sound(SOUND_MENU_CAMERA_ZOOM_IN, gDefaultSoundArgs);
                     #endif
-                    if (gPlayer2Controller->stickX > 20)
+                    if (camStickX > 20)
                     {
                         if (newcam_modeflags & NC_FLAG_8D)
                             newcam_yaw_target = newcam_yaw_target+0x2000;
@@ -361,7 +368,7 @@ static void newcam_rotate_button(void)
             }
             else
             {
-                newcam_yaw_acc = newcam_adjust_value(newcam_yaw_acc,-gPlayer2Controller->stickX/8, intendedXMag);
+                newcam_yaw_acc = newcam_adjust_value(newcam_yaw_acc,-camStickX/8, intendedXMag);
             }
         }
         else
@@ -371,8 +378,8 @@ static void newcam_rotate_button(void)
             newcam_yaw_acc -= (newcam_yaw_acc*newcam_degrade);
         }
 
-        if (ABS(gPlayer2Controller->stickY) > 20 && newcam_modeflags & NC_FLAG_YTURN)
-            newcam_tilt_acc = newcam_adjust_value(newcam_tilt_acc,-gPlayer2Controller->stickY/8, intendedYMag);
+        if (ABS(camStickY) > 20 && newcam_modeflags & NC_FLAG_YTURN)
+            newcam_tilt_acc = newcam_adjust_value(newcam_tilt_acc,-camStickY/8, intendedYMag);
         else
         if (newcam_analogue)
         {

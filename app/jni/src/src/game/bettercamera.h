@@ -42,3 +42,9 @@ extern u16 newcam_intendedmode;
 
 extern u16 newcam_mode;
 extern s16 newcam_yaw;
+
+/* Android touch overlay right stick (analog camera mode). */
+extern int gfx_ovl_active;
+extern int gfx_ovl_analog;
+extern int gfx_ovl_right_x;
+extern int gfx_ovl_right_y;

@@ -64,12 +64,30 @@ public class TouchOverlay extends View {
     private final int[] camPressed = {-1, -1};
     private final float camRadius = 52f;
 
+    // Right-hand control: 4 C buttons, or an analog camera stick.
+    private boolean analogMode;
+    private boolean rstickActive;
+    private int rstickPointer = -1;
+    private float rstickX, rstickY, rknobX, rknobY;
+    private final float[] modePos = new float[2];
+    private final float modeRadius = 46f;
+
     public TouchOverlay(Context c) {
         super(c);
         setFocusable(false);
         setClickable(false);
         // The view must receive touches over the whole panel.
         setWillNotDraw(false);
+    }
+
+    /** Switch the right-hand control between C buttons and an analog stick. */
+    public void setAnalogMode(boolean on) {
+        analogMode = on;
+        rstickActive = false;
+        rstickPointer = -1;
+        sm64portActivity.nativeOverlayAnalog(on ? 1 : 0);
+        pushInput();
+        invalidate();
     }
 
     private void layoutButtons() {
@@ -90,6 +108,14 @@ public class TouchOverlay extends View {
         // Camera buttons: upper-right, clear of A/B/Z/R.
         camPos[0][0] = w * 0.93f; camPos[0][1] = h * 0.40f;   // X
         camPos[1][0] = w * 0.84f; camPos[1][1] = h * 0.32f;   // Y
+
+        // C-buttons / analog-camera toggle, below the C cluster.
+        modePos[0] = w * 0.68f; modePos[1] = h * 0.88f;
+    }
+
+    private boolean hitModeToggle(float x, float y) {
+        float dx = x - modePos[0], dy = y - modePos[1];
+        return dx * dx + dy * dy <= (modeRadius * 1.3f) * (modeRadius * 1.3f);
     }
 
     /** Index into camIds for a camera-button hit, else -1. */
@@ -142,6 +168,16 @@ public class TouchOverlay extends View {
                 } else if (cam >= 0) {
                     buttons |= camIds[cam];
                     camPressed[cam] = id;
+                } else if (hitModeToggle(px, py)) {
+                    analogMode = !analogMode;
+                    sm64portActivity.nativeOverlayAnalog(analogMode ? 1 : 0);
+                } else if (analogMode && px > getWidth() * 0.45f) {
+                    rstickActive = true;
+                    rstickPointer = id;
+                    rstickX = px;
+                    rstickY = py;
+                    rknobX = px;
+                    rknobY = py;
                 } else if (px < getWidth() * 0.45f) {
                     stickActive = true;
                     stickPointer = id;
@@ -169,6 +205,18 @@ public class TouchOverlay extends View {
                         knobY = stickY + dy;
                         pushInput();
                         invalidate();
+                    } else if (id == rstickPointer) {
+                        float px = e.getX(i), py = e.getY(i);
+                        float dx = px - rstickX, dy = py - rstickY;
+                        float len = (float) Math.hypot(dx, dy);
+                        if (len > stickRadius) {
+                            dx = dx / len * stickRadius;
+                            dy = dy / len * stickRadius;
+                        }
+                        rknobX = rstickX + dx;
+                        rknobY = rstickY + dy;
+                        pushInput();
+                        invalidate();
                     }
                 }
                 return true;
@@ -181,6 +229,10 @@ public class TouchOverlay extends View {
                 if (id == stickPointer) {
                     stickActive = false;
                     stickPointer = -1;
+                }
+                if (id == rstickPointer) {
+                    rstickActive = false;
+                    rstickPointer = -1;
                 }
                 for (int b = 0; b < btnIds.length; b++) {
                     if (pressedPointer[b] == id) {
@@ -214,6 +266,12 @@ public class TouchOverlay extends View {
             sx = (int) ((knobX - stickX) / stickRadius * 127f);
             sy = (int) (-(knobY - stickY) / stickRadius * 127f);
         }
+        int rx = 0, ry = 0;
+        if (rstickActive) {
+            rx = (int) ((rknobX - rstickX) / stickRadius * 127f);
+            ry = (int) (-(rknobY - rstickY) / stickRadius * 127f);
+        }
+        sm64portActivity.nativeOverlayStick2(rx, ry);
         // The overlay is the sole input source, so always stay active -
         // otherwise button presses were dropped when the stick wasn't held.
         sm64portActivity.nativeOverlayInput(1, sx, sy, buttons);
@@ -251,18 +309,40 @@ public class TouchOverlay extends View {
         }
 
         paint.setTextSize(46f);
-        for (int i = 0; i < 4; i++) {
-            boolean down = (buttons & cIds[i]) != 0;
-            paint.setStyle(Paint.Style.FILL);
-            paint.setColor(down ? 0xCC66FF99 : 0x55FFFFFF);
-            c.drawCircle(cPos[i][0], cPos[i][1], cRadius, paint);
+        if (!analogMode) {
+            for (int i = 0; i < 4; i++) {
+                boolean down = (buttons & cIds[i]) != 0;
+                paint.setStyle(Paint.Style.FILL);
+                paint.setColor(down ? 0xCC66FF99 : 0x55FFFFFF);
+                c.drawCircle(cPos[i][0], cPos[i][1], cRadius, paint);
+                paint.setStyle(Paint.Style.STROKE);
+                paint.setColor(0xAA000000);
+                c.drawCircle(cPos[i][0], cPos[i][1], cRadius, paint);
+                paint.setStyle(Paint.Style.FILL);
+                paint.setColor(Color.BLACK);
+                c.drawText(cLabels[i], cPos[i][0], cPos[i][1] + 16f, paint);
+            }
+        } else if (rstickActive) {
             paint.setStyle(Paint.Style.STROKE);
-            paint.setColor(0xAA000000);
-            c.drawCircle(cPos[i][0], cPos[i][1], cRadius, paint);
+            paint.setStrokeWidth(6f);
+            paint.setColor(0x88FFFFFF);
+            c.drawCircle(rstickX, rstickY, stickRadius, paint);
             paint.setStyle(Paint.Style.FILL);
-            paint.setColor(Color.BLACK);
-            c.drawText(cLabels[i], cPos[i][0], cPos[i][1] + 16f, paint);
+            paint.setColor(0x66FFFFFF);
+            c.drawCircle(rknobX, rknobY, knobRadius, paint);
         }
+
+        // C-buttons / analog-camera mode toggle.
+        paint.setStyle(Paint.Style.FILL);
+        paint.setColor(analogMode ? 0xCC66FF99 : 0x44FFFFFF);
+        c.drawCircle(modePos[0], modePos[1], modeRadius, paint);
+        paint.setStyle(Paint.Style.STROKE);
+        paint.setColor(0xAA000000);
+        c.drawCircle(modePos[0], modePos[1], modeRadius, paint);
+        paint.setStyle(Paint.Style.FILL);
+        paint.setColor(Color.BLACK);
+        paint.setTextSize(38f);
+        c.drawText(analogMode ? "ANA" : "C", modePos[0], modePos[1] + 13f, paint);
 
         // Camera buttons (X = free camera toggle, Y = recentre).
         paint.setTextSize(48f);

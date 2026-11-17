@@ -58,7 +58,7 @@ public class sm64portActivity extends SDLActivity {
     private TextView debugView;
     private boolean stereoOn = true;
     private boolean testOn = false;
-    private boolean tintOn, zbufOn, wireOn, perfOn, swapOn, sameOn, nocullOn, flatOn;
+    private boolean tintOn, zbufOn, wireOn, perfOn, swapOn, sameOn, nocullOn, flatOn, analogOn;
     private final java.util.List<TextView> fitButtons = new java.util.ArrayList<>();
     private int fitMode = 0;
     private int modeIndex = 0;
@@ -738,6 +738,8 @@ public class sm64portActivity extends SDLActivity {
     private native int nativeGetFps();
 
     static native void nativeOverlayInput(int active, int sx, int sy, int buttons);
+    static native void nativeOverlayStick2(int rx, int ry);
+    static native void nativeOverlayAnalog(int on);
     static native void nativeHideInGameControls(int hide);
     private native int nativeGetVpX(int eye);
     private native int nativeGetVpW(int eye);
@@ -791,6 +793,10 @@ public class sm64portActivity extends SDLActivity {
             case "SWAP": nativeSetStereoInt(4, swapOn ? 0 : 1); swapOn = !swapOn; break;
             case "SAME": nativeSetStereoInt(6, sameOn ? 0 : 1); sameOn = !sameOn; break;
             case "NOCULL": nativeSetStereoInt(19, nocullOn ? 0 : 1); nocullOn = !nocullOn; break;
+            case "ANALOG":
+                analogOn = !analogOn;
+                if (touchOverlay != null) touchOverlay.setAnalogMode(analogOn);
+                break;
             case "FLAT":
                 runOnUiThread(() -> {
                     flatOn = !flatOn;
