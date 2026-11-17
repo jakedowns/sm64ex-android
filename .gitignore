@@ -1,7 +1,11 @@
 app/build/
 app/obj/
 app/libs/
+# Build output: .so files are copied here by the build script. The game binary
+# embeds assets extracted from the ROM, so it must never be committed.
+app/src/main/jniLibs/
 app/.cxx/
 build/
 .gradle/
 local.properties
+.locks/

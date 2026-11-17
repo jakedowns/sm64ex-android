@@ -1,5 +1,16 @@
 def buildAsLibrary = project.hasProperty('BUILD_AS_LIBRARY');
 def buildAsApplication = !buildAsLibrary
+
+// Lume Pad 2 is the only supported target, so default to its ABI. Other ABIs
+// are an explicit opt-in to avoid accidentally cross-building:
+//   ./gradlew assembleDebug -PSM64_ABIS=armeabi-v7a,arm64-v8a,x86,x86_64
+def targetAbis = (project.findProperty('SM64_ABIS') ?: 'arm64-v8a')
+        .split(',')
+        .collect { it.trim() }
+        .findAll { !it.isEmpty() }
+if (targetAbis.isEmpty()) {
+    throw new GradleException('SM64_ABIS must contain at least one ABI')
+}
 if (buildAsApplication) {
     apply plugin: 'com.android.application'
 }
@@ -20,7 +31,7 @@ android {
         externalNativeBuild {
             ndkBuild {
                 arguments "APP_PLATFORM=android-21"
-                abiFilters 'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'
+                targetAbis.each { abiFilters it }
             }
             // cmake {
             //     arguments "-DANDROID_APP_PLATFORM=android-19", "-DANDROID_STL=c++_static"

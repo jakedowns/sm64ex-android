@@ -1,0 +1,376 @@
+#!/usr/bin/env bash
+# Serialize access to shared Android resources between agents.
+#
+#   scripts/agent-lock.sh build  [--timeout SECONDS] [--reason TEXT] -- <command...>
+#   scripts/agent-lock.sh device [--timeout SECONDS] [--reason TEXT] -- <command...>
+#   scripts/agent-lock.sh status
+#
+# Lock scope:
+#   build  - one lock for this repository, shared by ALL git worktrees/copies
+#   device - one lock per host, shared by ALL worktrees and projects using adb
+#
+# Run this from the checkout/worktree you are working in. Metadata (branch,
+# commit, worktree) is taken from the current working directory, not from where
+# this script happens to live, so the main checkout's copy may be used from a
+# feature-branch worktree.
+#
+# The lock is held for the lifetime of <command...>. If the command forks
+# background processes they do NOT inherit the lock (fd 9 is closed in the
+# child), so a stray logcat cannot block other agents after this script exits.
+#
+# Exit codes:
+#   0   command ran (its own exit code is propagated)
+#   2   usage error
+#   75  timed out waiting for the lock (EX_TEMPFAIL: retry later)
+
+set -euo pipefail
+
+# Resolve the checkout being acted on from CWD, so invoking the main
+# checkout's helper from a worktree still records and checks that worktree.
+TARGET_ROOT="${AGENT_REPO_ROOT:-$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || pwd)}"
+if [[ -z "$TARGET_ROOT" ]]; then
+    TARGET_ROOT="$PWD"
+fi
+
+# Locks must outlive any single worktree and be shared by every checkout of
+# this repo on the host. They are therefore stored in host state, not in the
+# repository or worktree.
+LOCK_ROOT="${AGENT_LOCK_ROOT:-${AGENT_LOCK_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/opencode}}"
+PROJECT_KEY="${AGENT_PROJECT_KEY:-android-sm64}"
+BUILD_LOCK="${AGENT_BUILD_LOCK:-$LOCK_ROOT/$PROJECT_KEY/build.lock}"
+DEVICE_LOCK="${AGENT_DEVICE_LOCK:-$LOCK_ROOT/devices/android.lock}"
+LEGACY_PROJECT_KEY="sm64ex-android"
+LEGACY_BUILD_LOCK="$LOCK_ROOT/$LEGACY_PROJECT_KEY/build.lock"
+
+usage() {
+    cat <<'EOF'
+Usage:
+  scripts/agent-lock.sh build  [--timeout SECONDS] [--reason TEXT] -- <command...>
+  scripts/agent-lock.sh device [--timeout SECONDS] [--reason TEXT] -- <command...>
+  scripts/agent-lock.sh status
+
+The build lock is shared by all worktrees of this repository. The device lock
+is shared by all worktrees and projects on this host. Run from the worktree you
+are working in; metadata records that branch/worktree.
+
+The lock is held for the lifetime of <command...>. If the command forks
+background processes they do NOT inherit the lock (fd 9 is closed in the
+child), so a stray logcat cannot block other agents after this script exits.
+
+Environment:
+  AGENT_LOCK_ROOT    base directory for lock files
+                     (default: ${XDG_STATE_HOME:-$HOME/.local/state}/opencode)
+  AGENT_BUILD_LOCK   full path override for the build lock
+  AGENT_DEVICE_LOCK  full path override for the device lock
+  AGENT_LOCK_EVENT_LOG
+                     append-only JSONL event log; defaults to lock-events.log
+                     next to the build/device lock files
+  AGENT_PROJECT_KEY  per-repository directory name (default: android-sm64)
+  AGENT_ID           name recorded in lock metadata
+  AGENT_REPO_ROOT    override the checkout used for metadata/preflight
+
+Acquire, release, and timeout events are appended to the event log. Logging is
+best-effort and never affects whether the lock is acquired or released.
+
+Exit codes:
+  0   command ran (its own exit code is propagated)
+  2   usage error
+  75  timed out waiting for the lock (EX_TEMPFAIL: retry later)
+EOF
+}
+
+die() {
+    echo "agent-lock: $*" >&2
+    exit 2
+}
+
+agent_name() {
+    printf '%s' "${AGENT_ID:-${OPENCODE_SESSION_ID:-$(id -un)@$(hostname)}}"
+}
+
+lock_file_for() {
+    case "$1" in
+        build)  printf '%s' "$BUILD_LOCK" ;;
+        device) printf '%s' "$DEVICE_LOCK" ;;
+        *)      die "unknown lock kind: $1 (expected 'build' or 'device')" ;;
+    esac
+}
+
+default_timeout_for() {
+    case "$1" in
+        build)  printf '%s' "${AGENT_BUILD_LOCK_TIMEOUT:-3600}" ;;
+        device) printf '%s' "${AGENT_DEVICE_LOCK_TIMEOUT:-300}" ;;
+    esac
+}
+
+event_log_for() {
+    if [[ -n "${AGENT_LOCK_EVENT_LOG:-}" ]]; then
+        printf '%s' "$AGENT_LOCK_EVENT_LOG"
+        return
+    fi
+    case "$1" in
+        build)  printf '%s' "$(dirname -- "$BUILD_LOCK")/lock-events.log" ;;
+        device) printf '%s' "$(dirname -- "$DEVICE_LOCK")/lock-events.log" ;;
+    esac
+}
+
+utc_now() {
+    date -u +%Y-%m-%dT%H:%M:%SZ
+}
+
+now_ms() {
+    local t
+    t="$(date +%s%3N 2>/dev/null || true)"
+    if [[ "$t" =~ ^[0-9]+$ ]]; then
+        printf '%s' "$t"
+    else
+        printf '%s000' "$(date +%s)"
+    fi
+}
+
+json_escape() {
+    local s="${1-}"
+    s="${s//\\/\\\\}"
+    s="${s//\"/\\\"}"
+    s="${s//$'\n'/\\n}"
+    s="${s//$'\r'/\\r}"
+    s="${s//$'\t'/\\t}"
+    printf '%s' "$s"
+}
+
+# Best-effort append-only JSONL audit record. Never fails the lock operation.
+log_event() {
+    local event="$1" kind="$2" lock_path="$3" event_reason="$4"
+    local wait_timeout="$5" waited_ms="$6" hold_ms="$7" exit_code="$8"
+    local log_file exit_json="null"
+    log_file="$(event_log_for "$kind")"
+    [[ "$exit_code" == "null" ]] || exit_json="$exit_code"
+    mkdir -p -- "$(dirname -- "$log_file")" 2>/dev/null || true
+    {
+        printf '{"v":1,"ts":"%s","event":"%s","lock":"%s","lock_file":"%s","agent":"%s","pid":%s,"host":"%s","worktree":"%s","branch":"%s","head":"%s","reason":"%s","wait_timeout_s":%s,"waited_ms":%s,"hold_ms":%s,"exit":%s}\n' \
+            "$(utc_now)" \
+            "$(json_escape "$event")" \
+            "$(json_escape "$kind")" \
+            "$(json_escape "$lock_path")" \
+            "$(json_escape "$(agent_name)")" \
+            "$$" \
+            "$(json_escape "$(hostname)")" \
+            "$(json_escape "$TARGET_ROOT")" \
+            "$(json_escape "$(git_branch)")" \
+            "$(json_escape "$(git_head)")" \
+            "$(json_escape "$event_reason")" \
+            "$wait_timeout" "$waited_ms" "$hold_ms" "$exit_json" \
+            >>"$log_file"
+    } 2>/dev/null || true
+}
+
+git_branch() {
+    git -C "$TARGET_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || printf 'unknown'
+}
+
+git_head() {
+    git -C "$TARGET_ROOT" rev-parse --short HEAD 2>/dev/null || printf 'unknown'
+}
+
+legacy_build_lock_is_held() {
+    [[ "$PROJECT_KEY" != "$LEGACY_PROJECT_KEY" ]] || return 1
+    [[ -e "$LEGACY_BUILD_LOCK" ]] || return 1
+    ! flock -n "$LEGACY_BUILD_LOCK" true 2>/dev/null
+}
+
+warn_if_locks_are_checkout_local() {
+    local resolved
+    resolved="$(realpath -m -- "$1" 2>/dev/null || printf '%s' "$1")"
+    case "$resolved" in
+        "$TARGET_ROOT"/*)
+            echo "agent-lock: warning: lock file is inside the current checkout:" >&2
+            echo "  $resolved" >&2
+            echo "  Worktrees/copies will not share this lock. Set AGENT_LOCK_ROOT" >&2
+            echo "  to a host-level directory instead." >&2
+            ;;
+    esac
+}
+
+check_build_environment() {
+    [[ "$1" == "build" ]] || return 0
+    if [[ ! -f "$TARGET_ROOT/local.properties" ]] \
+        && [[ -z "${ANDROID_HOME:-}" ]] \
+        && [[ -z "${ANDROID_SDK_ROOT:-}" ]]; then
+        echo "agent-lock: warning: no local.properties and no ANDROID_HOME/" >&2
+        echo "  ANDROID_SDK_ROOT for $TARGET_ROOT; Gradle may not find the SDK." >&2
+    fi
+}
+
+print_status() {
+    local kind file
+    mkdir -p "$(dirname -- "$BUILD_LOCK")" "$(dirname -- "$DEVICE_LOCK")"
+    if legacy_build_lock_is_held; then
+        echo "warning: legacy build lock is HELD by a pre-rename agent:" >&2
+        echo "  $LEGACY_BUILD_LOCK" >&2
+        echo "  Wait for it to finish; new builds gate on it first." >&2
+    fi
+    echo "lock root: $LOCK_ROOT"
+    echo "worktree:  $TARGET_ROOT ($(git_branch) @ $(git_head))"
+    for kind in build device; do
+        file="$(lock_file_for "$kind")"
+        if [[ ! -e "$file" ]]; then
+            echo "$kind: free (never acquired)"
+            echo "  $file"
+        elif flock -n "$file" true 2>/dev/null; then
+            echo "$kind: free (last used $(stat -c '%y' "$file" 2>/dev/null || echo unknown))"
+            echo "  $file"
+            sed 's/^/  /' "$file" 2>/dev/null || true
+        else
+            echo "$kind: HELD"
+            echo "  $file"
+            sed 's/^/  /' "$file" 2>/dev/null || true
+        fi
+        echo "  event log: $(event_log_for "$kind")"
+    done
+}
+
+# ---- status is a standalone subcommand -------------------------------------
+if [[ "${1:-}" == "status" ]]; then
+    warn_if_locks_are_checkout_local "$BUILD_LOCK"
+    warn_if_locks_are_checkout_local "$DEVICE_LOCK"
+    print_status
+    exit 0
+fi
+
+# ---- parse arguments -------------------------------------------------------
+kind=""
+timeout=""
+reason=""
+while (( $# )); do
+    case "$1" in
+        build|device)
+            [[ -z "$kind" ]] || die "lock kind specified twice"
+            kind="$1"
+            shift
+            ;;
+        --timeout)
+            [[ $# -ge 2 ]] || die "--timeout needs a value"
+            timeout="$2"
+            shift 2
+            ;;
+        --reason)
+            [[ $# -ge 2 ]] || die "--reason needs a value"
+            reason="$2"
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        --)
+            shift
+            break
+            ;;
+        *)
+            die "unexpected argument: $1"
+            ;;
+    esac
+done
+
+[[ -n "$kind" ]] || { usage >&2; exit 2; }
+[[ $# -ge 1 ]] || die "no command given (use: ... -- <command...>)"
+[[ -n "$timeout" ]] || timeout="$(default_timeout_for "$kind")"
+[[ "$timeout" =~ ^[0-9]+$ ]] || die "--timeout must be a whole number of seconds"
+
+lock_file="$(lock_file_for "$kind")"
+mkdir -p "$(dirname -- "$lock_file")"
+
+warn_if_locks_are_checkout_local "$lock_file"
+check_build_environment "$kind"
+
+# Open with >> so that waiting never truncates the current holder's metadata.
+wait_start_ms="$(now_ms)"
+waited_ms=0
+hold_start_ms=0
+
+# Migration gate: the project key was renamed from sm64ex-android to
+# android-sm64. While the deprecated legacy lock file exists, acquire it for
+# the whole build as well, so old-path and new-path agents cannot build
+# concurrently. Once the legacy directory is removed, this gate is skipped.
+if [[ "$kind" == "build" ]] \
+    && [[ "$PROJECT_KEY" != "$LEGACY_PROJECT_KEY" ]] \
+    && [[ -e "$LEGACY_BUILD_LOCK" ]]; then
+    echo "agent-lock: using legacy build lock for compatibility:" >&2
+    echo "  $LEGACY_BUILD_LOCK" >&2
+    exec 8>>"$LEGACY_BUILD_LOCK"
+    if ! flock -w "$timeout" 8; then
+        waited_ms=$(( $(now_ms) - wait_start_ms ))
+        log_event timeout "$kind" "$LEGACY_BUILD_LOCK" "${reason:-unspecified}" \
+            "$timeout" "$waited_ms" 0 75
+        echo "agent-lock: timed out waiting for the legacy build lock." >&2
+        echo "Do not bypass the lock. Retry later or report the wait." >&2
+        exit 75
+    fi
+fi
+
+exec 9>>"$lock_file"
+if ! flock -w "$timeout" 9; then
+    waited_ms=$(( $(now_ms) - wait_start_ms ))
+    log_event timeout "$kind" "$lock_file" "${reason:-unspecified}" \
+        "$timeout" "$waited_ms" 0 75
+    {
+        echo "agent-lock: timed out after ${timeout}s waiting for the $kind lock"
+        echo "lock file: $lock_file"
+    } >&2
+    if [[ -s "$lock_file" ]]; then
+        echo "current holder:" >&2
+        sed 's/^/  /' "$lock_file" >&2
+    fi
+    echo "Do not bypass the lock. Retry later or report the wait." >&2
+    exit 75
+fi
+
+waited_ms=$(( $(now_ms) - wait_start_ms ))
+hold_start_ms="$(now_ms)"
+
+# We own the lock now; rewrite metadata (informational only).
+{
+    echo "kind=$kind"
+    echo "agent=$(agent_name)"
+    echo "pid=$$"
+    echo "host=$(hostname)"
+    echo "worktree=$TARGET_ROOT"
+    echo "branch=$(git_branch)"
+    echo "head=$(git_head)"
+    echo "started=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "waited_for=${timeout}s_max"
+    echo "reason=${reason:-unspecified}"
+} >"$lock_file"
+
+log_event acquire "$kind" "$lock_file" "${reason:-unspecified}" \
+    "$timeout" "$waited_ms" 0 null
+
+release_note() {
+    local rc=$?
+    local hold_ms=$(( $(now_ms) - hold_start_ms ))
+    # fd 9 is still open here, so we still own the lock.
+    {
+        echo "released_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        echo "last_kind=$kind"
+        echo "last_agent=$(agent_name)"
+        echo "last_worktree=$TARGET_ROOT"
+        echo "last_branch=$(git_branch)"
+        echo "last_head=$(git_head)"
+        echo "last_exit=$rc"
+        echo "last_hold_ms=$hold_ms"
+        echo "last_waited_ms=$waited_ms"
+    } >"$lock_file" 2>/dev/null || true
+    log_event release "$kind" "$lock_file" "${reason:-unspecified}" \
+        "$timeout" "$waited_ms" "$hold_ms" "$rc"
+}
+trap release_note EXIT
+
+# Run the command with fd 9 closed in the child so forked/background
+# processes cannot inherit and outlive the lock.
+if "$@" 8>&- 9>&-; then
+    rc=0
+else
+    rc=$?
+fi
+
+exit "$rc"

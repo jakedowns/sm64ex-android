@@ -50,6 +50,24 @@ Upon a successful build, the output apk file will be located here:
 
 Rename the apk to `sm64ex-android.apk`, install, and play!
 
+## Working with multiple agents
+
+If more than one agent works in this checkout at the same time, follow
+`multi-agent-rules.md`. All Gradle/NDK builds must run under the build lock and
+all `adb`/device access under the device lock:
+
+```
+scripts/agent-lock.sh build  --reason "assembleDebug" -- ./gradlew assembleDebug
+scripts/agent-lock.sh device --reason "install apk" -- adb install -r app/build/outputs/apk/debug/app-debug.apk
+scripts/agent-lock.sh status
+```
+
+The locks live under host state, not in the repository, so they are shared by
+every git worktree of this project. Run the helper from the worktree you are
+building; branch and commit are recorded automatically. Acquire/release/timeout
+events are appended as JSONL next to the locks, and `status` prints the exact
+log paths.
+
 ## Sources
 
 https://github.com/libsdl-org/SDL/tree/release-2.30.3
