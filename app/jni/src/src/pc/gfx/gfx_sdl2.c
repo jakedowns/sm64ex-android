@@ -74,6 +74,9 @@ extern int gfx_touch_float;
 extern int gfx_ovl_active;
 extern int gfx_ovl_stick_x;
 extern int gfx_ovl_stick_y;
+extern int gfx_ovl_right_x;
+extern int gfx_ovl_right_y;
+extern int gfx_ovl_analog;
 extern unsigned int gfx_ovl_buttons;
 extern int gfx_hide_touch_controls;
 extern int gfx_fps_mode;
@@ -172,6 +175,21 @@ Java_com_vdavid003_sm64port_sm64portActivity_nativeOverlayInput(JNIEnv *env, jcl
     gfx_ovl_stick_x = sx;
     gfx_ovl_stick_y = sy;
     gfx_ovl_buttons = (unsigned int) buttons;
+}
+
+JNIEXPORT void JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeOverlayStick2(JNIEnv *env, jclass clazz,
+                                                                jint rx, jint ry) {
+    (void) env; (void) clazz;
+    gfx_ovl_right_x = rx;
+    gfx_ovl_right_y = ry;
+}
+
+JNIEXPORT void JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeOverlayAnalog(JNIEnv *env, jclass clazz,
+                                                                jint on) {
+    (void) env; (void) clazz;
+    gfx_ovl_analog = on;
 }
 
 JNIEXPORT void JNICALL

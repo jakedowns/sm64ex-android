@@ -30,6 +30,10 @@
 
 #define CBUTTON_MASK (U_CBUTTONS | D_CBUTTONS | L_CBUTTONS | R_CBUTTONS)
 
+/* Overlay buttons for the free camera (set by controller_touchscreen.c). */
+extern u8 camera_mode_button_pressed;
+extern u8 camera_recenter_button_pressed;
+
 /**
  * @file camera.c
  * Implements the camera system, including C-button input, camera modes, camera triggers, and cutscenes.
@@ -3070,6 +3074,52 @@ void update_camera(struct Camera *c) {
     c->nextYaw = gLakituState.nextYaw;
     c->mode = gLakituState.mode;
     c->defMode = gLakituState.defMode;
+
+#ifdef BETTERCAMERA
+    /* X button: toggle between the free camera and the vanilla camera.
+       Y button: recentre the free camera (or reset the vanilla view). */
+    if (camera_mode_button_pressed) {
+        camera_mode_button_pressed = 0;
+        if (c->cutscene == 0) {
+            newcam_active ^= 1;
+            play_sound(SOUND_MENU_CHANGE_SELECT, gDefaultSoundArgs);
+            if (newcam_active) {
+                c->mode = CAMERA_MODE_NEWCAM;
+                c->defMode = CAMERA_MODE_NEWCAM;
+                gLakituState.mode = CAMERA_MODE_NEWCAM;
+                gLakituState.defMode = CAMERA_MODE_NEWCAM;
+                newcam_init(c, 0);
+            } else {
+                s16 officialMode = (sModeInfo.lastMode == CAMERA_MODE_NEWCAM)
+                                       ? CAMERA_MODE_CLOSE
+                                       : sModeInfo.lastMode;
+                if (officialMode == CAMERA_MODE_NONE) {
+                    officialMode = CAMERA_MODE_CLOSE;
+                }
+                set_cam_angle(CAM_ANGLE_LAKITU);
+                sCButtonsPressed = 0;
+                c->mode = officialMode;
+                c->defMode = officialMode;
+                gLakituState.mode = officialMode;
+                gLakituState.defMode = officialMode;
+                gCameraMovementFlags |= CAM_MOVE_INIT_CAMERA;
+            }
+        }
+    }
+
+    if (camera_recenter_button_pressed) {
+        camera_recenter_button_pressed = 0;
+        if (c->cutscene == 0) {
+            if (newcam_active) {
+                newcam_centering = 1;
+            } else {
+                set_cam_angle(CAM_ANGLE_LAKITU);
+                sCButtonsPressed = 0;
+            }
+            play_sound(SOUND_MENU_CHANGE_SELECT, gDefaultSoundArgs);
+        }
+    }
+#endif
 
 #ifdef BETTERCAMERA
     if (c->mode != CAMERA_MODE_NEWCAM)
