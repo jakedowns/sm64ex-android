@@ -1,5 +1,6 @@
 #include <ultra64.h>
 #include <string.h>
+#include <math.h>
 
 #include "sm64.h"
 #include "gfx_dimensions.h"
@@ -124,6 +125,10 @@ struct GraphNodeRoot *gCurGraphNodeRoot = NULL;
 struct GraphNodeMasterList *gCurGraphNodeMasterList = NULL;
 struct GraphNodePerspective *gCurGraphNodeCamFrustum = NULL;
 struct GraphNodeCamera *gCurGraphNodeCamera = NULL;
+
+// Cinematic DOF auto-focus target, consumed by the screen-space FX pass.
+extern float gfx_dof_focus_auto;
+extern struct Object *gMarioObject;
 
 // ---- HFR frame interpolation ---------------------------------------------
 // The simulation runs at a fixed 30 Hz and builds one display list per tick.
@@ -442,6 +447,22 @@ static void geo_process_camera(struct GraphNodeCamera *node) {
     vec3f_copy(node->prevPos, node->pos);
     vec3f_copy(node->prevFocus, node->focus);
     node->prevTimestamp = gGlobalTimer;
+
+    // Cinematic DOF auto-focus: distance to Mario's centre, pulled a little
+    // closer to the camera by his hitbox radius so his front surface is sharp.
+    if (gMarioObject != NULL) {
+        Vec3f marioCentre;
+        f32 focusDist;
+
+        marioCentre[0] = gMarioObject->header.gfx.pos[0];
+        marioCentre[1] = gMarioObject->header.gfx.pos[1] + gMarioObject->hitboxHeight * 0.5f;
+        marioCentre[2] = gMarioObject->header.gfx.pos[2];
+        focusDist = sqrtf(hfr_dist_sq(node->pos, marioCentre)) - gMarioObject->hitboxRadius;
+        if (focusDist < 50.0f) {
+            focusDist = 50.0f;
+        }
+        gfx_dof_focus_auto = focusDist;
+    }
 
     mtxf_lookat(cameraTransform, node->pos, node->focus, node->roll);
     mtxf_mul(gMatStack[gMatStackIndex + 1], cameraTransform, gMatStack[gMatStackIndex]);

@@ -55,6 +55,12 @@ public class DebugReceiver extends BroadcastReceiver {
                 Log.i(TAG, "CMD fps " + v);
                 break;
             }
+            case "busy": {
+                int v = intent.getIntExtra("v", 1);
+                a.debugSetBusy(v);
+                Log.i(TAG, "CMD busy " + v);
+                break;
+            }
             case "reinit":
                 a.debugReinit();
                 Log.i(TAG, "CMD reinit");

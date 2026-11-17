@@ -652,7 +652,11 @@ static int s_fx_ao_bias = 20;         // world units (self-occlusion reject)
 static int s_fx_ao_power = 150;       // percent (contrast)
 
 static int s_fx_dof_on = 0;
-static int s_fx_dof_focus = 800;      // world units
+static int s_fx_dof_focus = 800;      // world units (manual mode)
+static int s_fx_dof_auto = 1;         // 1 = focus on Mario (default)
+// Distance to Mario's centre minus his hitbox radius, written by the game code
+// each tick (rendering_graph_node.c) so auto-focus tracks him.
+float gfx_dof_focus_auto = 800.0f;
 static int s_fx_dof_aperture = 100;   // percent
 static int s_fx_dof_maxblur = 12;     // pixels
 static int s_fx_dof_samples = 16;
@@ -855,6 +859,7 @@ void gfx_opengl_ssfx_set(int which, int value) {
         case 13: s_fx_dof_aperture = value < 0 ? 0 : value; break;
         case 14: s_fx_dof_maxblur = value < 0 ? 0 : (value > 48 ? 48 : value); break;
         case 15: s_fx_dof_samples = value < 1 ? 1 : (value > 32 ? 32 : value); break;
+        case 16: s_fx_dof_auto = value ? 1 : 0; break;
         case 21: s_fx_gi_on = value ? 1 : 0; break;
         case 22: s_fx_gi_intensity = value < 0 ? 0 : value; break;
         case 23: s_fx_gi_radius = value < 1 ? 1 : value; break;
@@ -881,6 +886,8 @@ int gfx_opengl_ssfx_get(int which) {
         case 6:  return s_fx_ao_power;
         case 11: return s_fx_dof_on;
         case 12: return s_fx_dof_focus;
+        case 16: return s_fx_dof_auto;
+        case 17: return (int) (gfx_dof_focus_auto + 0.5f);   // auto focus distance (debug)
         case 13: return s_fx_dof_aperture;
         case 14: return s_fx_dof_maxblur;
         case 15: return s_fx_dof_samples;
@@ -1042,7 +1049,9 @@ static int stereo_fx_pass(void) {
     glUniform1f(s_fx_u.ao_bias, (float)s_fx_ao_bias);
     glUniform1f(s_fx_u.ao_power, (float)s_fx_ao_power);
     glUniform1f(s_fx_u.dof_on, s_fx_dof_on ? 1.0f : 0.0f);
-    glUniform1f(s_fx_u.dof_focus, (float)s_fx_dof_focus);
+    float dof_focus = s_fx_dof_auto ? gfx_dof_focus_auto : (float)s_fx_dof_focus;
+    if (dof_focus < 1.0f) dof_focus = 1.0f;
+    glUniform1f(s_fx_u.dof_focus, dof_focus);
     glUniform1f(s_fx_u.dof_aperture, (float)s_fx_dof_aperture);
     glUniform1f(s_fx_u.dof_maxblur, (float)s_fx_dof_maxblur);
     glUniform1f(s_fx_u.dof_samples, (float)s_fx_dof_samples);

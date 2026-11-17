@@ -72,6 +72,8 @@ public class sm64portActivity extends SDLActivity {
     private boolean stayOn = true, uiParallaxOn, uiBufOn;
     private boolean uiPostOn = true;
     private int overlayAlphaPct = 100;
+    // true = the assistant is driving the app: debug line turns red.
+    private boolean busyOn;
     private final java.util.List<TextView> fitButtons = new java.util.ArrayList<>();
     private int fitMode = 0;
     private int modeIndex = 0;
@@ -604,6 +606,7 @@ public class sm64portActivity extends SDLActivity {
         // --- Cinematic DOF ---
         beginTab();
         dofToggle = addFxToggle("CINEMATIC DOF", 11, dofOn);
+        addFxToggle("AUTO FOCUS", 16, true);   // tracks Mario by default
         addFxSlider("Focus", 50, 5000, 800, " u", 12);
         addFxSlider("Aperture", 0, 300, 100, " %", 13);
         addFxSlider("Max blur", 0, 40, 12, " px", 14);
@@ -947,7 +950,9 @@ public class sm64portActivity extends SDLActivity {
                             + "  bl=" + (sdk != null && sdk.getBacklight())
                             + " ft=" + (sdk != null && sdk.isFaceTrackingStarted()));
                 }
-                debugView.setText(BUILD_NAME + " drawable " + nativeGetDrawableWidth() + "x"
+                debugView.setTextColor(busyOn ? 0xFFFF5555 : 0xFFAAFFAA);
+                debugView.setText((busyOn ? "BUSY - hands off  |  " : "FREE  |  ")
+                        + BUILD_NAME + " drawable " + nativeGetDrawableWidth() + "x"
                         + nativeGetDrawableHeight()
                         + "  mode=" + (stereoOn ? "3D" : "2D")
                         + "  ipd=" + (int) bars[0].getProgress()
@@ -1032,6 +1037,17 @@ public class sm64portActivity extends SDLActivity {
     }
 
     // ---- runtime debug control (see DebugReceiver) -------------------------
+    /** Red debug line + notice while the assistant is driving the app. */
+    void debugSetBusy(int on) {
+        busyOn = on != 0;
+        runOnUiThread(() -> {
+            if (debugView != null) {
+                debugView.setTextColor(busyOn ? 0xFFFF5555 : 0xFFAAFFAA);
+            }
+        });
+        Log.i(TAG, "BUSY " + busyOn);
+    }
+
     void debugSet(int k, int v) {
         if (k < 0) return;
         if (k == 39) {
@@ -1182,6 +1198,7 @@ public class sm64portActivity extends SDLActivity {
                         + " hfr=" + nativeGetHfrMtxCount() + "/" + nativeGetHfrInterp()
                     + " mxao=" + nativeGetSSFX(1) + " cdof=" + nativeGetSSFX(11)
                     + " ssgi=" + nativeGetSSFX(21) + " fxdbg=" + nativeGetSSFX(31)
+                    + " dofauto=" + nativeGetSSFX(16) + " dofz=" + nativeGetSSFX(17)
                     + " stay=" + stayOn + " uipost=" + uiPostOn
                     + " cam=" + nativeGetCamMode() + " ctlA=" + overlayAlphaPct
                     + " uipar=" + uiParallaxOn + " uibuf=" + uiBufOn);
