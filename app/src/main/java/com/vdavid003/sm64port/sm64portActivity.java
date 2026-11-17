@@ -70,6 +70,7 @@ public class sm64portActivity extends SDLActivity {
     private boolean testOn = false;
     private boolean tintOn, zbufOn, wireOn, perfOn, swapOn, sameOn, nocullOn, flatOn, analogOn;
     private boolean stayOn = true, uiParallaxOn, uiBufOn;
+    private boolean toeAutoOn = true;
     private boolean uiPostOn = true;
     private int overlayAlphaPct = 100;
     // true = the assistant is driving the app: debug line turns red.
@@ -450,15 +451,15 @@ public class sm64portActivity extends SDLActivity {
 
         android.widget.AbsoluteLayout toggles = new android.widget.AbsoluteLayout(this);
         String[][] tgl = {{"ZBUF", "15"}, {"WIRE", "16"}, {"SWAP", "4"}, {"SAME", "6"}, {"TINT", "7"}, {"PERF2x", "12"}, {"STAY", "30"},
-                {"UIPOST", "35"}, {"UIPAR", "36"}, {"UIBUF", "37"},
+                {"UIPOST", "35"}, {"UIPAR", "36"}, {"UIBUF", "37"}, {"TOEAUTO", "40"},
                 {"FILL", "13"}, {"4:3", "13"}, {"16:9", "13"}};
         for (String[] t : tgl) {
             final int which = Integer.parseInt(t[1]);
             final TextView b = new TextView(this);
             b.setText(t[0]);
             // UIPOST defaults to on in the renderer; keep the button in sync.
-            b.setTextColor((t[0].equals("UIPOST") || t[0].equals("STAY"))
-                    ? 0xFF66FF99 : 0xFF888888);
+            b.setTextColor((t[0].equals("UIPOST") || t[0].equals("STAY")
+                    || t[0].equals("TOEAUTO")) ? 0xFF66FF99 : 0xFF888888);
             b.setTextSize(14);
             b.setPadding(pad, pad / 2, pad, pad / 2);
             final int id = System.identityHashCode(b);
@@ -1108,6 +1109,11 @@ public class sm64portActivity extends SDLActivity {
                 analogOn = !analogOn;
                 if (touchOverlay != null) touchOverlay.setAnalogMode(analogOn);
                 break;
+            case "TOEAUTO":
+                toeAutoOn = !toeAutoOn;
+                nativeSetStereoInt(40, toeAutoOn ? 1 : 0);
+                Log.i(TAG, "TOEAUTO=" + toeAutoOn);
+                break;
             case "CAM":
                 nativeToggleCamMode();
                 Log.i(TAG, "CAM toggle -> " + nativeGetCamMode());
@@ -1201,6 +1207,7 @@ public class sm64portActivity extends SDLActivity {
                     + " dofauto=" + nativeGetSSFX(16) + " dofz=" + nativeGetSSFX(17)
                     + " stay=" + stayOn + " uipost=" + uiPostOn
                     + " cam=" + nativeGetCamMode() + " ctlA=" + overlayAlphaPct
+                    + " toeauto=" + toeAutoOn
                     + " uipar=" + uiParallaxOn + " uibuf=" + uiBufOn);
         });
     }

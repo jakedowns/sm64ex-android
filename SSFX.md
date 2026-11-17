@@ -84,8 +84,18 @@ so MXAO/DOF/SSGI never see, blur or bleed into the HUD.
   whole-list path is used.
 
 Stereo-int keys (`cmd set --ei k ... --ei v ...`): `30` STAY,
-`35` UIPOST, `36` UIPARALLAX, `37` UIBUF. Dump fields: `stay=`, `uipost=`,
-`uipar=`, `uibuf=`. UI FBO creation is logged as `SM64FBO ui <eye> fbo=...`.
+`35` UIPOST, `36` UIPARALLAX, `37` UIBUF, `38` UI depth (px), `40` TOEAUTO.
+Dump fields: `stay=`, `uipost=`, `uipar=`, `uibuf=`, `toeauto=`. UI FBO creation
+is logged as `SM64FBO ui <eye> fbo=...`.
+
+### Auto toe (TOEAUTO, on by default)
+
+With TOEAUTO on, the manual Toe in/out slider is ignored and both eyes are
+canted at `theta = atan((ipd/2) / d)`, where `d` is the DOF autofocus distance
+(|camera - Mario's centre| - hitbox radius, updated every tick). The pair
+therefore aims at Mario's front: the cant grows as he comes closer and the eyes
+are nearly parallel at long range. Capped at ~20 degrees. TOEAUTO off restores
+the manual slider (positive % = toe-out).
 
 ## Stay in level after a star (STAY)
 

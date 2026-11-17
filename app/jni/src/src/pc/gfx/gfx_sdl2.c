@@ -86,6 +86,7 @@ extern int gfx_ui_post;
 extern int gfx_ui_parallax;
 extern int gfx_ui_buf;
 extern float gfx_ui_depth_px;
+extern int gfx_toe_auto;
 extern float gfx_render_delta;
 extern float gfx_stereo_ipd_px;
 extern float gfx_stereo_convergence_px;
@@ -162,6 +163,7 @@ Java_com_vdavid003_sm64port_sm64portActivity_nativeSetStereoInt(JNIEnv *env, job
         case 36: gfx_ui_parallax = value; break;
         case 37: gfx_ui_buf = value; break;
         case 38: gfx_ui_depth_px = (float) value; break;
+        case 40: gfx_toe_auto = value != 0; break;
         case 8: gfx_touch_dx = (float) value * 4.0f; break;    // percent -> px (approx)
         case 9: gfx_touch_dy = (float) value * 4.0f; break;
         case 10: gfx_touch_scale = (float) value / 100.0f; break;

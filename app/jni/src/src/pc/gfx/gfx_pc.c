@@ -227,6 +227,10 @@ float gfx_stereo_eye_sign = 1.0f; // +1 for the left/eye-0 pass, -1 for the othe
 // UI-after-post: apparent depth of the UI layer, in pixels of disparity per eye
 // (positive = in front of the screen plane, negative = behind).
 float gfx_ui_depth_px = 0.0f;
+// Auto toe: aim both eyes at the DOF autofocus distance (Mario's front) instead
+// of using the manual toe slider. On by default.
+int gfx_toe_auto = 1;
+extern float gfx_dof_focus_auto;
 int gfx_stereo_nocull = 0;       // debug: skip frustum culling
 int gfx_stereo_vp[2][2] = {{-1, -1}, {-1, -1}};
 
@@ -274,13 +278,32 @@ static void gfx_apply_stereo_shear(void) {
             rsp.MP_matrix[i][1] = -rsp.MP_matrix[i][1];
         }
     }
-    if (gfx_stereo_toe_pct != 0) {
+    if (gfx_toe_auto || gfx_stereo_toe_pct != 0) {
         // Camera canting: shift x proportionally to z (rotate the eye about
         // the vertical axis). Positive = toe-out, negative = toe-in.
         // The two eyes must cant in *opposite* directions (mirrored), so the
         // pair converges/diverges around the centre instead of both eyes
         // looking the same way.
-        float toe = gfx_stereo_toe_pct / 100.0f * 0.25f * gfx_stereo_eye_sign;
+        float toe;
+
+        if (gfx_toe_auto) {
+            // Aim both eyes at the autofocus target (Mario's front): the cant
+            // follows theta = atan(halfSeparation / distance), so it grows as
+            // he comes closer and the pair is nearly parallel far away.
+            float halfSep = 0.5f * gfx_stereo_ipd_px;
+            float d = gfx_dof_focus_auto;
+
+            if (d < 1.0f) {
+                d = 1.0f;
+            }
+            toe = atanf(halfSep / d);
+            if (toe > 0.35f) {
+                toe = 0.35f;   // don't cross the eyes past ~20 degrees
+            }
+            toe = -toe * gfx_stereo_eye_sign;   // toe-in, mirrored
+        } else {
+            toe = gfx_stereo_toe_pct / 100.0f * 0.25f * gfx_stereo_eye_sign;
+        }
         for (int i = 0; i < 4; i++) {
             rsp.MP_matrix[i][0] += toe * rsp.MP_matrix[i][2];
         }
