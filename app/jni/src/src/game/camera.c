@@ -3111,6 +3111,10 @@ void update_camera(struct Camera *c) {
         camera_recenter_button_pressed = 0;
         if (c->cutscene == 0) {
             if (newcam_active) {
+                // Aim the free camera behind Mario. Just setting the centering
+                // flag is not enough: newcam_zoom_button() approaches
+                // newcam_yaw_target, which otherwise tracks the current yaw.
+                newcam_yaw_target = -gMarioState->faceAngle[1] - 0x4000;
                 newcam_centering = 1;
             } else {
                 set_cam_angle(CAM_ANGLE_LAKITU);

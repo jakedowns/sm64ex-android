@@ -199,8 +199,8 @@ touch overlay:
 
 - **X** toggles between the vanilla camera and the free camera (button turns
   solid green while the free camera is active).
-- **Y** recentres the free camera (or resets the vanilla view when free cam is
-  off).
+- **Y** recentres the free camera behind Mario (or resets the vanilla view when
+  free cam is off).
 - The right-hand control can be switched from C-buttons to an analog camera
   stick (**C / ANA** toggle); the stick drives the free camera.
 - Free camera parameters (sensitivity, aggression, pan, degradation) are read
