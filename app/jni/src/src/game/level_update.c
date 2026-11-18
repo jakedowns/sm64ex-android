@@ -29,6 +29,7 @@
 #include "course_table.h"
 #include "thread6.h"
 #include "enhancements/death_ragdoll.h"
+#include "menu/level_select_menu.h"
 #include "../../include/libc/stdlib.h"
 #include "../pc/pc_main.h"
 
@@ -243,6 +244,30 @@ void fade_into_special_warp(u32 arg, u32 color) {
     level_set_transition(30, NULL);
 
     warp_special(arg);
+}
+
+/* ---------------- Debug level select ---------------- */
+
+volatile s16 gLevelSelectOpenRequest = 0;
+
+static int level_select_combo_pressed(void) {
+    return (gPlayer1Controller->buttonDown & (L_TRIG | R_TRIG)) == (L_TRIG | R_TRIG)
+        && (gPlayer1Controller->buttonPressed & START_BUTTON);
+}
+
+/**
+ * Thread-safe debug entry (JNI runs on the UI thread): just arms the request.
+ * The game thread picks it up in update_level(), or intro_default() on the
+ * title screen. `autoLevel` >= LEVEL_MIN makes the menu return that stage
+ * immediately (used by `cmd level`).
+ */
+void level_select_request_open(s16 autoLevel) {
+    level_select_set_auto_level(autoLevel);
+    gLevelSelectOpenRequest = 1;
+}
+
+void level_select_debug_warp(s16 level) {
+    level_select_request_open(level);
 }
 
 void stub_level_update_1(void) {
@@ -1027,6 +1052,14 @@ s32 play_mode_normal(void) {
 }
 
 s32 play_mode_paused(void) {
+    if (gPauseScreenMode == 0 && level_select_combo_pressed()) {
+        // L + R + START: leave the pause menu and open level select.
+        gPauseScreenMode = 1;
+        raise_background_noise(1);
+        gCameraMovementFlags &= ~CAM_MOVE_PAUSE_SCREEN;
+        level_select_request_open(-1);
+        return 0;
+    }
     if (gPauseScreenMode == 0) {
         set_menu_mode(RENDER_PAUSE_SCREEN);
     } else if (gPauseScreenMode == 1) {
@@ -1152,6 +1185,15 @@ static s32 play_mode_unused(void) {
 
 s32 update_level(void) {
     s32 changeLevel;
+
+    // Debug level select request (ENH button / `cmd level` / L+R+START).
+    if (gLevelSelectOpenRequest && gCurrentArea != NULL && gMarioState != NULL
+        && gMarioState->action != ACT_UNINITIALIZED
+        && gCurrLevelNum >= LEVEL_MIN && gCurrLevelNum <= LEVEL_MAX) {
+        gLevelSelectOpenRequest = 0;
+        gDebugLevelSelect = 1;
+        fade_into_special_warp(-9, 1);
+    }
 
     switch (sCurrPlayMode) {
         case PLAY_MODE_NORMAL:

@@ -13,6 +13,7 @@
 #include "seq_ids.h"
 #include "engine/math_util.h"
 #include "level_table.h"
+#include "course_table.h"
 
 #define PRESS_START_DEMO_TIMER 800
 
@@ -30,6 +31,14 @@ static u16 gDemoCountdown = 0;
 static s16 D_U_801A7C34 = 1;
 static s16 gameOverNotPlayed = 1;
 #endif
+
+// Debug: if >= LEVEL_MIN, the level select menu returns this level on its
+// first frame (used by `cmd level` / the LEVEL SELECT button).
+s16 gLevelSelectAutoLevel = -1;
+
+void level_select_set_auto_level(s16 level) {
+    gLevelSelectAutoLevel = (level >= LEVEL_MIN && level <= LEVEL_MAX) ? level : -1;
+}
 
 // run the demo timer on the PRESS START screen.
 // this function will return a non-0 timer once
@@ -99,6 +108,43 @@ int start_demo(int timer)
 
 s16 level_select_input_loop(void) {
     s32 stageChanged = FALSE;
+    s16 stickStep = 0;
+    static u8 sStickLatch = FALSE;
+    static s16 sStickRepeat = 0;
+
+    // Headless/direct warp: jump straight to the requested stage.
+    if (gLevelSelectAutoLevel >= LEVEL_MIN) {
+        gCurrLevelNum = gLevelSelectAutoLevel;
+        gLevelSelectAutoLevel = -1;
+        gCurrSaveFileNum = 4;
+        gCurrActNum = 6;
+        gSavedCourseNum = COURSE_NONE;
+        play_sound(SOUND_MENU_STAR_SOUND, gDefaultSoundArgs);
+        return gCurrLevelNum;
+    }
+
+    // Touch/gamepad left stick navigation (one step per tilt, then repeat).
+    if (sStickRepeat > 0) {
+        sStickRepeat--;
+    }
+    if (gPlayer1Controller->stickY > 55) {
+        stickStep = -1;
+    } else if (gPlayer1Controller->stickY < -55) {
+        stickStep = 1;
+    } else if (gPlayer1Controller->stickX < -55) {
+        stickStep = -10;
+    } else if (gPlayer1Controller->stickX > 55) {
+        stickStep = 10;
+    }
+    if (stickStep != 0 && !sStickLatch && sStickRepeat == 0) {
+        gCurrLevelNum += stickStep;
+        stageChanged = TRUE;
+        sStickLatch = TRUE;
+        sStickRepeat = 5;
+    } else if (stickStep == 0) {
+        sStickLatch = FALSE;
+        sStickRepeat = 0;
+    }
 
     // perform the ID updates per each button press.
     if (gPlayer1Controller->buttonPressed & A_BUTTON) {
@@ -107,16 +153,16 @@ s16 level_select_input_loop(void) {
     if (gPlayer1Controller->buttonPressed & B_BUTTON) {
         --gCurrLevelNum, stageChanged = TRUE;
     }
-    if (gPlayer1Controller->buttonPressed & U_JPAD) {
+    if (gPlayer1Controller->buttonPressed & U_JPAD || gPlayer1Controller->buttonPressed & U_CBUTTONS) {
         --gCurrLevelNum, stageChanged = TRUE;
     }
-    if (gPlayer1Controller->buttonPressed & D_JPAD) {
+    if (gPlayer1Controller->buttonPressed & D_JPAD || gPlayer1Controller->buttonPressed & D_CBUTTONS) {
         ++gCurrLevelNum, stageChanged = TRUE;
     }
-    if (gPlayer1Controller->buttonPressed & L_JPAD) {
+    if (gPlayer1Controller->buttonPressed & L_JPAD || gPlayer1Controller->buttonPressed & L_CBUTTONS) {
         gCurrLevelNum -= 10, stageChanged = TRUE;
     }
-    if (gPlayer1Controller->buttonPressed & R_JPAD) {
+    if (gPlayer1Controller->buttonPressed & R_JPAD || gPlayer1Controller->buttonPressed & R_CBUTTONS) {
         gCurrLevelNum += 10, stageChanged = TRUE;
     }
 
@@ -158,6 +204,11 @@ s16 level_select_input_loop(void) {
 }
 
 
+static int level_select_combo_pressed(void) {
+    return (gPlayer1Controller->buttonDown & (L_TRIG | R_TRIG)) == (L_TRIG | R_TRIG)
+        && (gPlayer1Controller->buttonPressed & START_BUTTON);
+}
+
 int intro_default(void) {
     s32 sp1C = 0;
 
@@ -167,6 +218,19 @@ int intro_default(void) {
         D_U_801A7C34 = 0;
     }
 #endif
+    // Debug channel / ENH button opened level select before a level was live.
+    if (gLevelSelectOpenRequest) {
+        gLevelSelectOpenRequest = 0;
+        gDebugLevelSelect = 1;
+        play_sound(SOUND_MENU_STAR_SOUND, gDefaultSoundArgs);
+        return 101;
+    }
+
+    // L + R + START on the title screen enters the level select.
+    if (level_select_combo_pressed()) {
+        gDebugLevelSelect = 1;
+    }
+
     print_intro_text();
 
     if (gPlayer1Controller->buttonPressed & START_BUTTON) {
@@ -188,6 +252,17 @@ int intro_game_over(void) {
         gameOverNotPlayed = 0;
     }
 #endif
+
+    if (gLevelSelectOpenRequest) {
+        gLevelSelectOpenRequest = 0;
+        gDebugLevelSelect = 1;
+        play_sound(SOUND_MENU_STAR_SOUND, gDefaultSoundArgs);
+        return 101;
+    }
+
+    if (level_select_combo_pressed()) {
+        gDebugLevelSelect = 1;
+    }
 
     print_intro_text();
 

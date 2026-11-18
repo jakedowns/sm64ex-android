@@ -21,6 +21,8 @@ Everything below was added on top of upstream in this fork.
   (default on).
 - **SSRTX**: screen-space ray-traced reflections with a dedicated **SSRTX** tab
   (opt-in, default off).
+- **Debug level select**: ENH button, `cmd level`, or **L + R + START** in the
+  pause menu/title screen.
 - **KILL MARIO (TEST)** button and `cmd kill` for testing the ragdoll path.
 - Headless tooling: `cmd shadow`, `cmd kill`, `cmd pad`, plus new
   `RAGDOLL/HITRAG/PPCAM/SHADOW/SHADOWDBG/SSRTX` toggles.
@@ -288,6 +290,27 @@ The shadow matrices are built in `rendering_graph_node.c` from the camera node
 (`gfx_cam_inv_mtx`, `gfx_shadow_light_vp`); the depth pass runs before the eye
 passes and is view-independent, so both eyes share one map.
 
+### Debug level select (ENH tab / `cmd level` / L+R+START)
+
+The decomp debug level select (`src/menu/level_select_menu.c`) is wired up:
+
+- **ENH → LEVEL SELECT**, or `cmd level` with no `n`, opens the menu.
+- `cmd level --ei n <id>` jumps straight to that level id.
+- **L + R + START** opens it from the pause menu or the title screen.
+- Navigate with the left stick, **A/B** (±1) or the C-button cluster
+  (up/down ±1, left/right ±10). **START** warps; the vanilla quit combo is
+  `Z + START + L-C + R-C`.
+- While active, exiting a course returns to the level select instead of the
+  castle (the original `gDebugLevelSelect` behaviour).
+
+```sh
+adb shell $B --es cmd level              # open the menu
+adb shell $B --es cmd level --ei n 24    # warp straight to level 24
+```
+
+This is the fastest way to test a specific course with the stereo/shadow/FX
+tabs after changing a setting.
+
 ### Debug kill (testing)
 
 The **ENH** tab has a **KILL MARIO (TEST)** button, and the debug channel has
@@ -321,6 +344,8 @@ adb shell $B --es cmd toggle --es name MXAO     # MXAO / CDOF / SSGI / SSRTX / S
 adb shell $B --es cmd fx --ei k 2 --ei v 250    # screen-space FX knob
 adb shell $B --es cmd shadow --ei k 1 --ei v 1024  # shadow knob (res here)
 adb shell $B --es cmd kill                      # kill Mario (ragdoll if enabled)
+adb shell $B --es cmd level                     # open debug level select
+adb shell $B --es cmd level --ei n 24           # warp straight to level id 24
 adb shell $B --es cmd pad --ei sx 0 --ei sy 0 --ei buttons 4096 --ei ms 250
 adb shell $B --es cmd fps --ei v 2              # 0=30 1=60 2=120 3=uncapped
 adb shell $B --es cmd busy --ei v 1             # debug line red ("hands off") / 0 green

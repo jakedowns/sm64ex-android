@@ -452,7 +452,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         grid.setOrientation(android.widget.GridLayout.HORIZONTAL);
         controls.addView(grid);
         addSlider("IPD", -300, 300, 0, " px", 0);
-        addSlider("Zero parallax", -1280, 1280, 0, " px", 1);
+        addSlider("Zero parallax", -100, 100, 0, " px", 1);
         addSlider("Depth", -200, 200, 10, " %", 2);
         addSlider("UI depth", -60, 60, 0, " px", 38);
         addSlider("Toe in/out", -100, 100, 0, " %", 17);
@@ -677,6 +677,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         ragdollToggle = addEnhToggle("DEATH RAGDOLL", 0, ragdollOn);
         hitRagdollToggle = addEnhToggle("HIT RAGDOLL", 1, hitRagdollOn);
         ppcamToggle = addEnhToggle("PUPPYCAM+", 2, ppcamOn);
+        addEnhButton("LEVEL SELECT", this::openLevelSelect);
         addEnhButton("KILL MARIO (TEST)", this::debugKill);
 
         // --- Realtime dynamic shadows (quality / performance) ---
@@ -808,6 +809,18 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     void debugKill() {
         nativeDebugKill();
         Log.i(TAG, "KILL MARIO requested");
+    }
+
+    /** Open the decomp debug level select (also L+R+START in pause/title). */
+    void openLevelSelect() {
+        nativeLevelSelect();
+        Log.i(TAG, "LEVEL SELECT requested");
+    }
+
+    /** Open level select, or warp straight to `level` when n >= 0. */
+    void debugLevel(int level) {
+        nativeDebugLevel(level);
+        Log.i(TAG, "LEVEL " + level + " requested");
     }
 
     // ---- realtime shadow widgets (nativeSetShadow channel) ----
@@ -949,12 +962,15 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             return;   // first sample is the reference, no motion yet
         }
         float dAz = wrapPi(o[0] - gyroRef[0]);    // yaw about world up
-        float dPitch = wrapPi(o[1] - gyroRef[1]); // tilt up/down
-        float dRoll = wrapPi(o[2] - gyroRef[2]);  // twist
+        float dPitch = wrapPi(o[1] - gyroRef[1]); // tilt (SensorManager axis)
+        float dRoll = wrapPi(o[2] - gyroRef[2]);  // twist (SensorManager axis)
 
-        // Axis signs: flip here if an axis moves the view the wrong way.
+        // The tablet is mounted landscape while SensorManager's orientation is
+        // relative to its natural portrait axes, so its pitch arrives on the
+        // roll channel (and vice versa). Swap them before handing the angles to
+        // the renderer; the game side expects (pitch, yaw, roll).
         try {
-            nativeSetGyro(dPitch, -dAz, -dRoll);
+            nativeSetGyro(dRoll, -dAz, -dPitch);
         } catch (Throwable ignored) {
             // native library not loaded yet
         }
@@ -1298,7 +1314,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                         + nativeGetDrawableHeight()
                         + "  mode=" + (stereoOn ? "3D" : "2D")
                         + "  ipd=" + (int) bars[0].getProgress()
-                        + " conv=" + (bars[1].getProgress() - 300)
+                        + " conv=" + (bars[1].getProgress() - 100)
                         + " depth=" + bars[2].getProgress() + "%"
                         + " src=" + SRC_SIZES[srcIndex][0] + "x" + SRC_SIZES[srcIndex][1]
                         + " eyeW=" + nativeGetEyeWidth() + " st=" + nativeGetStereoEnabled()
@@ -1354,6 +1370,8 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     static native void nativeSetGyro(float pitch, float yaw, float roll);
     static native int nativeGetHeadPose(int axis);
     static native void nativeDebugKill();
+    static native void nativeLevelSelect();
+    static native void nativeDebugLevel(int level);
     static native void nativeOverlayStick2(int rx, int ry);
     static native void nativeOverlayAnalog(int on);
     static native void nativeHideInGameControls(int hide);

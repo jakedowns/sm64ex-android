@@ -63,6 +63,12 @@ public class DebugReceiver extends BroadcastReceiver {
                 a.debugKill();
                 Log.i(TAG, "CMD kill");
                 break;
+            case "level": {
+                int n = intent.getIntExtra("n", -1);
+                a.debugLevel(n);
+                Log.i(TAG, "CMD level n=" + n);
+                break;
+            }
             case "toggle": {
                 String name = intent.getStringExtra("name");
                 a.debugToggle(name);

@@ -369,6 +369,21 @@ Java_com_vdavid003_sm64port_sm64portActivity_nativeDebugKill(JNIEnv *env, jclass
 }
 
 JNIEXPORT void JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeLevelSelect(JNIEnv *env, jclass clazz) {
+    (void) env; (void) clazz;
+    extern void level_select_request_open(s16 autoLevel);
+    level_select_request_open(-1);
+}
+
+JNIEXPORT void JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeDebugLevel(JNIEnv *env, jclass clazz,
+                                                              jint level) {
+    (void) env; (void) clazz;
+    extern void level_select_debug_warp(s16 level);
+    level_select_debug_warp((s16) level);
+}
+
+JNIEXPORT void JNICALL
 Java_com_vdavid003_sm64port_sm64portActivity_nativeSetShadow(JNIEnv *env, jobject thiz,
                                                             jint which, jint value) {
     (void) env; (void) thiz;

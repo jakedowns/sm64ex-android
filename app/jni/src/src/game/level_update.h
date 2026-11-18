@@ -121,6 +121,11 @@ void load_level_init_text(u32 arg);
 s16 level_trigger_warp(struct MarioState *m, s32 warpOp);
 void level_set_transition(s16 length, void (*updateFunction)(s16 *));
 
+// Debug level select (L+R+START, ENH button, `cmd level`).
+extern volatile s16 gLevelSelectOpenRequest;
+void level_select_request_open(s16 autoLevel);
+void level_select_debug_warp(s16 level);
+
 s32 lvl_init_or_update(s16 initOrUpdate, s32);
 s32 lvl_init_from_save_file(s16, s32 levelNum);
 s32 lvl_set_current_level(s16, s32 levelNum);
