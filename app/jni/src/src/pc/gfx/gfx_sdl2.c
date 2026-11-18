@@ -87,6 +87,14 @@ extern int gfx_ui_parallax;
 extern int gfx_ui_buf;
 extern float gfx_ui_depth_px;
 extern int gfx_toe_auto;
+// Camera tracking (defined in gfx_pc.c).
+extern int gfx_hdt_enabled;
+extern int gfx_gyro_enabled;
+extern float gfx_hdt_strength;
+extern float gfx_gyro_strength;
+extern float gfx_head_pose[3];
+extern int gfx_head_valid;
+extern float gfx_gyro_ypr[3];
 extern float gfx_render_delta;
 extern float gfx_stereo_ipd_px;
 extern float gfx_stereo_convergence_px;
@@ -164,6 +172,10 @@ Java_com_vdavid003_sm64port_sm64portActivity_nativeSetStereoInt(JNIEnv *env, job
         case 37: gfx_ui_buf = value; break;
         case 38: gfx_ui_depth_px = (float) value; break;
         case 40: gfx_toe_auto = value != 0; break;
+        case 41: gfx_hdt_enabled = value != 0; break;
+        case 42: gfx_gyro_enabled = value != 0; break;
+        case 43: gfx_hdt_strength = (float) value; break;
+        case 44: gfx_gyro_strength = (float) value; break;
         case 8: gfx_touch_dx = (float) value * 4.0f; break;    // percent -> px (approx)
         case 9: gfx_touch_dy = (float) value * 4.0f; break;
         case 10: gfx_touch_scale = (float) value / 100.0f; break;
@@ -238,6 +250,26 @@ JNIEXPORT jint JNICALL
 Java_com_vdavid003_sm64port_sm64portActivity_nativeGetHfrInterp(JNIEnv *env, jclass clazz) {
     (void) env; (void) clazz;
     return gfx_hfr_interp;
+}
+
+JNIEXPORT void JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeSetHeadPose(JNIEnv *env, jclass clazz,
+                                                               jfloat x, jfloat y, jfloat z,
+                                                               jint valid) {
+    (void) env; (void) clazz;
+    gfx_head_pose[0] = x;
+    gfx_head_pose[1] = y;
+    gfx_head_pose[2] = z;
+    gfx_head_valid = valid ? 1 : 0;
+}
+
+JNIEXPORT void JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeSetGyro(JNIEnv *env, jclass clazz,
+                                                           jfloat pitch, jfloat yaw, jfloat roll) {
+    (void) env; (void) clazz;
+    gfx_gyro_ypr[0] = pitch;
+    gfx_gyro_ypr[1] = yaw;
+    gfx_gyro_ypr[2] = roll;
 }
 
 JNIEXPORT jint JNICALL

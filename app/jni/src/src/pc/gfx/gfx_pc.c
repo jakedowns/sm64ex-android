@@ -231,6 +231,26 @@ float gfx_ui_depth_px = 0.0f;
 // of using the manual toe slider. On by default.
 int gfx_toe_auto = 1;
 extern float gfx_dof_focus_auto;
+
+// --- camera tracking (Leia eye/face tracking + device gyro) -----------------
+// Both features move the *view* matrices, so they act on the real cameras
+// rather than on the screen-space stereo shear.
+int   gfx_hdt_enabled = 0;          // HEADTRACK: head-coupled parallax
+int   gfx_gyro_enabled = 0;         // GYRO: device orientation -> camera rotation
+float gfx_hdt_strength = 100.0f;    // percent
+float gfx_gyro_strength = 100.0f;   // percent
+// Head position from the Leia tracker, millimetres from the screen centre.
+float gfx_head_pose[3] = {0.0f, 0.0f, 0.0f};
+int   gfx_head_valid = 0;
+// Device orientation relative to the pose captured when GYRO was enabled,
+// in radians: pitch (x), yaw (y), roll (z).
+float gfx_gyro_ypr[3] = {0.0f, 0.0f, 0.0f};
+// Rotation pivot: slightly below the midpoint between the eyes, in game units
+// (1 unit is roughly 1 cm, so ~12 cm down is about a neck joint).
+#define GFX_TRACK_PIVOT_DROP 12.0f
+
+static float s_track_mtx[4][4];     // view-space offset applied to every modelview
+static int   s_track_active = 0;
 int gfx_stereo_nocull = 0;       // debug: skip frustum culling
 int gfx_stereo_vp[2][2] = {{-1, -1}, {-1, -1}};
 
@@ -836,6 +856,89 @@ static void gfx_matrix_mul(float res[4][4], const float a[4][4], const float b[4
     memcpy(res, tmp, sizeof(tmp));
 }
 
+// Row-vector 4x4 helpers (this engine stores matrices transposed relative to
+// GL: v' = v * M, translation in row 3).
+static void gfx_mtx_identity(float m[4][4]) {
+    memset(m, 0, 16 * sizeof(float));
+    m[0][0] = m[1][1] = m[2][2] = m[3][3] = 1.0f;
+}
+
+static void gfx_mtx_translation(float m[4][4], float x, float y, float z) {
+    gfx_mtx_identity(m);
+    m[3][0] = x;
+    m[3][1] = y;
+    m[3][2] = z;
+}
+
+// Recomputes the view-space offset from the tracker/gyro inputs.
+static void gfx_track_update(void) {
+    float head[3] = {0.0f, 0.0f, 0.0f};
+    float rot[4][4];
+    float tmp[4][4];
+    float tneg[4][4];
+    float tpos[4][4];
+    float th[4][4];
+
+    s_track_active = gfx_hdt_enabled || gfx_gyro_enabled;
+    if (!s_track_active || gfx_ui_pass) {
+        return;
+    }
+
+    if (gfx_hdt_enabled && gfx_head_valid) {
+        float k = 0.1f * (gfx_hdt_strength / 100.0f);   // mm -> game units, scaled
+        head[0] = gfx_head_pose[0] * k;
+        head[1] = gfx_head_pose[1] * k;
+        head[2] = gfx_head_pose[2] * k;
+    }
+
+    gfx_mtx_identity(rot);
+    if (gfx_gyro_enabled) {
+        float g = gfx_gyro_strength / 100.0f;
+        float pitch = gfx_gyro_ypr[0] * g;
+        float yaw = gfx_gyro_ypr[1] * g;
+        float roll = gfx_gyro_ypr[2] * g;
+        float cp = cosf(pitch), sp = sinf(pitch);
+        float cy = cosf(yaw), sy = sinf(yaw);
+        float cr = cosf(roll), sr = sinf(roll);
+        float rx[4][4], ry[4][4], rz[4][4];
+
+        gfx_mtx_identity(rx);
+        rx[1][1] = cp;  rx[1][2] = sp;
+        rx[2][1] = -sp; rx[2][2] = cp;
+        gfx_mtx_identity(ry);
+        ry[0][0] = cy;  ry[0][2] = -sy;
+        ry[2][0] = sy;  ry[2][2] = cy;
+        gfx_mtx_identity(rz);
+        rz[0][0] = cr;  rz[0][1] = sr;
+        rz[1][0] = -sr; rz[1][1] = cr;
+
+        gfx_matrix_mul(tmp, rx, ry);      // v * (Rx * Ry)
+        gfx_matrix_mul(rot, tmp, rz);     // then roll
+    }
+
+    // Rotate about the pivot: T(-P) * R * T(P), then translate by the head.
+    gfx_mtx_translation(tneg, 0.0f, GFX_TRACK_PIVOT_DROP, 0.0f);   // -P
+    gfx_mtx_translation(tpos, 0.0f, -GFX_TRACK_PIVOT_DROP, 0.0f);  // +P
+    gfx_matrix_mul(tmp, tneg, rot);
+    gfx_matrix_mul(s_track_mtx, tmp, tpos);
+    if (gfx_hdt_enabled) {
+        gfx_mtx_translation(th, head[0], head[1], head[2]);
+        gfx_matrix_mul(tmp, s_track_mtx, th);
+        memcpy(s_track_mtx, tmp, sizeof(tmp));
+    }
+}
+
+// Applied to every modelview load: m = m * offset (view-space transform).
+static void gfx_cam_tracking_apply(float m[4][4]) {
+    float out[4][4];
+
+    if (!s_track_active || gfx_ui_pass) {
+        return;
+    }
+    gfx_matrix_mul(out, m, s_track_mtx);
+    memcpy(m, out, sizeof(out));
+}
+
 static void gfx_sp_matrix(uint8_t parameters, const int32_t *addr) {
     float matrix[4][4];
 #if 0
@@ -864,6 +967,7 @@ static void gfx_sp_matrix(uint8_t parameters, const int32_t *addr) {
             memcpy(rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1], rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 2], sizeof(matrix));
         }
         if (parameters & G_MTX_LOAD) {
+            gfx_cam_tracking_apply(matrix);
             memcpy(rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1], matrix, sizeof(matrix));
         } else {
             gfx_matrix_mul(rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1], matrix, rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1]);
@@ -1996,6 +2100,7 @@ static void gfx_invalidate_state(void) {
 }
 
 void gfx_run(Gfx *commands) {
+    gfx_track_update();
     gfx_sp_reset();
     
     //puts("New frame");

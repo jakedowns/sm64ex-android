@@ -1,6 +1,10 @@
 package com.vdavid003.sm64port;
 
 import android.graphics.Color;
+import android.hardware.Sensor;
+import android.hardware.SensorEvent;
+import android.hardware.SensorEventListener;
+import android.hardware.SensorManager;
 import android.graphics.SurfaceTexture;
 import android.os.Bundle;
 import android.util.Log;
@@ -30,7 +34,7 @@ import org.libsdl.app.SDLActivity;
  * visible {@link InterlacedSurfaceView} shows the woven result. Touch input
  * still goes to SDL's own SurfaceView underneath.
  */
-public class sm64portActivity extends SDLActivity {
+public class sm64portActivity extends SDLActivity implements SensorEventListener {
     private static final String TAG = "SM64Leia";
     private static final String BUILD_NAME = "hfr3+ssfx";
     public static volatile sm64portActivity instance;
@@ -71,6 +75,14 @@ public class sm64portActivity extends SDLActivity {
     private boolean tintOn, zbufOn, wireOn, perfOn, swapOn, sameOn, nocullOn, flatOn, analogOn;
     private boolean stayOn = true, uiParallaxOn, uiBufOn;
     private boolean toeAutoOn = true;
+    // Camera tracking (Leia eye/face tracking + tablet gyro).
+    private boolean hdtOn, gyroOn;
+    private int hdtStrength = 100, gyroStrength = 100;
+    private SensorManager sensorManager;
+    private Sensor gyroSensor;
+    private final float[] gyroRef = new float[3];
+    private boolean gyroRefSet, gyroHaveSample;
+    private TextView camHeadToggle, camGyroToggle;
     private boolean uiPostOn = true;
     private int overlayAlphaPct = 100;
     // true = the assistant is driving the app: debug line turns red.
@@ -194,6 +206,7 @@ public class sm64portActivity extends SDLActivity {
         sdk = LeiaSDK.createSDK(args);
         sdk.enableBacklight(true);
         Log.i(TAG, "LeiaSDK ready; initialized=" + sdk.isInitialized());
+        startCameraTracking();
 
         // Make SDL wait for our surface rather than grabbing its own.
         SDLActivity.mWaitForOverride = true;
@@ -392,6 +405,7 @@ public class sm64portActivity extends SDLActivity {
         addTabButton(tabBar, "MXAO");
         addTabButton(tabBar, "C.DOF");
         addTabButton(tabBar, "SSGI");
+        addTabButton(tabBar, "CAMERA");
         panel.addView(tabBar);
 
         tabContent = new LinearLayout(this);
@@ -622,6 +636,157 @@ public class sm64portActivity extends SDLActivity {
         addFxSlider("Steps", 2, 12, 6, "", 24);
         addFxSlider("Rays", 2, 8, 4, "", 25);
         addFxDebugButton("SHOW GI", 3);
+
+        // --- Camera tracking / sensors ---
+        beginTab();
+        camHeadToggle = addCamToggle("HEAD TRACK", 41, hdtOn);
+        camGyroToggle = addCamToggle("GYRO CAM", 42, gyroOn);
+        addCamSlider("HDT strength", 0, 200, hdtStrength, " %", 43);
+        addCamSlider("Gyro strength", 0, 200, gyroStrength, " %", 44);
+        addCamButton("RECENTRE GYRO", () -> recentreGyro());
+    }
+
+    // ---- camera-tracking widgets (stereo-int channel, keys 41..44) ----
+
+    private void addCamSlider(String name, int min, int max, int initial, String unit,
+                              final int key) {
+        final TextView label = new TextView(this);
+        label.setTextColor(Color.WHITE);
+        label.setTextSize(14);
+        label.setText(name + ": " + initial + unit);
+        SeekBar bar = new SeekBar(this);
+        bar.setMax(max - min);
+        bar.setProgress(initial - min);
+        bar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar sb, int progress, boolean fromUser) {
+                int v = progress + min;
+                label.setText(name + ": " + v + unit);
+                nativeSetStereoInt(key, v);
+                if (key == 43) hdtStrength = v;
+                if (key == 44) gyroStrength = v;
+            }
+            @Override public void onStartTrackingTouch(SeekBar sb) {}
+            @Override public void onStopTrackingTouch(SeekBar sb) {}
+        });
+        addToGrid(label, bar);
+        nativeSetStereoInt(key, initial);
+    }
+
+    private TextView addCamToggle(String name, final int key, boolean initial) {
+        final TextView b = new TextView(this);
+        b.setText(name + ": " + (initial ? "ON" : "OFF"));
+        b.setTextSize(16);
+        b.setTextColor(initial ? 0xFF66FF99 : 0xFF888888);
+        b.setPadding(dp(4), dp(8), dp(4), dp(8));
+        b.setOnClickListener(v -> {
+            boolean on = b.getCurrentTextColor() != 0xFF66FF99;
+            b.setText(name + ": " + (on ? "ON" : "OFF"));
+            b.setTextColor(on ? 0xFF66FF99 : 0xFF888888);
+            nativeSetStereoInt(key, on ? 1 : 0);
+            if (key == 41) hdtOn = on;
+            if (key == 42) {
+                gyroOn = on;
+                if (on) gyroRefSet = false;   // recentre on enable
+            }
+            Log.i(TAG, name + "=" + on);
+        });
+        controls.addView(b);
+        nativeSetStereoInt(key, initial ? 1 : 0);
+        return b;
+    }
+
+    private void addCamButton(String name, final Runnable action) {
+        TextView b = new TextView(this);
+        b.setText(name);
+        b.setTextSize(16);
+        b.setTextColor(0xFF66CCFF);
+        b.setPadding(dp(4), dp(10), dp(4), dp(10));
+        b.setOnClickListener(v -> action.run());
+        controls.addView(b);
+    }
+
+    private void recentreGyro() {
+        gyroRefSet = false;
+        nativeSetGyro(0f, 0f, 0f);
+        Log.i(TAG, "gyro recentred");
+    }
+
+    // ---- sensors / tracker ----
+
+    private static float wrapPi(float a) {
+        while (a > (float) Math.PI) a -= (float) (2 * Math.PI);
+        while (a < -(float) Math.PI) a += (float) (2 * Math.PI);
+        return a;
+    }
+
+    private void startCameraTracking() {
+        try {
+            sensorManager = (SensorManager) getSystemService(SENSOR_SERVICE);
+            Sensor s = sensorManager.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR);
+            if (s == null) {
+                s = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
+            }
+            if (s != null && sensorManager.registerListener(this, s, SensorManager.SENSOR_DELAY_GAME)) {
+                gyroSensor = s;
+                Log.i(TAG, "gyro sensor: " + s.getName() + " type=" + s.getType());
+            } else {
+                Log.w(TAG, "no rotation-vector sensor available");
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "gyro sensor init failed", t);
+        }
+
+        // Head tracking: poll the Leia face tracker while HEAD TRACK is on.
+        final android.os.Handler h = new android.os.Handler();
+        h.post(new Runnable() {
+            @Override public void run() {
+                if (hdtOn && sdk != null) {
+                    try {
+                        if (sdk.isFaceTrackingStarted()) {
+                            com.leia.core.Vector3 f = sdk.getPrimaryFace();
+                            if (f != null) {
+                                nativeSetHeadPose(f.x, f.y, f.z, 1);
+                            }
+                        }
+                    } catch (Throwable ignored) {
+                    }
+                }
+                h.postDelayed(this, 16);
+            }
+        });
+    }
+
+    @Override
+    public void onSensorChanged(SensorEvent e) {
+        if (gyroSensor == null || e.sensor.getType() != gyroSensor.getType()) return;
+        float[] r = new float[9];
+        float[] o = new float[3];
+        try {
+            SensorManager.getRotationMatrixFromVector(r, e.values);
+            SensorManager.getOrientation(r, o);
+        } catch (Throwable t) {
+            return;
+        }
+        if (!gyroRefSet || !gyroHaveSample) {
+            System.arraycopy(o, 0, gyroRef, 0, 3);
+            gyroRefSet = true;
+            gyroHaveSample = true;
+            return;   // first sample is the reference, no motion yet
+        }
+        float dAz = wrapPi(o[0] - gyroRef[0]);    // yaw about world up
+        float dPitch = wrapPi(o[1] - gyroRef[1]); // tilt up/down
+        float dRoll = wrapPi(o[2] - gyroRef[2]);  // twist
+
+        // Axis signs: flip here if an axis moves the view the wrong way.
+        try {
+            nativeSetGyro(dPitch, -dAz, -dRoll);
+        } catch (Throwable ignored) {
+            // native library not loaded yet
+        }
+    }
+
+    @Override
+    public void onAccuracyChanged(Sensor sensor, int accuracy) {
     }
 
     /** FX slider: writes straight to the native post pass via nativeSetSSFX. */
@@ -1003,6 +1168,8 @@ public class sm64portActivity extends SDLActivity {
     static native int nativeGetHfrMtxCount();
     static native int nativeGetCamMode();
     static native void nativeToggleCamMode();
+    static native void nativeSetHeadPose(float x, float y, float z, int valid);
+    static native void nativeSetGyro(float pitch, float yaw, float roll);
     static native void nativeOverlayStick2(int rx, int ry);
     static native void nativeOverlayAnalog(int on);
     static native void nativeHideInGameControls(int hide);
@@ -1109,6 +1276,24 @@ public class sm64portActivity extends SDLActivity {
                 analogOn = !analogOn;
                 if (touchOverlay != null) touchOverlay.setAnalogMode(analogOn);
                 break;
+            case "HEADTRACK":
+                runOnUiThread(() -> {
+                    hdtOn = !hdtOn;
+                    nativeSetStereoInt(41, hdtOn ? 1 : 0);
+                    Log.i(TAG, "HEADTRACK=" + hdtOn);
+                });
+                break;
+            case "GYRO":
+                runOnUiThread(() -> {
+                    gyroOn = !gyroOn;
+                    nativeSetStereoInt(42, gyroOn ? 1 : 0);
+                    if (gyroOn) gyroRefSet = false;
+                    Log.i(TAG, "GYRO=" + gyroOn);
+                });
+                break;
+            case "GYROZERO":
+                runOnUiThread(this::recentreGyro);
+                break;
             case "TOEAUTO":
                 toeAutoOn = !toeAutoOn;
                 nativeSetStereoInt(40, toeAutoOn ? 1 : 0);
@@ -1208,6 +1393,8 @@ public class sm64portActivity extends SDLActivity {
                     + " stay=" + stayOn + " uipost=" + uiPostOn
                     + " cam=" + nativeGetCamMode() + " ctlA=" + overlayAlphaPct
                     + " toeauto=" + toeAutoOn
+                    + " hdt=" + (hdtOn ? 1 : 0) + "/" + hdtStrength
+                    + " gyro=" + (gyroOn ? 1 : 0) + "/" + gyroStrength
                     + " uipar=" + uiParallaxOn + " uibuf=" + uiBufOn);
         });
     }
