@@ -36,7 +36,7 @@ import org.libsdl.app.SDLActivity;
  */
 public class sm64portActivity extends SDLActivity implements SensorEventListener {
     private static final String TAG = "SM64Leia";
-    private static final String BUILD_NAME = "hfr3+ssfx";
+    private static final String BUILD_NAME = "v1.0-alpha1";
     private static final String PREFS_NAME = "sm64port";
     private static final String PREF_OVERLAY_OPACITY = "overlay_opacity";
     public static volatile sm64portActivity instance;
@@ -113,6 +113,12 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     private final java.util.List<View> sliderRows = new java.util.ArrayList<>();
     private TextView hideButton;
     private int selectedTab = 0;
+    private SeekBar toeSlider;
+    private TextView toeLabel;
+    private int toeValuePct = 0;
+    private TextView camStatusView;
+    private int sameMode = 0;
+    private float panelDownY = -1;
     private static final int PANEL_BG = 0xCC101010;
     private static final String CHANGELOG =
             "Portal gun: walk into the gun in the castle grounds, aim with the\n"
@@ -320,6 +326,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             // Apply the persisted opacity after both the overlay and its slider
             // exist (SeekBar.setProgress happens before the listener is set).
             applyOverlayAlpha(overlayAlphaPct);
+            updateToeSliderState();
         }
         leiaView.setViewAsset(asset);
         Log.i(TAG, "setViewAsset done");
@@ -348,6 +355,80 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     }
 
     /** Debug sliders: they push values straight into the native stereo renderer. */
+    private boolean debugPanelOpen() {
+        return tabContent != null && tabContent.getVisibility() == View.VISIBLE;
+    }
+
+    /** Collapse the tuning panel (used by the hide button, gestures, taps outside). */
+    void collapseDebugPanelIfOpen() {
+        if (!debugPanelOpen()) {
+            return;
+        }
+        tabContent.setVisibility(View.GONE);
+        if (hideButton != null) {
+            hideButton.setText("SHOW");
+        }
+    }
+
+    /**
+     * Panel gestures: a tap outside the open panel collapses it, and a downward
+     * swipe started on the panel (but not on a slider) collapses it too.
+     */
+    private void handleDebugPanelGestures(android.view.MotionEvent ev) {
+        if (!debugPanelOpen()) {
+            panelDownY = -1;
+            return;
+        }
+        switch (ev.getActionMasked()) {
+            case android.view.MotionEvent.ACTION_DOWN: {
+                boolean inside = false;
+                android.graphics.Rect r = new android.graphics.Rect();
+                if (tuningPanelView != null) {
+                    tuningPanelView.getGlobalVisibleRect(r);
+                    inside = r.contains((int) ev.getRawX(), (int) ev.getRawY());
+                }
+                if (!inside) {
+                    collapseDebugPanelIfOpen();
+                    panelDownY = -1;
+                    break;
+                }
+                // Don't treat vertical slider drags as a collapse swipe.
+                boolean onSlider = false;
+                for (int i = 0; i < sliderRows.size(); i++) {
+                    View row = sliderRows.get(i);
+                    if (row.getVisibility() == View.VISIBLE) {
+                        row.getGlobalVisibleRect(r);
+                        if (r.contains((int) ev.getRawX(), (int) ev.getRawY())) {
+                            onSlider = true;
+                            break;
+                        }
+                    }
+                }
+                panelDownY = onSlider ? -1 : ev.getRawY();
+                break;
+            }
+            case android.view.MotionEvent.ACTION_MOVE:
+                if (panelDownY >= 0 && ev.getRawY() - panelDownY > dp(70)) {
+                    panelDownY = -1;
+                    collapseDebugPanelIfOpen();
+                }
+                break;
+            case android.view.MotionEvent.ACTION_UP:
+            case android.view.MotionEvent.ACTION_CANCEL:
+                panelDownY = -1;
+                break;
+        }
+    }
+
+    @Override
+    public boolean dispatchTouchEvent(android.view.MotionEvent ev) {
+        try {
+            handleDebugPanelGestures(ev);
+        } catch (Throwable ignored) {
+        }
+        return super.dispatchTouchEvent(ev);
+    }
+
     private LinearLayout buildTuningPanel() {
         LinearLayout panel = new LinearLayout(this);
         panel.setOrientation(LinearLayout.VERTICAL);
@@ -379,6 +460,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         reset.setTextSize(16);
         reset.setPadding(pad, pad / 2, pad, pad / 2);
         header.addView(reset, abs(1620, 0, 220, 64));
+        reset.setOnClickListener(v -> debugReset());
 
         modeButton = new TextView(this);
         modeButton.setText("3D");
@@ -504,8 +586,8 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                 android.widget.RelativeLayout.LayoutParams.WRAP_CONTENT));
 
         android.widget.AbsoluteLayout toggles = new android.widget.AbsoluteLayout(this);
-        String[][] tgl = {{"ZBUF", "15"}, {"WIRE", "16"}, {"SWAP", "4"}, {"SAME", "6"}, {"TINT", "7"}, {"PERF2x", "12"}, {"STAY", "30"},
-                {"UIPOST", "35"}, {"UIPAR", "36"}, {"UIBUF", "37"}, {"TOEAUTO", "40"},
+        String[][] tgl = {{"ZBUF", "15"}, {"WIRE", "16"}, {"SWAP", "4"}, {"SAME", "6"},
+                {"PERF2x", "12"}, {"TOEAUTO", "40"},
                 {"FILL", "13"}, {"4:3", "13"}, {"16:9", "13"}};
         for (String[] t : tgl) {
             final int which = Integer.parseInt(t[1]);
@@ -524,6 +606,14 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                     boolean on = b.getCurrentTextColor() == 0xFF888888;
                     b.setTextColor(on ? 0xFF66FF99 : 0xFF888888);
                     Log.i(TAG, "toggle " + t[0] + "=" + (on ? 1 : 0));
+                    if (t[0].equals("SAME")) {
+                        sameMode = (sameMode + 1) % 3;
+                        nativeSetStereoInt(6, sameMode);
+                        b.setText(sameMode == 0 ? "SAME" : sameMode == 1 ? "SAME L" : "SAME R");
+                        b.setTextColor(sameMode != 0 ? 0xFF66FF99 : 0xFF888888);
+                        Log.i(TAG, "SAME=" + sameMode);
+                        return;
+                    }
                     if (t[0].startsWith("MODE")) {
                         modeIndex = (modeIndex + 1) % 4;
                         Log.i(TAG, "interlaceMode -> #" + modeIndex + " (unsupported in this AAR)");
@@ -549,6 +639,10 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                         nativeSetStereoInt(13, fitMode);
                     } else {
                         nativeSetStereoInt(which, on ? 1 : 0);
+                        if (t[0].equals("TOEAUTO")) {
+                            toeAutoOn = on;
+                            updateToeSliderState();
+                        }
                     }
                 }
             });
@@ -730,6 +824,11 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addCamSlider("Gyro strength", 0, 200, gyroStrength, " %", 44);
         addCamSlider("Pivot height", 0, 200, gyroPivot, " cm", 45);
         addCamButton("RECENTRE GYRO", () -> recentreGyro());
+        camStatusView = new TextView(this);
+        camStatusView.setTextSize(14);
+        camStatusView.setTextColor(0xFFAACCFF);
+        camStatusView.setPadding(dp(4), dp(10), dp(4), dp(4));
+        controls.addView(camStatusView);
 
         // --- Gameplay enhancements ---
         beginTab();
@@ -752,6 +851,20 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             Log.i(TAG, "INTERP " + interpOn);
         });
         controls.addView(interp);
+
+        final TextView stayToggle = new TextView(this);
+        stayToggle.setText("STAY IN LEVEL: " + (stayOn ? "ON" : "OFF"));
+        stayToggle.setTextSize(16);
+        stayToggle.setTextColor(stayOn ? 0xFF66FF99 : 0xFF888888);
+        stayToggle.setPadding(dp(4), dp(8), dp(4), dp(8));
+        stayToggle.setOnClickListener(v -> {
+            stayOn = !stayOn;
+            nativeSetStereoInt(30, stayOn ? 1 : 0);
+            stayToggle.setText("STAY IN LEVEL: " + (stayOn ? "ON" : "OFF"));
+            stayToggle.setTextColor(stayOn ? 0xFF66FF99 : 0xFF888888);
+            Log.i(TAG, "STAY=" + stayOn);
+        });
+        controls.addView(stayToggle);
 
         // --- Realtime dynamic shadows (quality / performance) ---
         beginTab();
@@ -1231,6 +1344,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
                 int value = progress + min;
                 label.setText(name + ": " + value + unit);
+                if (which == 17) toeValuePct = value;
                 Log.i(TAG, "knob " + name + "=" + value);
                 if (which == 11) {
                     applySourceWidthPercent(value);
@@ -1245,6 +1359,10 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             @Override public void onStopTrackingTouch(SeekBar seekBar) {}
         });
         if (which >= 0 && which < bars.length) bars[which] = bar;
+        if (which == 17) {
+            toeSlider = bar;
+            toeLabel = label;
+        }
         barDefaults.add(new BarDefault(bar, initial - min));
         addToGrid(label, bar);
     }
@@ -1276,10 +1394,28 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addToGrid(label, bar);
     }
 
+    /** TOEAUTO owns the toe; grey the slider out and say why. */
+    private void updateToeSliderState() {
+        if (toeSlider == null || toeLabel == null) {
+            return;
+        }
+        if (toeAutoOn) {
+            toeSlider.setEnabled(false);
+            toeSlider.setAlpha(0.35f);
+            toeLabel.setAlpha(0.55f);
+            toeLabel.setText("Toe in/out (toeauto on): -");
+        } else {
+            toeSlider.setEnabled(true);
+            toeSlider.setAlpha(1f);
+            toeLabel.setAlpha(1f);
+            toeLabel.setText("Toe in/out: " + toeValuePct + " %");
+        }
+    }
+
     private void enterSliderDrag(View keep) {
         for (int i = 0; i < sliderRows.size(); i++) {
             View v = sliderRows.get(i);
-            v.setVisibility(v == keep ? View.VISIBLE : View.GONE);
+            v.setVisibility(v == keep ? View.VISIBLE : View.INVISIBLE);
         }
         if (tuningPanelView != null) {
             tuningPanelView.setBackgroundColor(0x00000000);
@@ -1440,22 +1576,16 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             @Override
             public void run() {
                 if (fpsView != null) {
-                    fpsView.setText(nativeGetFps() + " fps"
-                            + "  bl=" + (sdk != null && sdk.getBacklight())
-                            + " ft=" + (sdk != null && sdk.isFaceTrackingStarted()));
+                    fpsView.setText(nativeGetFps() + " fps");
+                }
+                if (camStatusView != null) {
+                    camStatusView.setText("backlight=" + (sdk != null && sdk.getBacklight())
+                            + "  facetrack=" + (sdk != null && sdk.isFaceTrackingStarted())
+                            + "  cam=" + (nativeGetCamMode() != 0 ? "free" : "vanilla"));
                 }
                 debugView.setTextColor(busyOn ? 0xFFFF5555 : 0xFFAAFFAA);
                 debugView.setText((busyOn ? "BUSY - hands off  |  " : "FREE  |  ")
-                        + BUILD_NAME
-                        + "  ipd=" + (int) bars[0].getProgress()
-                        + " conv=" + (bars[1].getProgress() - 100)
-                        + " depth=" + bars[2].getProgress() + "%"
-                        + " src=" + SRC_SIZES[srcIndex][0] + "x" + SRC_SIZES[srcIndex][1]
-                        + " eyeW=" + nativeGetEyeWidth() + " st=" + nativeGetStereoEnabled()
-                        + " sx=" + (testOn && testView != null ? testView.getScaleX() : leiaView.getScaleX())
-                        + " srcW=" + srcW
-                        + " vp0x=" + nativeGetVpX(0) + "/" + nativeGetVpW(0)
-                        + " vp1x=" + nativeGetVpX(1) + "/" + nativeGetVpW(1));
+                        + BUILD_NAME);
                 h.postDelayed(this, 500);
             }
         });
@@ -1720,6 +1850,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             case "TOEAUTO":
                 toeAutoOn = !toeAutoOn;
                 nativeSetStereoInt(40, toeAutoOn ? 1 : 0);
+                updateToeSliderState();
                 Log.i(TAG, "TOEAUTO=" + toeAutoOn);
                 break;
             case "CAM":

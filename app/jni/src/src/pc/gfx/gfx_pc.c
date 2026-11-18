@@ -2244,7 +2244,16 @@ void gfx_run(Gfx *commands) {
             // The game emits its viewport command only once, so eye 1 would
             // inherit eye 0's viewport forever. Force a re-apply each pass.
             rdp.viewport_or_scissor_changed = true;
-            int v = (gfx_stereo_same_both || gfx_stereo_swap_eyes) ? (eye ^ (gfx_stereo_same_both ? 0 : 1)) : eye;
+            int v;
+            if (gfx_stereo_same_both == 1) {
+                v = 0;          // SAME L: both halves show the left-eye view
+            } else if (gfx_stereo_same_both == 2) {
+                v = 1;          // SAME R: both halves show the right-eye view
+            } else if (gfx_stereo_swap_eyes) {
+                v = eye ^ 1;
+            } else {
+                v = eye;
+            }
             // Convergence moves the zero-parallax plane: both eyes are
             // shifted *towards each other* by the same amount. A common
             // offset (what this used to do) just trucks the pair sideways.
