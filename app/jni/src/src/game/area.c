@@ -371,11 +371,13 @@ void play_transition_after_delay(s16 transType, s16 time, u8 red, u8 green, u8 b
 // the frame's display list here: everything before is the 3D scene (which goes
 // through the screen-space FX pass), everything after is 2D UI (which does not).
 extern Gfx *gGfxUiStart;
+extern Gfx *gGfxShadowStart;
 extern int gGfxHasScene;
 
 void render_game(void) {
     // Reset every frame: the display list pools are reused.
     gGfxUiStart = NULL;
+    gGfxShadowStart = NULL;
     gGfxHasScene = 0;
 
     if (gCurrentArea != NULL && !gWarpTransition.pauseRendering) {

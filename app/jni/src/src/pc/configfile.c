@@ -90,6 +90,12 @@ bool         configCameraMouse   = false;
 unsigned int configSkipIntro     = 0;
 bool         configHUD           = true;
 bool         configStayInLevel   = true;
+
+// Lume Pad 2 gameplay enhancements (runtime-toggleable from the debug panel).
+unsigned int death_ragdoll_enabled     = 1; // death ragdoll physics
+unsigned int hit_ragdoll_enabled       = 1; // recoverable knockback ragdoll
+unsigned int configPuppycamEnhanced    = 1; // puppycam wall margin + Mario xlu fade
+unsigned int configDynamicShadows      = 1; // realtime shadow map
 #ifdef DISCORDRPC
 bool         configDiscordRPC    = true;
 #endif
@@ -123,6 +129,10 @@ static const struct ConfigOption options[] = {
     {.name = "stick_deadzone",       .type = CONFIG_TYPE_UINT, .uintValue = &configStickDeadzone},
     {.name = "rumble_strength",      .type = CONFIG_TYPE_UINT, .uintValue = &configRumbleStrength},
     {.name = "stay_in_level",        .type = CONFIG_TYPE_BOOL, .boolValue = &configStayInLevel},
+    {.name = "death_ragdoll_enabled", .type = CONFIG_TYPE_UINT, .uintValue = &death_ragdoll_enabled},
+    {.name = "hit_ragdoll_enabled",   .type = CONFIG_TYPE_UINT, .uintValue = &hit_ragdoll_enabled},
+    {.name = "puppycam_enhanced",     .type = CONFIG_TYPE_UINT, .uintValue = &configPuppycamEnhanced},
+    {.name = "dynamic_shadows",       .type = CONFIG_TYPE_UINT, .uintValue = &configDynamicShadows},
     #ifdef EXTERNAL_DATA
     {.name = "precache",             .type = CONFIG_TYPE_BOOL, .boolValue = &configPrecacheRes},
     #endif

@@ -23,6 +23,8 @@
 #include "interaction.h"
 #include "object_list_processor.h"
 #include "dialog_ids.h"
+#include "pc/configfile.h"
+#include "bettercamera.h"
 
 #define TOAD_STAR_1_REQUIREMENT 12
 #define TOAD_STAR_2_REQUIREMENT 25
@@ -303,6 +305,7 @@ void bhv_unlock_door_star_loop(void) {
 static Gfx *make_gfx_mario_alpha(struct GraphNodeGenerated *node, s16 alpha) {
     Gfx *gfx;
     Gfx *gfxHead = NULL;
+    u8 alphaBias;
 
     if (alpha == 255) {
         node->fnNode.node.flags = (node->fnNode.node.flags & 0xFF) | (LAYER_OPAQUE << 8);
@@ -312,9 +315,16 @@ static Gfx *make_gfx_mario_alpha(struct GraphNodeGenerated *node, s16 alpha) {
         node->fnNode.node.flags = (node->fnNode.node.flags & 0xFF) | (LAYER_TRANSPARENT << 8);
         gfxHead = alloc_display_list(3 * sizeof(*gfxHead));
         gfx = gfxHead;
-        gDPSetAlphaCompare(gfx++, G_AC_DITHER);
+        // The camera-close fade must keep dithering off, otherwise the noise
+        // pattern shows through Mario instead of a smooth alpha ramp.
+        if ((gMarioState->flags & (MARIO_VANISH_CAP | MARIO_TELEPORTING)) != 0) {
+            gDPSetAlphaCompare(gfx++, G_AC_DITHER);
+        } else {
+            gDPSetAlphaCompare(gfx++, G_AC_NONE);
+        }
     }
-    gDPSetEnvColor(gfx++, 255, 255, 255, alpha);
+    alphaBias = configPuppycamEnhanced ? min(alpha, newcam_xlu) : alpha;
+    gDPSetEnvColor(gfx++, 255, 255, 255, alphaBias);
     gSPEndDisplayList(gfx);
     return gfxHead;
 }

@@ -56,6 +56,11 @@ extern bool         configCameraMouse;
 extern bool         configHUD;
 // Keep Mario in the course after collecting a star (no star-exit warp).
 extern bool         configStayInLevel;
+// Lume Pad 2 gameplay enhancements (runtime-toggleable from the debug panel).
+extern unsigned int death_ragdoll_enabled;
+extern unsigned int hit_ragdoll_enabled;
+extern unsigned int configPuppycamEnhanced;
+extern unsigned int configDynamicShadows;
 #ifdef DISCORDRPC
 extern bool         configDiscordRPC;
 #endif

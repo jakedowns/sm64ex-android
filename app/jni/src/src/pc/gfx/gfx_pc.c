@@ -109,6 +109,8 @@ static struct RSP {
     
     float MP_matrix[4][4];
     float P_matrix[4][4];
+    // Shadow pass: object -> light clip (modelview * camera inverse * light VP).
+    float shadow_MP_matrix[4][4];
     
     Light_t current_lights[MAX_LIGHTS + 1];
     float current_lights_coeffs[MAX_LIGHTS][3];
@@ -183,12 +185,38 @@ float gfx_cam_near = 100.0f;
 float gfx_cam_far = 30000.0f;
 float gfx_cam_tan_half_fov_y = 0.41421356f;
 
+// --- Realtime dynamic shadow map -------------------------------------------
+// The map is rendered once per (interval) rendered frame by replaying the 3D
+// scene range from a directional sun, then sampled in the per-eye post pass.
+// All knobs are runtime-tuneable from the SHADOW debug tab.
+extern float gfx_cam_inv_mtx[4][4];
+extern float gfx_shadow_light_vp[4][4];
+extern float gfx_shadow_light_dir[3];
+extern int gfx_shadow_matrices_ready;
+
+int gfx_shadow_enabled = 1;
+int gfx_shadow_quality = 1024;      // shadow map resolution (px)
+int gfx_shadow_interval = 1;        // render a new map every N frames
+int gfx_shadow_strength = 65;       // percent darkening
+int gfx_shadow_bias = 25;           // depth bias (world units)
+int gfx_shadow_normal_bias = 45;    // normal offset (world units)
+int gfx_shadow_softness = 2;        // PCF kernel radius in texels
+int gfx_shadow_taps = 9;            // 1 / 4 / 9 / 16 PCF taps
+int gfx_shadow_range = 4500;        // ortho half-extent in world units
+int gfx_shadow_yaw_deg = 45;        // sun azimuth
+int gfx_shadow_pitch_deg = 52;      // sun elevation
+int gfx_shadow_debug = 0;           // 0 off, 1 factor, 2 map
+
+static int gfx_shadow_pass = 0;     // currently replaying the scene for depth
+static int gfx_shadow_frame = 0;    // frames since the last map update
+
 // --- UI after post ----------------------------------------------------------
 // render_game() records where the 3D scene ends and the 2D UI begins in the
 // frame's display list. The scene is rendered through the screen-space FX pass
 // and the UI into its own per-eye buffer, so AO/DOF/GI cannot touch the HUD,
 // dialogs, menus or transitions.
 Gfx *gGfxUiStart = NULL;    // first UI command, or NULL if there is no split
+Gfx *gGfxShadowStart = NULL; // first 3D scene command (after the background)
 int gGfxHasScene = 0;       // a 3D scene was rendered this frame
 int gfx_ui_post = 1;        // UIPOST: split the list and composite UI after FX
 int gfx_ui_parallax = 0;    // UIPARALLAX: 0 = screen-locked UI, 1 = legacy shear
@@ -223,6 +251,11 @@ int gfx_stereo_same_both = 0;             // eye 1 reuses eye 0's view (mapping 
 float gfx_stereo_ipd_px = 140.0f;         // separation at infinity
 float gfx_stereo_convergence_px = 0.0f;   // moves the zero-parallax plane
 float gfx_stereo_shear = 0.0f;   // clip-space shear, used by culling too
+// Per-eye stereo projection adjustments, needed by the post pass to invert the
+// projection when rebuilding world positions (shadow lookup, AO, DOF, GI).
+float gfx_eye_shear[2] = {0.0f, 0.0f};
+float gfx_eye_toe[2] = {0.0f, 0.0f};
+int   gfx_eye_flip[2] = {0, 0};
 float gfx_stereo_eye_sign = 1.0f; // +1 for the left/eye-0 pass, -1 for the other
 // UI-after-post: apparent depth of the UI layer, in pixels of disparity per eye
 // (positive = in front of the screen plane, negative = behind).
@@ -260,6 +293,9 @@ extern void gfx_opengl_stereo_begin(int eye, int w, int h, int cx, int cy, int c
 extern void gfx_opengl_stereo_composite(int w, int h, int full_w, int full_h, int has_ui);
 extern void gfx_opengl_ui_begin(int eye, int w, int h, int cx, int cy, int cw, int ch);
 extern void gfx_opengl_ui_end(void);
+// Realtime shadow map (gfx_opengl.c): binds the depth FBO / depth-only shader.
+extern int gfx_opengl_shadow_begin(int resolution);
+extern void gfx_opengl_shadow_end(void);
 #endif
 
 // UI depth: shift each eye's copy of the UI in opposite directions so the
@@ -279,6 +315,10 @@ static void gfx_apply_stereo_shear(void) {
         return;
     }
     if (gfx_stereo_2d) {
+        // No parallax in 2D mode: the post pass must not un-shear either.
+        gfx_eye_shear[gfx_stereo_eye & 1] = 0.0f;
+        gfx_eye_toe[gfx_stereo_eye & 1] = 0.0f;
+        gfx_eye_flip[gfx_stereo_eye & 1] = 0;
         return;   // no parallax in 2D mode, but keep the canvas/FOV handling
     }
     if (gfx_ui_pass && !gfx_ui_parallax) {
@@ -327,7 +367,9 @@ static void gfx_apply_stereo_shear(void) {
         for (int i = 0; i < 4; i++) {
             rsp.MP_matrix[i][0] += toe * rsp.MP_matrix[i][2];
         }
+        gfx_eye_toe[gfx_stereo_eye & 1] = toe;
     }
+    gfx_eye_flip[gfx_stereo_eye & 1] = gfx_stereo_flip_y ? 1 : 0;
     if (gfx_ui_pass) {
         // Legacy sheared UI: add its own depth offset on top of the shear.
         gfx_apply_ui_depth();
@@ -856,6 +898,19 @@ static void gfx_matrix_mul(float res[4][4], const float a[4][4], const float b[4
     memcpy(res, tmp, sizeof(tmp));
 }
 
+// Recompute the modelview -> light clip matrix used while the shadow map is
+// being rendered. Skips the game's projection (and the stereo shear) entirely.
+static void gfx_update_shadow_mp(void) {
+    float tmp[4][4];
+
+    if (!gfx_shadow_pass || !gfx_shadow_matrices_ready || rsp.modelview_matrix_stack_size <= 0) {
+        return;
+    }
+    gfx_matrix_mul(tmp, rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1],
+                   gfx_cam_inv_mtx);
+    gfx_matrix_mul(rsp.shadow_MP_matrix, tmp, gfx_shadow_light_vp);
+}
+
 // Row-vector 4x4 helpers (this engine stores matrices transposed relative to
 // GL: v' = v * M, translation in row 3).
 static void gfx_mtx_identity(float m[4][4]) {
@@ -976,6 +1031,7 @@ static void gfx_sp_matrix(uint8_t parameters, const int32_t *addr) {
     }
     gfx_matrix_mul(rsp.MP_matrix, rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1], rsp.P_matrix);
     gfx_apply_stereo_shear();
+    gfx_update_shadow_mp();
 }
 
 static void gfx_sp_pop_matrix(uint32_t count) {
@@ -985,6 +1041,7 @@ static void gfx_sp_pop_matrix(uint32_t count) {
             if (rsp.modelview_matrix_stack_size > 0) {
                 gfx_matrix_mul(rsp.MP_matrix, rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1], rsp.P_matrix);
                 gfx_apply_stereo_shear();
+                gfx_update_shadow_mp();
             }
         }
     }
@@ -999,13 +1056,17 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx *verti
         const Vtx_t *v = &vertices[i].v;
         const Vtx_tn *vn = &vertices[i].n;
         struct LoadedVertex *d = &rsp.loaded_vertices[dest_index];
+        const float (*mp)[4] = gfx_shadow_pass ? (const float (*)[4])rsp.shadow_MP_matrix
+                                               : (const float (*)[4])rsp.MP_matrix;
         
-        float x = v->ob[0] * rsp.MP_matrix[0][0] + v->ob[1] * rsp.MP_matrix[1][0] + v->ob[2] * rsp.MP_matrix[2][0] + rsp.MP_matrix[3][0];
-        float y = v->ob[0] * rsp.MP_matrix[0][1] + v->ob[1] * rsp.MP_matrix[1][1] + v->ob[2] * rsp.MP_matrix[2][1] + rsp.MP_matrix[3][1];
-        float z = v->ob[0] * rsp.MP_matrix[0][2] + v->ob[1] * rsp.MP_matrix[1][2] + v->ob[2] * rsp.MP_matrix[2][2] + rsp.MP_matrix[3][2];
-        float w = v->ob[0] * rsp.MP_matrix[0][3] + v->ob[1] * rsp.MP_matrix[1][3] + v->ob[2] * rsp.MP_matrix[2][3] + rsp.MP_matrix[3][3];
+        float x = v->ob[0] * mp[0][0] + v->ob[1] * mp[1][0] + v->ob[2] * mp[2][0] + mp[3][0];
+        float y = v->ob[0] * mp[0][1] + v->ob[1] * mp[1][1] + v->ob[2] * mp[2][1] + mp[3][1];
+        float z = v->ob[0] * mp[0][2] + v->ob[1] * mp[1][2] + v->ob[2] * mp[2][2] + mp[3][2];
+        float w = v->ob[0] * mp[0][3] + v->ob[1] * mp[1][3] + v->ob[2] * mp[2][3] + mp[3][3];
         
-        x = gfx_adjust_x_for_aspect_ratio(x);
+        if (!gfx_shadow_pass) {
+            x = gfx_adjust_x_for_aspect_ratio(x);
+        }
         
         short U = v->tc[0] * rsp.texture_scaling_factor.s >> 16;
         short V = v->tc[1] * rsp.texture_scaling_factor.t >> 16;
@@ -1116,6 +1177,32 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx) {
     struct LoadedVertex *v3 = &rsp.loaded_vertices[vtx3_idx];
     struct LoadedVertex *v_arr[3] = {v1, v2, v3};
     
+    // Shadow map depth pass: only opaque, depth-writing geometry casts. Every
+    // tri is emitted with just its light-space position (4 floats).
+    if (gfx_shadow_pass) {
+        bool use_alpha = (rdp.other_mode_l & (G_BL_A_MEM << 18)) == 0;
+        bool texture_edge = (rdp.other_mode_l & CVG_X_ALPHA) == CVG_X_ALPHA;
+        bool z_upd = (rdp.other_mode_l & Z_UPD) == Z_UPD;
+        bool z_test = (rsp.geometry_mode & G_ZBUFFER) == G_ZBUFFER;
+
+        if (use_alpha || texture_edge || !z_upd || !z_test) {
+            return;
+        }
+        if (v1->clip_rej & v2->clip_rej & v3->clip_rej) {
+            return;
+        }
+        for (int i = 0; i < 3; i++) {
+            buf_vbo[buf_vbo_len++] = v_arr[i]->x;
+            buf_vbo[buf_vbo_len++] = v_arr[i]->y;
+            buf_vbo[buf_vbo_len++] = v_arr[i]->z;
+            buf_vbo[buf_vbo_len++] = v_arr[i]->w;
+        }
+        if (++buf_vbo_num_tris == MAX_BUFFERED) {
+            gfx_flush();
+        }
+        return;
+    }
+
     //if (rand()%2) return;
     
     if (v1->clip_rej & v2->clip_rej & v3->clip_rej) {
@@ -1659,6 +1746,9 @@ static void gfx_draw_rectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_t lr
 }
 
 static void gfx_dp_texture_rectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_t lry, uint8_t tile, int16_t uls, int16_t ult, int16_t dsdx, int16_t dtdy, bool flip) {
+    if (gfx_shadow_pass) {
+        return; // 2D UI quads never cast shadows
+    }
     uint32_t saved_combine_mode = rdp.combine_mode;
     if ((rdp.other_mode_h & (3U << G_MDSFT_CYCLETYPE)) == G_CYC_COPY) {
         // Per RDP Command Summary Set Tile's shift s and this dsdx should be set to 4 texels
@@ -1711,6 +1801,9 @@ static void gfx_dp_texture_rectangle(int32_t ulx, int32_t uly, int32_t lrx, int3
 }
 
 static void gfx_dp_fill_rectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_t lry) {
+    if (gfx_shadow_pass) {
+        return; // full-screen clears / UI fills
+    }
     if (rdp.color_image_address == rdp.z_buf_address) {
         // Don't clear Z buffer here since we already did it with glClear
         return;
@@ -1989,6 +2082,8 @@ void gfx_init(struct GfxWindowManagerAPI *wapi, struct GfxRenderingAPI *rapi, co
     gfx_rapi = rapi;
     gfx_wapi->init(window_title);
     gfx_rapi->init();
+    // Persisted default; the SHADOW tab / `cmd toggle SHADOW` override it live.
+    gfx_shadow_enabled = configDynamicShadows ? 1 : 0;
     
     // Used in the 120 star TAS
     static uint32_t precomp_shaders[] = {
@@ -2111,6 +2206,27 @@ void gfx_run(Gfx *commands) {
     }
     dropped_frame = false;
     
+#ifdef __ANDROID__
+    // Realtime shadow map: one view-independent depth pass per frame, before
+    // the per-eye scene passes. The UI split point keeps HUD quads out.
+    if (gfx_shadow_enabled && gfx_stereo_enabled && gGfxHasScene && gGfxUiStart != NULL
+        && gGfxShadowStart != NULL && gGfxShadowStart < gGfxUiStart) {
+        gfx_shadow_frame++;
+        if (gfx_shadow_frame >= gfx_shadow_interval) {
+            gfx_shadow_frame = 0;
+            gfx_sp_reset();
+            if (gfx_opengl_shadow_begin(gfx_shadow_quality)) {
+                gfx_shadow_pass = 1;
+                gfx_run_dl_range(gGfxShadowStart, gGfxUiStart);
+                gfx_flush();
+                gfx_shadow_pass = 0;
+                gfx_opengl_shadow_end();
+                gfx_invalidate_state();
+            }
+        }
+    }
+#endif
+
     if (gfx_stereo_enabled) {
 #ifdef __ANDROID__
         // Split the frame's list at the UI marker when UIPOST is on: the scene
@@ -2135,6 +2251,7 @@ void gfx_run(Gfx *commands) {
             float half = 0.5f * gfx_stereo_ipd_px - gfx_stereo_convergence_px;
             float off = (v == 0 ? half : -half);
             gfx_stereo_shear = off * 2.0f / (float)gfx_stereo_eye_width;
+            gfx_eye_shear[eye] = gfx_stereo_shear;
             // Mirrored sign for per-eye effects (toe-in/out canting).
             gfx_stereo_eye_sign = (v == 0) ? 1.0f : -1.0f;
 #ifdef __ANDROID__

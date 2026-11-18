@@ -28,6 +28,7 @@
 #include "level_table.h"
 #include "course_table.h"
 #include "thread6.h"
+#include "enhancements/death_ragdoll.h"
 #include "../../include/libc/stdlib.h"
 #include "../pc/pc_main.h"
 
@@ -310,6 +311,19 @@ void set_mario_initial_cap_powerup(struct MarioState *m) {
 }
 
 void set_mario_initial_action(struct MarioState *m, u32 spawnType, u32 actionArg) {
+    if (death_ragdoll_consume_death_warp_spawn()) {
+        switch (spawnType) {
+            case MARIO_SPAWN_DEATH:
+                set_mario_action(m, ACT_FALLING_DEATH_EXIT, 0);
+                set_mario_initial_cap_powerup(m);
+                return;
+            case MARIO_SPAWN_PAINTING_DEATH:
+                set_mario_action(m, ACT_DEATH_EXIT, 0);
+                set_mario_initial_cap_powerup(m);
+                return;
+        }
+    }
+
     switch (spawnType) {
         case MARIO_SPAWN_UNKNOWN_01:
             set_mario_action(m, ACT_WARP_DOOR_SPAWN, actionArg);

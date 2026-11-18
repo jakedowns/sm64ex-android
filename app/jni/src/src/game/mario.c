@@ -35,6 +35,7 @@
 #include "pc/cheats.h"
 #ifdef BETTERCAMERA
 #include "bettercamera.h"
+#include "enhancements/death_ragdoll.h"
 #endif
 
 u32 unused80339F10;
@@ -1651,6 +1652,10 @@ void mario_update_hitbox_and_cap_model(struct MarioState *m) {
 
     if (flags & MARIO_VANISH_CAP) {
         bodyState->modelState = MODEL_STATE_NOISE_ALPHA;
+    } else if (configPuppycamEnhanced && newcam_xlu < 255) {
+        // Camera-close fade: the low byte is the env alpha read by
+        // geo_mirror_mario_set_alpha() (the 0x100 bit enables it).
+        bodyState->modelState = 0x100 | newcam_xlu;
     }
 
     if (flags & MARIO_METAL_CAP) {
@@ -1806,6 +1811,9 @@ s32 execute_mario_action(UNUSED struct Object *o) {
         squish_mario_model(gMarioState);
         set_submerged_cam_preset_and_spawn_bubbles(gMarioState);
         update_mario_health(gMarioState);
+        if (death_ragdoll_enabled) {
+            death_ragdoll_try_start_from_health_depleted(gMarioState);
+        }
         update_mario_info_for_cam(gMarioState);
         mario_update_hitbox_and_cap_model(gMarioState);
 

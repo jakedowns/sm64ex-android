@@ -49,7 +49,7 @@ public class TouchOverlay extends View {
     private final float stickRadius = 190f;
     private final float knobRadius = 70f;
 
-    private final int[] pressedPointer = {-1, -1, -1, -1, -1};
+    private final int[] pressedPointer = {-1, -1, -1, -1, -1, -1};
 
     // C buttons: smaller cluster (up/down/left/right)
     private final int[] cIds = {BTN_CUP, BTN_CDOWN, BTN_CLEFT, BTN_CRIGHT};

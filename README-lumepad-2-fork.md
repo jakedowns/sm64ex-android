@@ -159,6 +159,61 @@ touch overlay:
   100-coin stars already behaved this way. Persisted as `stay_in_level` in
   `sm64config.txt`; toggle with **STAY** or `cmd toggle --es name STAY`.
 
+### Death / hit ragdolls (ENH tab, default on)
+
+Ported from Epic0522's *Super Mario 64 3DS port — Ultimate*
+(`enhancements/death_ragdoll.inc.c`, `hit_ragdoll.inc.c`). Mario becomes a
+14-limb physics body when he dies, and gets a recoverable knockback ragdoll on
+non-lethal hits. Both are runtime toggles:
+
+- `DEATH RAGDOLL` (`death_ragdoll_enabled`, default on)
+- `HIT RAGDOLL` (`hit_ragdoll_enabled`, default on)
+
+The ragdoll renders its own limb display lists (`death_ragdoll_geo_render`) via
+a switch case in `mario_geo`, so the normal Mario model is hidden while it runs.
+
+### Puppycam+ (ENH tab, default on)
+
+Two newer-Puppycam behaviours on top of `bettercamera`:
+
+- **Wall margin** — the camera stops 70 units short of a wall hit instead of
+  snapping to the surface.
+- **Close-up fade** — Mario fades out when the camera is forced within ~250
+  units, so the view never clips through his model.
+
+Toggle with `PUPPYCAM+` / `cmd toggle --es name PPCAM`.
+
+### Realtime dynamic shadows (SHADOW tab, default on)
+
+`gfx_pc.c` replays the frame's 3D scene range once per frame from a directional
+sun into a depth-only shadow map (packed RGBA depth + a depth renderbuffer), and
+the per-eye post pass reconstructs world positions from depth, projects them
+into light space and applies PCF shadowing. The HUD/UI range is excluded, so
+only scene geometry casts.
+
+The **SHADOW** tab exposes the quality/performance trade-offs live:
+
+| Control | Effect |
+|---|---|
+| `SHADOW ENABLE` | master toggle |
+| `RES` | 512 / 1024 / 2048 px map |
+| `Strength` | shadow darkening % |
+| `Bias` / `Normal bias` | acne vs. peter-panning |
+| `Softness` / `PCF taps` | 1 / 4 / 9 / 16 tap filter radius |
+| `Range` | ortho extent around Mario |
+| `Sun yaw` / `Sun pitch` | light direction |
+| `Update every` | refresh the map every 1–4 frames |
+| `SHADOW VIEW` | off / shadow factor / raw depth map |
+
+Headless: `cmd shadow --ei k 1 --ei v 2048` sets the resolution, and
+`cmd toggle --es name SHADOW` / `SHADOWDBG` flip the master/debug state
+(`k` = 0 enable, 1 res, 2 interval, 3 strength, 4 bias, 5 normal bias,
+6 softness, 7 taps, 8 range, 9 yaw, 10 pitch, 11 debug view).
+
+The shadow matrices are built in `rendering_graph_node.c` from the camera node
+(`gfx_cam_inv_mtx`, `gfx_shadow_light_vp`); the depth pass runs before the eye
+passes and is view-independent, so both eyes share one map.
+
 ---
 
 ## Debug tooling
@@ -171,8 +226,11 @@ adb shell $B --es cmd dump                      # full state line
 adb shell $B --es cmd set --ei k 0 --ei v 300   # stereo knob (see table)
 adb shell $B --es cmd toggle --es name MXAO     # MXAO / CDOF / SSGI / STAY / CAM /
                                                 # TOEAUTO / UIPOST / UIPARALLAX / UIBUF /
-                                                # FLAT / 3D / ZBUF / WIRE / ...
+                                                # FLAT / 3D / ZBUF / WIRE /
+                                                # RAGDOLL / HITRAG / PPCAM /
+                                                # SHADOW / SHADOWDBG / ...
 adb shell $B --es cmd fx --ei k 2 --ei v 250    # screen-space FX knob
+adb shell $B --es cmd shadow --ei k 1 --ei v 1024  # shadow knob (res here)
 adb shell $B --es cmd fps --ei v 2              # 0=30 1=60 2=120 3=uncapped
 adb shell $B --es cmd busy --ei v 1             # debug line red ("hands off") / 0 green
 adb shell $B --es cmd reinit | reset
@@ -189,8 +247,8 @@ FX knobs (`cmd fx`): AO `1`-`6`, DOF `11`-`15` (`16` auto focus, `17` reports
 the auto distance), SSGI `21`-`25`, debug view `31`, normal flip `32`.
 
 The on-screen tuning panel is collapsed by default (**SHOW**/**HIDE**) so it does
-not cover the controls; it has tabs for STEREO / MXAO / C.DOF / SSGI, a toggle
-row, and a live status line plus FPS meter. The status line is **green (`FREE`)**
+not cover the controls; it has tabs for STEREO / MXAO / C.DOF / SSGI / CAMERA /
+ENH / SHADOW, a toggle row, and a live status line plus FPS meter. The status line is **green (`FREE`)**
 when the app is free to touch and **red (`BUSY - hands off`)** while an automated
 agent is driving it.
 
@@ -214,3 +272,8 @@ agent is driving it.
 Upstream: sm64ex / sm64-port / sm64ex-android. This fork adds the Lume Pad 2
 display path, stereo controls, HFR interpolation, screen-space FX, UI-after-post
 compositing, the touch overlay and the debug tooling described above.
+
+Death/hit ragdoll physics and the original Puppycam improvements come from
+Epic0522's *Super Mario 64 3DS port — Ultimate* (Puppycam / Better Camera
+authors credited upstream). The Lume Pad 2 dynamic shadow map is an original
+GLES implementation of the same feature.

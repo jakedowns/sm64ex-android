@@ -88,6 +88,26 @@ Stereo-int keys (`cmd set --ei k ... --ei v ...`): `30` STAY,
 Dump fields: `stay=`, `uipost=`, `uipar=`, `uibuf=`, `toeauto=`. UI FBO creation
 is logged as `SM64FBO ui <eye> fbo=...`.
 
+### World-position reconstruction and the stereo shear
+
+`viewPos()` removes the per-eye projection adjustments before rebuilding the
+view-space position: the clip-space IPD shear is subtracted from `ndc.x`, the
+toe cant is removed with `ndc.x -= toe * ndc.z`, and `FLIPY` is undone. Without
+this, shadow/AO/DOF/GI lookups would be offset by the eye separation (tens of
+world units at typical depths). Per-eye values are captured in
+`gfx_apply_stereo_shear()` and uploaded for each eye by the post pass.
+
+## Realtime dynamic shadow map (v33)
+
+Before the two eye passes, `gfx_pc.c` replays the perspective scene range
+(`gGfxShadowStart` .. `gGfxUiStart`) from a directional sun into a depth-only
+FBO, then the per-eye post pass projects the reconstructed world position into
+light space and applies PCF. See the README's SHADOW tab and `cmd shadow`
+key list. The background (skybox) master list is excluded because
+`gGfxShadowStart` is recorded at the first Z-buffered master list only.
+Quality/perf knobs: resolution, PCF tap count, filter radius, depth/normal
+bias, sun angles, ortho range, and map update interval.
+
 ### Auto toe (TOEAUTO, on by default)
 
 With TOEAUTO on, the manual Toe in/out slider is ignored and both eyes are

@@ -23,6 +23,9 @@ android {
         namespace "com.vdavid003.sm64port"
     }
     compileSdkVersion 34
+    // NDK r26 has no aarch64 host build and fails "Unknown host CPU
+    // architecture"; the shared headless toolchain patches r27 for qemu.
+    ndkVersion "27.2.12479018"
     defaultConfig {
         minSdkVersion 30
         targetSdkVersion 34

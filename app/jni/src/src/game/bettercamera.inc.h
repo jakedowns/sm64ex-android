@@ -9,6 +9,7 @@
 #include "include/text_strings.h"
 #include "engine/surface_collision.h"
 #include "pc/configfile.h"
+#include <math.h>
 #if defined(__MINGW32__) && !defined(__MINGW64_VERSION_MAJOR) 
 //quick and dirty fix for some older MinGW.org mingwrt
 #else
@@ -106,6 +107,11 @@ u8 newcam_active = 0; // 1 = free camera; X on the overlay toggles it
 u16 newcam_mode;
 u16 newcam_intendedmode = 0; // which camera mode the camera's going to try to be in when not forced into another.
 u16 newcam_modeflags;
+
+// Enhanced collision: distance from Mario to the first wall hit along the
+// camera boom, and the resulting Mario fade alpha (255 = fully opaque).
+f32 newcam_coldist = 0.0f;
+u8 newcam_xlu = 255;
 
 
 extern int mouse_x;
@@ -508,22 +514,55 @@ static void newcam_collision(void)
     struct Surface *surf;
     Vec3f camdir;
     Vec3f hitpos;
+    const f32 wallMargin = 70.0f;
 
     camdir[0] = newcam_pos[0]-newcam_lookat[0];
     camdir[1] = newcam_pos[1]-newcam_lookat[1];
     camdir[2] = newcam_pos[2]-newcam_lookat[2];
 
-
-
     find_surface_on_ray(newcam_pos_target, camdir, &surf, hitpos);
+
+    // Distance along the boom to the first surface. Used by the close-up fade
+    // whether or not a surface was hit (0 means the camera is unobstructed).
+    newcam_coldist = sqrtf((newcam_pos_target[0] - hitpos[0]) * (newcam_pos_target[0] - hitpos[0])
+                         + (newcam_pos_target[1] - hitpos[1]) * (newcam_pos_target[1] - hitpos[1])
+                         + (newcam_pos_target[2] - hitpos[2]) * (newcam_pos_target[2] - hitpos[2]));
 
     if (surf)
     {
-        newcam_pos[0] = hitpos[0];
-        newcam_pos[1] = approach_f32(hitpos[1],newcam_pos[1],25,-25);
-        newcam_pos[2] = hitpos[2];
+        if (configPuppycamEnhanced && newcam_coldist > wallMargin) {
+            // Pull the camera just inside the wall instead of snapping it all
+            // the way to Mario; keeps a consistent gap from the surface.
+            f32 scale = (newcam_coldist - wallMargin) / newcam_coldist;
+            newcam_pos[0] = newcam_pos_target[0] + (hitpos[0] - newcam_pos_target[0]) * scale;
+            newcam_pos[1] = approach_f32(newcam_pos_target[1] + (hitpos[1] - newcam_pos_target[1]) * scale,
+                                         newcam_pos[1], 25, -25);
+            newcam_pos[2] = newcam_pos_target[2] + (hitpos[2] - newcam_pos_target[2]) * scale;
+        } else {
+            newcam_pos[0] = hitpos[0];
+            newcam_pos[1] = approach_f32(hitpos[1],newcam_pos[1],25,-25);
+            newcam_pos[2] = hitpos[2];
+        }
         newcam_pan_x = 0;
         newcam_pan_z = 0;
+    }
+}
+
+// Fade Mario out when the camera is forced in close so the player never sees
+// the inside of his model (newer Puppycam behaviour).
+static void newcam_fade_target_closeup(void)
+{
+    if (!configPuppycamEnhanced) {
+        newcam_xlu = 255;
+        return;
+    }
+    if (newcam_coldist <= 250.0f && (newcam_coldist - 150.0f) * 2.55f < 255.0f) {
+        if ((newcam_coldist - 150.0f) * 2.55f > 0.0f)
+            newcam_xlu = (u8) ((newcam_coldist - 150.0f) * 2.55f);
+        else
+            newcam_xlu = 0;
+    } else {
+        newcam_xlu = 255;
     }
 }
 
@@ -581,6 +620,8 @@ static void newcam_position_cam(void)
 
     if (newcam_modeflags & NC_FLAG_COLLISION)
     newcam_collision();
+    else
+    newcam_coldist = 999.0f;
 
 }
 
@@ -677,6 +718,7 @@ void newcam_loop(struct Camera *c)
     newcam_rotate_button();
     newcam_zoom_button();
     newcam_position_cam();
+    newcam_fade_target_closeup();
     newcam_find_fixed();
     if (gMarioObject)
         newcam_apply_values(c);

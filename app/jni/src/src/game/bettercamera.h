@@ -39,6 +39,10 @@ extern u8 newcam_aggression; //How much the camera tries to centre itself to Mar
 extern u8 newcam_active; // basically the thing that governs if newcam is on.
 extern u8 newcam_analogue;
 extern u16 newcam_intendedmode;
+// Distance from Mario to the first camera collision hit (0 when clear), and
+// the resulting Mario fade alpha used when the camera is very close.
+extern f32 newcam_coldist;
+extern u8 newcam_xlu;
 
 extern u16 newcam_mode;
 extern s16 newcam_yaw;

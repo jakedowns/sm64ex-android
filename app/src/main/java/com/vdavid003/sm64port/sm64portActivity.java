@@ -70,6 +70,13 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     private TextView aoToggle, dofToggle, giToggle;
     private boolean aoOn, dofOn, giOn;
     private int fxDebug = 0;
+    // Gameplay enhancements (default on; toggled from the ENH tab).
+    private boolean ragdollOn = true, hitRagdollOn = true, ppcamOn = true;
+    private TextView ragdollToggle, hitRagdollToggle, ppcamToggle;
+    // Realtime shadow map (SHADOW tab).
+    private int shadowRes = 1024;
+    private int shadowDebug = 0;
+    private TextView shadowResButton, shadowDebugButton, shadowEnableToggle;
     private boolean stereoOn = true;
     private boolean testOn = false;
     private boolean tintOn, zbufOn, wireOn, perfOn, swapOn, sameOn, nocullOn, flatOn, analogOn;
@@ -407,6 +414,8 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addTabButton(tabBar, "C.DOF");
         addTabButton(tabBar, "SSGI");
         addTabButton(tabBar, "CAMERA");
+        addTabButton(tabBar, "ENH");
+        addTabButton(tabBar, "SHADOW");
         panel.addView(tabBar);
 
         tabContent = new LinearLayout(this);
@@ -646,6 +655,42 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addCamSlider("Gyro strength", 0, 200, gyroStrength, " %", 44);
         addCamSlider("Pivot height", 0, 200, gyroPivot, " cm", 45);
         addCamButton("RECENTRE GYRO", () -> recentreGyro());
+
+        // --- Gameplay enhancements ---
+        beginTab();
+        ragdollToggle = addEnhToggle("DEATH RAGDOLL", 0, ragdollOn);
+        hitRagdollToggle = addEnhToggle("HIT RAGDOLL", 1, hitRagdollOn);
+        ppcamToggle = addEnhToggle("PUPPYCAM+", 2, ppcamOn);
+
+        // --- Realtime dynamic shadows (quality / performance) ---
+        beginTab();
+        shadowEnableToggle = addShadowToggle("SHADOW ENABLE", 0, true);
+        shadowResButton = addShadowButton("RES 1024", () -> {
+            shadowRes = shadowRes <= 512 ? 1024 : (shadowRes <= 1024 ? 2048 : 512);
+            if (shadowResButton != null) shadowResButton.setText("RES " + shadowRes);
+            nativeSetShadow(1, shadowRes);
+            Log.i(TAG, "shadow res " + shadowRes);
+        });
+        addShadowSlider("Strength", 0, 100, 65, " %", 3);
+        addShadowSlider("Bias", 0, 200, 25, " u", 4);
+        addShadowSlider("Normal bias", 0, 300, 45, " u", 5);
+        addShadowSlider("Softness", 0, 8, 2, " tx", 6);
+        addShadowSlider("PCF taps", 1, 16, 9, "", 7);
+        addShadowSlider("Range", 1500, 9000, 4500, " u", 8);
+        addShadowSlider("Sun yaw", 0, 359, 45, "deg", 9);
+        addShadowSlider("Sun pitch", 5, 89, 52, "deg", 10);
+        addShadowSlider("Update every", 1, 4, 1, " fr", 2);
+        shadowDebugButton = addShadowButton("SHADOW VIEW OFF", () -> {
+            shadowDebug = (shadowDebug + 1) % 3;
+            if (shadowDebugButton != null) {
+                shadowDebugButton.setText("SHADOW VIEW "
+                        + (shadowDebug == 0 ? "OFF" : shadowDebug == 1 ? "FACTOR" : "MAP"));
+            }
+            nativeSetShadow(11, shadowDebug);
+            Log.i(TAG, "shadow debug " + shadowDebug);
+        });
+        // Push the current values once so the native defaults match the labels.
+        nativeSetShadow(1, shadowRes);
     }
 
     // ---- camera-tracking widgets (stereo-int channel, keys 41..44) ----
@@ -706,6 +751,93 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         b.setPadding(dp(4), dp(10), dp(4), dp(10));
         b.setOnClickListener(v -> action.run());
         controls.addView(b);
+    }
+
+    // ---- gameplay enhancement widgets (nativeSetEnh channel) ----
+
+    private TextView addEnhToggle(String name, final int key, boolean initial) {
+        final TextView b = new TextView(this);
+        b.setText(name + ": " + (initial ? "ON" : "OFF"));
+        b.setTextSize(16);
+        b.setTextColor(initial ? 0xFF66FF99 : 0xFF888888);
+        b.setPadding(dp(4), dp(8), dp(4), dp(8));
+        b.setOnClickListener(v -> {
+            boolean on = b.getCurrentTextColor() != 0xFF66FF99;
+            b.setText(name + ": " + (on ? "ON" : "OFF"));
+            b.setTextColor(on ? 0xFF66FF99 : 0xFF888888);
+            nativeSetEnh(key, on ? 1 : 0);
+            if (key == 0) ragdollOn = on;
+            if (key == 1) hitRagdollOn = on;
+            if (key == 2) ppcamOn = on;
+            Log.i(TAG, name + "=" + on);
+        });
+        controls.addView(b);
+        nativeSetEnh(key, initial ? 1 : 0);
+        return b;
+    }
+
+    // ---- realtime shadow widgets (nativeSetShadow channel) ----
+
+    private void addShadowSlider(String name, int min, int max, int initial, String unit,
+                                 final int key) {
+        final TextView label = new TextView(this);
+        label.setTextColor(Color.WHITE);
+        label.setTextSize(14);
+        label.setText(name + ": " + initial + unit);
+        SeekBar bar = new SeekBar(this);
+        bar.setMax(max - min);
+        bar.setProgress(initial - min);
+        bar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar sb, int progress, boolean fromUser) {
+                int v = progress + min;
+                label.setText(name + ": " + v + unit);
+                nativeSetShadow(key, v);
+                if (key == 11) shadowDebug = v;
+            }
+            @Override public void onStartTrackingTouch(SeekBar sb) {}
+            @Override public void onStopTrackingTouch(SeekBar sb) {}
+        });
+        addToGrid(label, bar);
+        nativeSetShadow(key, initial);
+    }
+
+    private TextView addShadowToggle(String name, final int key, boolean initial) {
+        final TextView b = new TextView(this);
+        b.setText(name + ": " + (initial ? "ON" : "OFF"));
+        b.setTextSize(16);
+        b.setTextColor(initial ? 0xFF66FF99 : 0xFF888888);
+        b.setPadding(dp(4), dp(8), dp(4), dp(8));
+        b.setOnClickListener(v -> {
+            boolean on = b.getCurrentTextColor() != 0xFF66FF99;
+            b.setText(name + ": " + (on ? "ON" : "OFF"));
+            b.setTextColor(on ? 0xFF66FF99 : 0xFF888888);
+            nativeSetShadow(key, on ? 1 : 0);
+            Log.i(TAG, name + "=" + on);
+        });
+        controls.addView(b);
+        nativeSetShadow(key, initial ? 1 : 0);
+        return b;
+    }
+
+    private TextView addShadowButton(String name, final Runnable action) {
+        final TextView b = new TextView(this);
+        b.setText(name);
+        b.setTextSize(16);
+        b.setTextColor(0xFF66CCFF);
+        b.setPadding(dp(4), dp(10), dp(4), dp(10));
+        b.setOnClickListener(v -> action.run());
+        controls.addView(b);
+        return b;
+    }
+
+    private void applyEnhState(TextView b, String name, boolean on) {
+        b.setText(name + ": " + (on ? "ON" : "OFF"));
+        b.setTextColor(on ? 0xFF66FF99 : 0xFF888888);
+    }
+
+    private void applyShadowEnable(TextView b, boolean on) {
+        b.setText("SHADOW ENABLE: " + (on ? "ON" : "OFF"));
+        b.setTextColor(on ? 0xFF66FF99 : 0xFF888888);
     }
 
     private void recentreGyro() {
@@ -1152,6 +1284,12 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     /** Screen-space FX knobs, implemented by the per-eye post pass. */
     private native void nativeSetSSFX(int which, int value);
     private native int nativeGetSSFX(int which);
+    /** Gameplay enhancement toggles: 0 ragdoll, 1 hit ragdoll, 2 puppycam+. */
+    private native void nativeSetEnh(int which, int value);
+    private native int nativeGetEnh(int which);
+    /** Realtime shadow map knobs (see SHADOW tab / gfx_opengl_ssfx_set). */
+    private native void nativeSetShadow(int which, int value);
+    private native int nativeGetShadow(int which);
 
     /** 11 = interlacer source width as a percentage of the panel width. */
     private volatile int srcH = 1200;
@@ -1244,6 +1382,23 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         Log.i(TAG, "FX set " + k + "=" + v);
     }
 
+    void debugShadow(int k, int v) {
+        nativeSetShadow(k, v);
+        Log.i(TAG, "SHADOW set " + k + "=" + v);
+    }
+
+    /** Pulse raw overlay pad input (headless menu/gameplay driving). */
+    void debugPad(int sx, int sy, int buttons, int ms) {
+        final int dur = ms <= 0 ? 120 : ms;
+        runOnUiThread(() -> {
+            nativeOverlayInput(1, sx, sy, buttons);
+            new android.os.Handler(getMainLooper()).postDelayed(
+                    () -> nativeOverlayInput(1, sx, sy, 0), dur);
+            Log.i(TAG, "PAD sx=" + sx + " sy=" + sy + " btn=0x"
+                    + Integer.toHexString(buttons) + " ms=" + dur);
+        });
+    }
+
     void debugToggle(String name) {
         if (name == null) return;
         switch (name) {
@@ -1273,6 +1428,49 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                     fxDebug = (fxDebug + 1) % 4;
                     nativeSetSSFX(31, fxDebug);
                     Log.i(TAG, "fxDebug=" + fxDebug);
+                });
+                break;
+            case "RAGDOLL":
+                runOnUiThread(() -> {
+                    ragdollOn = !ragdollOn;
+                    nativeSetEnh(0, ragdollOn ? 1 : 0);
+                    if (ragdollToggle != null) applyEnhState(ragdollToggle, "DEATH RAGDOLL", ragdollOn);
+                    Log.i(TAG, "RAGDOLL=" + ragdollOn);
+                });
+                break;
+            case "HITRAG":
+                runOnUiThread(() -> {
+                    hitRagdollOn = !hitRagdollOn;
+                    nativeSetEnh(1, hitRagdollOn ? 1 : 0);
+                    if (hitRagdollToggle != null) applyEnhState(hitRagdollToggle, "HIT RAGDOLL", hitRagdollOn);
+                    Log.i(TAG, "HITRAG=" + hitRagdollOn);
+                });
+                break;
+            case "PPCAM":
+                runOnUiThread(() -> {
+                    ppcamOn = !ppcamOn;
+                    nativeSetEnh(2, ppcamOn ? 1 : 0);
+                    if (ppcamToggle != null) applyEnhState(ppcamToggle, "PUPPYCAM+", ppcamOn);
+                    Log.i(TAG, "PPCAM=" + ppcamOn);
+                });
+                break;
+            case "SHADOW":
+                runOnUiThread(() -> {
+                    boolean on = nativeGetShadow(0) == 0;
+                    nativeSetShadow(0, on ? 1 : 0);
+                    if (shadowEnableToggle != null) applyShadowEnable(shadowEnableToggle, on);
+                    Log.i(TAG, "SHADOW=" + on);
+                });
+                break;
+            case "SHADOWDBG":
+                runOnUiThread(() -> {
+                    shadowDebug = (shadowDebug + 1) % 3;
+                    nativeSetShadow(11, shadowDebug);
+                    if (shadowDebugButton != null) {
+                        shadowDebugButton.setText("SHADOW VIEW "
+                                + (shadowDebug == 0 ? "OFF" : shadowDebug == 1 ? "FACTOR" : "MAP"));
+                    }
+                    Log.i(TAG, "SHADOWDBG=" + shadowDebug);
                 });
                 break;
             case "TINT": nativeSetStereoInt(7, tintOn ? 0 : 1); tintOn = !tintOn; break;
@@ -1408,7 +1606,13 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                     + " pivot=" + gyroPivot
                     + " head=" + nativeGetHeadPose(0) + "," + nativeGetHeadPose(1)
                     + "," + nativeGetHeadPose(2)
-                    + " uipar=" + uiParallaxOn + " uibuf=" + uiBufOn);
+                    + " uipar=" + uiParallaxOn + " uibuf=" + uiBufOn
+                    + " ragdoll=" + nativeGetEnh(0) + " hitrag=" + nativeGetEnh(1)
+                    + " ppcam=" + nativeGetEnh(2)
+                    + " shadow=" + nativeGetShadow(0) + "/" + nativeGetShadow(1)
+                    + " str=" + nativeGetShadow(3) + " bias=" + nativeGetShadow(4)
+                    + " soft=" + nativeGetShadow(6) + " taps=" + nativeGetShadow(7)
+                    + " range=" + nativeGetShadow(8) + " dbg=" + nativeGetShadow(11));
         });
     }
 

@@ -29,6 +29,10 @@
 #include "thread6.h"
 #include "../../include/libc/stdlib.h"
 #include "../pc/pc_main.h"
+#include "enhancements/death_ragdoll.h"
+#include "enhancements/hit_ragdoll.h"
+#include "enhancements/death_ragdoll.inc.c"
+#include "enhancements/hit_ragdoll.inc.c"
 
 // TODO: put this elsewhere
 enum SaveOption { SAVE_OPT_SAVE_AND_CONTINUE = 1, SAVE_OPT_SAVE_AND_QUIT, SAVE_OPT_SAVE_EXIT_GAME, SAVE_OPT_CONTINUE_DONT_SAVE };
@@ -2691,6 +2695,9 @@ s32 mario_execute_cutscene_action(struct MarioState *m) {
         case ACT_BUTT_STUCK_IN_GROUND:       cancel = act_butt_stuck_in_ground(m);       break;
         case ACT_FEET_STUCK_IN_GROUND:       cancel = act_feet_stuck_in_ground(m);       break;
         case ACT_PUTTING_ON_CAP:             cancel = act_putting_on_cap(m);             break;
+        case ACT_DEATH_RAGDOLL:              cancel = act_death_ragdoll(m);              break;
+        case ACT_HIT_RAGDOLL:                cancel = act_hit_ragdoll(m);                break;
+        case ACT_HIT_RAGDOLL_RECOVER:        cancel = act_hit_ragdoll_recover(m);        break;
     }
     /* clang-format on */
 

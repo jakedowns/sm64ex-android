@@ -43,6 +43,22 @@ public class DebugReceiver extends BroadcastReceiver {
                 Log.i(TAG, "CMD fx k=" + k + " v=" + v);
                 break;
             }
+            case "shadow": {
+                int k = intent.getIntExtra("k", -1);
+                int v = intent.getIntExtra("v", 0);
+                a.debugShadow(k, v);
+                Log.i(TAG, "CMD shadow k=" + k + " v=" + v);
+                break;
+            }
+            case "pad": {
+                int sx = intent.getIntExtra("sx", 0);
+                int sy = intent.getIntExtra("sy", 0);
+                int buttons = intent.getIntExtra("buttons", 0);
+                int ms = intent.getIntExtra("ms", 120);
+                a.debugPad(sx, sy, buttons, ms);
+                Log.i(TAG, "CMD pad sx=" + sx + " sy=" + sy + " btn=" + buttons + " ms=" + ms);
+                break;
+            }
             case "toggle": {
                 String name = intent.getStringExtra("name");
                 a.debugToggle(name);

@@ -42,6 +42,9 @@ s16 gMatStackIndex;
 Mat4 gMatStack[32];
 Mtx *gMatStackFixed[32];
 
+// First command of the perspective 3D scene (set here, read by gfx_pc.c).
+extern Gfx *gGfxShadowStart;
+
 /**
  * Animation nodes have state in global variables, so this struct captures
  * the animation state so a 'context switch' can be made when rendering the
@@ -304,6 +307,12 @@ static void geo_process_master_list(struct GraphNodeMasterList *node) {
             node->listHeads[i] = NULL;
         }
         geo_process_node_and_siblings(node->node.children);
+        // The first Z-buffered master list is the perspective 3D scene (the
+        // skybox/pre-render background has no Z buffer). Record where it starts
+        // so the shadow pass can skip the background and 2D UI.
+        if (gGfxShadowStart == NULL && (node->node.flags & GRAPH_RENDER_Z_BUFFER)) {
+            gGfxShadowStart = gDisplayListHead;
+        }
         geo_process_master_list_sub(node);
         gCurGraphNodeMasterList = NULL;
     }
@@ -413,6 +422,94 @@ static void geo_process_switch(struct GraphNodeSwitchCase *node) {
     }
 }
 
+/* ---------------- Realtime shadow map: camera/light matrices -------------
+ * Row-vector 4x4 matrices (v' = v * M, translation in row 3), the same
+ * convention as the N64 matrices and gfx_pc.c.
+ *
+ * gfx_cam_inv_mtx maps view space -> world space (inverse of the camera view),
+ * gfx_shadow_light_vp maps world space -> light clip space. The shadow map is
+ * rendered by gfx_pc.c replaying the scene range with
+ *   clip = object * modelview * cam_inv * light_vp
+ * and the screen-space post pass reconstructs world positions from depth with
+ * the same cam_inv, then samples the map.
+ */
+float gfx_cam_inv_mtx[4][4];
+float gfx_shadow_light_vp[4][4];
+float gfx_shadow_light_dir[3];   // world-space direction towards the light
+int gfx_shadow_matrices_ready = 0;
+
+extern int gfx_shadow_enabled;
+extern int gfx_shadow_yaw_deg;
+extern int gfx_shadow_pitch_deg;
+extern int gfx_shadow_range;
+
+static void shadow_make_camera_inv(Mat4 dest, Mat4 viewMtx, Vec3f cameraPos) {
+    // Inverse of a rigid view matrix: transpose the rotation, keep the camera
+    // position as the translation.
+    dest[0][0] = viewMtx[0][0];
+    dest[0][1] = viewMtx[1][0];
+    dest[0][2] = viewMtx[2][0];
+    dest[0][3] = 0.0f;
+
+    dest[1][0] = viewMtx[0][1];
+    dest[1][1] = viewMtx[1][1];
+    dest[1][2] = viewMtx[2][1];
+    dest[1][3] = 0.0f;
+
+    dest[2][0] = viewMtx[0][2];
+    dest[2][1] = viewMtx[1][2];
+    dest[2][2] = viewMtx[2][2];
+    dest[2][3] = 0.0f;
+
+    dest[3][0] = cameraPos[0];
+    dest[3][1] = cameraPos[1];
+    dest[3][2] = cameraPos[2];
+    dest[3][3] = 1.0f;
+}
+
+static void shadow_make_ortho(Mat4 dest, f32 left, f32 right, f32 bottom, f32 top,
+                              f32 near, f32 far) {
+    mtxf_identity(dest);
+    dest[0][0] = 2.0f / (right - left);
+    dest[1][1] = 2.0f / (top - bottom);
+    dest[2][2] = -2.0f / (far - near);
+    dest[3][0] = -(right + left) / (right - left);
+    dest[3][1] = -(top + bottom) / (top - bottom);
+    dest[3][2] = -(far + near) / (far - near);
+}
+
+static void shadow_update_light_matrices(Vec3f cameraPos) {
+    Vec3f center;
+    Vec3f lightPos;
+    Mat4 lightView;
+    Mat4 lightProj;
+    f32 yaw = (f32)gfx_shadow_yaw_deg * 3.14159265f / 180.0f;
+    f32 pitch = (f32)gfx_shadow_pitch_deg * 3.14159265f / 180.0f;
+    f32 range = (f32)gfx_shadow_range;
+    f32 dist = 6000.0f;
+
+    // Follow Mario so the map's limited resolution is spent around the action.
+    if (gMarioObject != NULL) {
+        vec3f_copy(center, gMarioObject->header.gfx.pos);
+        center[1] += 400.0f;
+    } else {
+        vec3f_copy(center, cameraPos);
+    }
+
+    // dir points from the scene towards the light (elevation above the horizon).
+    gfx_shadow_light_dir[0] = sinf(yaw) * cosf(pitch);
+    gfx_shadow_light_dir[1] = sinf(pitch);
+    gfx_shadow_light_dir[2] = cosf(yaw) * cosf(pitch);
+
+    lightPos[0] = center[0] + gfx_shadow_light_dir[0] * dist;
+    lightPos[1] = center[1] + gfx_shadow_light_dir[1] * dist;
+    lightPos[2] = center[2] + gfx_shadow_light_dir[2] * dist;
+
+    mtxf_lookat(lightView, lightPos, center, 0);
+    shadow_make_ortho(lightProj, -range, range, -range, range, 100.0f, 12000.0f);
+    mtxf_mul(gfx_shadow_light_vp, lightView, lightProj);
+}
+
 /**
  * Process a camera node.
  */
@@ -465,6 +562,11 @@ static void geo_process_camera(struct GraphNodeCamera *node) {
     }
 
     mtxf_lookat(cameraTransform, node->pos, node->focus, node->roll);
+    if (gfx_shadow_enabled) {
+        shadow_make_camera_inv(gfx_cam_inv_mtx, cameraTransform, node->pos);
+        shadow_update_light_matrices(node->pos);
+        gfx_shadow_matrices_ready = 1;
+    }
     mtxf_mul(gMatStack[gMatStackIndex + 1], cameraTransform, gMatStack[gMatStackIndex]);
     mtxf_lookat(cameraTransform, prevPos, prevFocus, node->roll);
     mtxf_mul(gMatStackPrev[gMatStackIndex + 1], cameraTransform, gMatStackPrev[gMatStackIndex]);

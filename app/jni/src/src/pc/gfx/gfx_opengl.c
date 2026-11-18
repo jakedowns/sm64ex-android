@@ -670,6 +670,36 @@ static int s_fx_gi_rays = 4;
 static int s_fx_debug = 0;            // 0 off, 1 AO, 2 CoC, 3 GI
 static int s_fx_normal_flip = 0;
 
+// Realtime dynamic shadow map state (owned by gfx_pc.c / rendering_graph_node.c).
+extern int gfx_shadow_enabled;
+extern int gfx_shadow_quality;
+extern int gfx_shadow_interval;
+extern int gfx_shadow_strength;
+extern int gfx_shadow_bias;
+extern int gfx_shadow_normal_bias;
+extern int gfx_shadow_softness;
+extern int gfx_shadow_taps;
+extern int gfx_shadow_range;
+extern int gfx_shadow_yaw_deg;
+extern int gfx_shadow_pitch_deg;
+extern int gfx_shadow_debug;
+extern float gfx_shadow_light_vp[4][4];
+extern float gfx_cam_inv_mtx[4][4];
+extern float gfx_shadow_light_dir[3];
+extern int gfx_shadow_matrices_ready;
+extern float gfx_eye_shear[2];
+extern float gfx_eye_toe[2];
+extern int gfx_eye_flip[2];
+static int s_shadow_map_valid = 0;    // set by gfx_opengl_shadow_end()
+
+/* Shadow map FBO: RGBA8 colour with packed depth + a depth renderbuffer. */
+static GLuint s_shadow_fbo = 0, s_shadow_tex = 0, s_shadow_depth = 0;
+static int    s_shadow_res = 0;
+static int    s_shadow_rendering = 0;
+static GLuint s_shadow_prog = 0;
+static int    s_shadow_prog_state = 0;   // 0 = untried, 1 = ok, -1 = failed
+static GLint  s_shadow_apos = -1;
+
 static const char *s_fx_vs =
     "attribute vec2 aPos; attribute vec2 aUV; varying vec2 vUV;\n"
     "void main(){ vUV = aUV; gl_Position = vec4(aPos, 0.0, 1.0); }\n";
@@ -704,12 +734,67 @@ static const char *s_fx_fs =
     "uniform float uGIRays;\n"
     "uniform float uDebug;\n"
     "uniform float uNormalFlip;\n"
+    "uniform float uShear;\n"
+    "uniform float uToe;\n"
+    "uniform float uFlipY;\n"
+    "uniform sampler2D uShadowMap;\n"
+    "uniform mat4 uShadowVP;\n"
+    "uniform mat4 uCamInv;\n"
+    "uniform vec3 uShadowLightDir;\n"
+    "uniform vec2 uShadowTexel;\n"
+    "uniform float uShadowOn;\n"
+    "uniform float uShadowStrength;\n"
+    "uniform float uShadowBias;\n"
+    "uniform float uShadowNormalBias;\n"
+    "uniform float uShadowSoftness;\n"
+    "uniform float uShadowTaps;\n"
+    "uniform float uShadowDebug;\n"
+    "float unpackDepth(vec4 rgba) {\n"
+    "  return dot(rgba, vec4(1.0, 1.0/255.0, 1.0/65025.0, 1.0/16581375.0));\n"
+    "}\n"
+    "float shadowLookup(vec3 world, vec3 N) {\n"
+    "  vec3 wp = world + N * uShadowNormalBias;\n"
+    "  vec4 lp = uShadowVP * vec4(wp, 1.0);\n"
+    "  if (lp.w <= 0.0) return 1.0;\n"
+    "  vec3 ndc = lp.xyz / lp.w;\n"
+    "  vec2 uv = ndc.xy * 0.5 + 0.5;\n"
+    "  if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return 1.0;\n"
+    "  float edge = smoothstep(0.0, 0.04, min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y)));\n"
+    "  float ref = ndc.z * 0.5 + 0.5 - uShadowBias * 0.00009;\n"
+    "  float lit = 1.0;\n"
+    "  float taps = uShadowTaps;\n"
+    "  if (taps < 1.5) {\n"
+    "    float md = unpackDepth(texture2D(uShadowMap, uv));\n"
+    "    lit = (ref > md) ? 0.0 : 1.0;\n"
+    "  } else {\n"
+    "    float side = taps < 6.0 ? 2.0 : (taps < 12.0 ? 3.0 : 4.0);\n"
+    "    float sum = 0.0;\n"
+    "    float cnt = 0.0;\n"
+    "    float radius = uShadowSoftness * 2.0;\n"
+    "    for (int y = 0; y < 4; y++) {\n"
+    "      for (int x = 0; x < 4; x++) {\n"
+    "        if (float(x) >= side || float(y) >= side) continue;\n"
+    "        vec2 o = (vec2(float(x), float(y)) / (side - 1.0) - 0.5) * 2.0 * radius * uShadowTexel;\n"
+    "        float md = unpackDepth(texture2D(uShadowMap, uv + o));\n"
+    "        sum += (ref > md) ? 0.0 : 1.0;\n"
+    "        cnt += 1.0;\n"
+    "      }\n"
+    "    }\n"
+    "    lit = cnt > 0.0 ? sum / cnt : 1.0;\n"
+    "  }\n"
+    "  float ndl = max(dot(N, uShadowLightDir), 0.0);\n"
+    "  float litWeight = smoothstep(0.02, 0.35, ndl);\n"
+    "  return mix(1.0, mix(1.0, lit, edge), uShadowStrength * litWeight);\n"
+    "}\n"
     "float linZ(float d) {\n"
     "  float z = d * 2.0 - 1.0;\n"
     "  return (2.0 * uNear * uFar) / (uFar + uNear - z * (uFar - uNear));\n"
     "}\n"
     "vec3 viewPos(vec2 cuv, float z) {\n"
     "  vec2 ndc = cuv * 2.0 - 1.0;\n"
+    "  float ndcz = (uFar + uNear - 2.0 * uNear * uFar / z) / (uFar - uNear);\n"
+    "  if (uFlipY > 0.5) ndc.y = -ndc.y;\n"
+    "  ndc.x -= uShear + uToe * ndcz;\n"
     "  return vec3(ndc.x * z * uTanHalf * uAspect,\n"
     "              ndc.y * z * uTanHalf, -z);\n"
     "}\n"
@@ -734,6 +819,10 @@ static const char *s_fx_fs =
     "  vec3 N = normalize(cross(Px - P, Py - P));\n"
     "  if (N.z < 0.0) N = -N;\n"
     "  if (uNormalFlip > 0.5) N = -N;\n"
+    "  vec3 Pw = (uCamInv * vec4(P, 1.0)).xyz;\n"
+    "  vec3 Nw = normalize((uCamInv * vec4(N, 0.0)).xyz);\n"
+    "  float shadow = 1.0;\n"
+    "  if (uShadowOn > 0.5) shadow = shadowLookup(Pw, Nw);\n"
     "  float ao = 1.0;\n"
     "  if (uAOOn > 0.5) {\n"
     "    float occ = 0.0;\n"
@@ -819,11 +908,13 @@ static const char *s_fx_fs =
     "    }\n"
     "    gi = ws > 0.0 ? gi / ws : vec3(0.0);\n"
     "  }\n"
-    "  if (uDebug > 2.5) gl_FragColor = vec4(gi * 3.0 * (uGIIntensity / 100.0), 1.0);\n"
+    "  if (uShadowDebug > 1.5) gl_FragColor = vec4(vec3(unpackDepth(texture2D(uShadowMap, clamp(cuv, 0.0, 1.0)))), 1.0);\n"
+    "  else if (uShadowDebug > 0.5) gl_FragColor = vec4(vec3(shadow), 1.0);\n"
+    "  else if (uDebug > 2.5) gl_FragColor = vec4(gi * 3.0 * (uGIIntensity / 100.0), 1.0);\n"
     "  else if (uDebug > 1.5) gl_FragColor = vec4(vec3(clamp(cocPx / max(uMaxBlur, 1.0), 0.0, 1.0)), 1.0);\n"
     "  else if (uDebug > 0.5) gl_FragColor = vec4(vec3(ao), 1.0);\n"
     "  else {\n"
-    "    vec3 outc = dofColor * ao + gi * (uGIIntensity / 100.0) * 0.6;\n"
+    "    vec3 outc = dofColor * ao * shadow + gi * (uGIIntensity / 100.0) * 0.6;\n"
     "    gl_FragColor = vec4(outc, 1.0);\n"
     "  }\n"
     "}\n";
@@ -834,6 +925,10 @@ static struct {
     GLint dof_on, dof_focus, dof_aperture, dof_maxblur, dof_samples;
     GLint gi_on, gi_intensity, gi_radius, gi_steps, gi_rays;
     GLint debug, normal_flip;
+    GLint shear, toe, flipy;
+    GLint shadow_map, shadow_vp, shadow_caminv, shadow_dir, shadow_texel;
+    GLint shadow_on, shadow_strength, shadow_bias, shadow_nbias;
+    GLint shadow_softness, shadow_taps, shadow_debug;
 } s_fx_u;
 
 static GLuint s_fx_prog = 0;
@@ -843,7 +938,15 @@ static GLuint s_pp_tex[2] = {0, 0};
 static int    s_pp_w = 0, s_pp_h = 0;
 
 static int stereo_fx_any(void) {
-    return s_fx_ao_on || s_fx_dof_on || s_fx_gi_on || s_fx_debug != 0;
+    return s_fx_ao_on || s_fx_dof_on || s_fx_gi_on || s_fx_debug != 0
+        || (gfx_shadow_enabled && s_shadow_map_valid);
+}
+
+// Row-vector matrix (translation in row 3). GLSL matrices are column-major,
+// so uploading the row-major array as-is makes the shader see M = m^T, which
+// is exactly the column-vector form we need (world = camInv^T * view).
+static void upload_mat4_rowvec(GLint loc, const float m[4][4]) {
+    glUniformMatrix4fv(loc, 1, GL_FALSE, &m[0][0]);
 }
 
 void gfx_opengl_ssfx_set(int which, int value) {
@@ -867,6 +970,19 @@ void gfx_opengl_ssfx_set(int which, int value) {
         case 25: s_fx_gi_rays = value < 1 ? 1 : (value > 8 ? 8 : value); break;
         case 31: s_fx_debug = value < 0 ? 0 : (value > 3 ? 3 : value); break;
         case 32: s_fx_normal_flip = value ? 1 : 0; break;
+        /* Realtime dynamic shadow map (SHADOW tab). */
+        case 50: gfx_shadow_enabled = value ? 1 : 0; break;
+        case 51: gfx_shadow_quality = value <= 512 ? 512 : (value <= 1024 ? 1024 : (value <= 2048 ? 2048 : 4096)); break;
+        case 52: gfx_shadow_interval = value < 1 ? 1 : (value > 4 ? 4 : value); break;
+        case 53: gfx_shadow_strength = value < 0 ? 0 : (value > 100 ? 100 : value); break;
+        case 54: gfx_shadow_bias = value < 0 ? 0 : (value > 200 ? 200 : value); break;
+        case 55: gfx_shadow_normal_bias = value < 0 ? 0 : (value > 300 ? 300 : value); break;
+        case 56: gfx_shadow_softness = value < 0 ? 0 : (value > 8 ? 8 : value); break;
+        case 57: gfx_shadow_taps = value <= 1 ? 1 : (value <= 4 ? 4 : (value <= 9 ? 9 : 16)); break;
+        case 58: gfx_shadow_range = value < 1500 ? 1500 : (value > 9000 ? 9000 : value); break;
+        case 59: gfx_shadow_yaw_deg = value < 0 ? 0 : (value > 359 ? 359 : value); break;
+        case 60: gfx_shadow_pitch_deg = value < 5 ? 5 : (value > 89 ? 89 : value); break;
+        case 61: gfx_shadow_debug = value < 0 ? 0 : (value > 2 ? 2 : value); break;
         default: return;
     }
     __android_log_print(ANDROID_LOG_INFO, "SM64FX",
@@ -898,6 +1014,18 @@ int gfx_opengl_ssfx_get(int which) {
         case 25: return s_fx_gi_rays;
         case 31: return s_fx_debug;
         case 32: return s_fx_normal_flip;
+        case 50: return gfx_shadow_enabled;
+        case 51: return gfx_shadow_quality;
+        case 52: return gfx_shadow_interval;
+        case 53: return gfx_shadow_strength;
+        case 54: return gfx_shadow_bias;
+        case 55: return gfx_shadow_normal_bias;
+        case 56: return gfx_shadow_softness;
+        case 57: return gfx_shadow_taps;
+        case 58: return gfx_shadow_range;
+        case 59: return gfx_shadow_yaw_deg;
+        case 60: return gfx_shadow_pitch_deg;
+        case 61: return gfx_shadow_debug;
     }
     return -1;
 }
@@ -979,8 +1107,150 @@ static void stereo_fx_init(void) {
     s_fx_u.gi_rays = glGetUniformLocation(s_fx_prog, "uGIRays");
     s_fx_u.debug = glGetUniformLocation(s_fx_prog, "uDebug");
     s_fx_u.normal_flip = glGetUniformLocation(s_fx_prog, "uNormalFlip");
+    s_fx_u.shear = glGetUniformLocation(s_fx_prog, "uShear");
+    s_fx_u.toe = glGetUniformLocation(s_fx_prog, "uToe");
+    s_fx_u.flipy = glGetUniformLocation(s_fx_prog, "uFlipY");
+    s_fx_u.shadow_map = glGetUniformLocation(s_fx_prog, "uShadowMap");
+    s_fx_u.shadow_vp = glGetUniformLocation(s_fx_prog, "uShadowVP");
+    s_fx_u.shadow_caminv = glGetUniformLocation(s_fx_prog, "uCamInv");
+    s_fx_u.shadow_dir = glGetUniformLocation(s_fx_prog, "uShadowLightDir");
+    s_fx_u.shadow_texel = glGetUniformLocation(s_fx_prog, "uShadowTexel");
+    s_fx_u.shadow_on = glGetUniformLocation(s_fx_prog, "uShadowOn");
+    s_fx_u.shadow_strength = glGetUniformLocation(s_fx_prog, "uShadowStrength");
+    s_fx_u.shadow_bias = glGetUniformLocation(s_fx_prog, "uShadowBias");
+    s_fx_u.shadow_nbias = glGetUniformLocation(s_fx_prog, "uShadowNormalBias");
+    s_fx_u.shadow_softness = glGetUniformLocation(s_fx_prog, "uShadowSoftness");
+    s_fx_u.shadow_taps = glGetUniformLocation(s_fx_prog, "uShadowTaps");
+    s_fx_u.shadow_debug = glGetUniformLocation(s_fx_prog, "uShadowDebug");
     s_fx_prog_state = 1;
     __android_log_print(ANDROID_LOG_INFO, "SM64FX", "FX program ready (%u)", s_fx_prog);
+}
+
+/* ---------------- Realtime shadow map pass ----------------
+ * Renders the scene range from a directional sun into a small depth map.
+ * gfx_pc.c replays the display list in "shadow pass" mode, where vertices are
+ * transformed straight to light clip space and only positions are uploaded.
+ */
+static const char *s_shadow_vs =
+    "attribute vec4 aVtxPos;\n"
+    "void main(){ gl_Position = aVtxPos; }\n";
+
+static const char *s_shadow_fs =
+#ifdef USE_GLES
+    "precision highp float;\n"
+#endif
+    "vec4 packDepth(float d) {\n"
+    "  vec4 enc = vec4(1.0, 255.0, 65025.0, 16581375.0) * d;\n"
+    "  enc = fract(enc);\n"
+    "  enc -= enc.yzww * vec4(1.0/255.0, 1.0/255.0, 1.0/255.0, 0.0);\n"
+    "  return enc;\n"
+    "}\n"
+    "void main(){ gl_FragColor = packDepth(gl_FragCoord.z); }\n";
+
+static int shadow_ensure_program(void) {
+    if (s_shadow_prog_state != 0) return s_shadow_prog_state == 1;
+    GLuint vs = compile_shader_checked(GL_VERTEX_SHADER, s_shadow_vs, "shadow vertex");
+    GLuint fs = compile_shader_checked(GL_FRAGMENT_SHADER, s_shadow_fs, "shadow fragment");
+    if (!vs || !fs) {
+        s_shadow_prog_state = -1;
+        if (vs) glDeleteShader(vs);
+        if (fs) glDeleteShader(fs);
+        return 0;
+    }
+    s_shadow_prog = glCreateProgram();
+    glAttachShader(s_shadow_prog, vs);
+    glAttachShader(s_shadow_prog, fs);
+    glLinkProgram(s_shadow_prog);
+    GLint ok = 0;
+    glGetProgramiv(s_shadow_prog, GL_LINK_STATUS, &ok);
+    glDeleteShader(vs);
+    glDeleteShader(fs);
+    if (!ok) {
+        __android_log_print(ANDROID_LOG_ERROR, "SM64SHADOW", "shadow program link failed");
+        glDeleteProgram(s_shadow_prog);
+        s_shadow_prog = 0;
+        s_shadow_prog_state = -1;
+        return 0;
+    }
+    s_shadow_apos = glGetAttribLocation(s_shadow_prog, "aVtxPos");
+    s_shadow_prog_state = 1;
+    return 1;
+}
+
+static int shadow_ensure_fbo(int res) {
+    if (res < 256) res = 256;
+    if (res > 4096) res = 4096;
+    if (res == s_shadow_res && s_shadow_fbo != 0) return 1;
+
+    if (s_shadow_fbo) glDeleteFramebuffers(1, &s_shadow_fbo);
+    if (s_shadow_tex) glDeleteTextures(1, &s_shadow_tex);
+    if (s_shadow_depth) glDeleteRenderbuffers(1, &s_shadow_depth);
+    s_shadow_fbo = s_shadow_tex = s_shadow_depth = 0;
+
+    glGenTextures(1, &s_shadow_tex);
+    glBindTexture(GL_TEXTURE_2D, s_shadow_tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, res, res, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    glGenRenderbuffers(1, &s_shadow_depth);
+    glBindRenderbuffer(GL_RENDERBUFFER, s_shadow_depth);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT16, res, res);
+
+    glGenFramebuffers(1, &s_shadow_fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, s_shadow_fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, s_shadow_tex, 0);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, s_shadow_depth);
+
+    GLenum st = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    __android_log_print(ANDROID_LOG_INFO, "SM64SHADOW", "map %dx%d fbo=%u tex=%u status=0x%x",
+                        res, res, s_shadow_fbo, s_shadow_tex, st);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    s_shadow_res = res;
+    s_shadow_map_valid = 0;
+    return st == GL_FRAMEBUFFER_COMPLETE;
+}
+
+int gfx_opengl_shadow_begin(int resolution) {
+    if (!shadow_ensure_program()) return 0;
+    if (!shadow_ensure_fbo(resolution)) return 0;
+
+    // Do not sample the map while rendering into it (it stays bound on unit 2
+    // from the previous frame's post pass).
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glActiveTexture(GL_TEXTURE0);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, s_shadow_fbo);
+    glViewport(0, 0, s_shadow_res, s_shadow_res);
+    glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_BLEND);
+    glEnable(GL_DEPTH_TEST);
+    glDepthMask(GL_TRUE);
+    glDepthFunc(GL_LEQUAL);
+    // Cleared colour unpacks to depth 1.0 (nothing between the light and here).
+    glClearColor(1.0f, 1.0f, 1.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    glUseProgram(s_shadow_prog);
+    if (!opengl_vbo) glGenBuffers(1, &opengl_vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, opengl_vbo);
+    if (s_shadow_apos >= 0) {
+        glEnableVertexAttribArray(s_shadow_apos);
+        glVertexAttribPointer(s_shadow_apos, 4, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void *)0);
+    }
+    s_shadow_rendering = 1;
+    return 1;
+}
+
+void gfx_opengl_shadow_end(void) {
+    if (s_shadow_apos >= 0) glDisableVertexAttribArray(s_shadow_apos);
+    glUseProgram(0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    s_shadow_rendering = 0;
+    s_shadow_map_valid = 1;
 }
 
 static void stereo_ensure_pp(int w, int h) {
@@ -1033,6 +1303,26 @@ static int stereo_fx_pass(void) {
     glUniform1i(s_fx_u.color, 0);
     glActiveTexture(GL_TEXTURE1);
     glUniform1i(s_fx_u.depth, 1);
+
+    int shadow_on = gfx_shadow_enabled && s_shadow_map_valid && s_shadow_tex != 0
+                    && gfx_shadow_matrices_ready;
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_2D, shadow_on ? s_shadow_tex : 0);
+    glUniform1i(s_fx_u.shadow_map, 2);
+    glUniform1f(s_fx_u.shadow_on, shadow_on ? 1.0f : 0.0f);
+    glUniform1f(s_fx_u.shadow_strength, (float)gfx_shadow_strength / 100.0f);
+    glUniform1f(s_fx_u.shadow_bias, (float)gfx_shadow_bias);
+    glUniform1f(s_fx_u.shadow_nbias, (float)gfx_shadow_normal_bias);
+    glUniform1f(s_fx_u.shadow_softness, (float)gfx_shadow_softness);
+    glUniform1f(s_fx_u.shadow_taps, (float)gfx_shadow_taps);
+    glUniform1f(s_fx_u.shadow_debug, (float)gfx_shadow_debug);
+    glUniform2f(s_fx_u.shadow_texel,
+                s_shadow_res > 0 ? 1.0f / (float)s_shadow_res : 0.0f,
+                s_shadow_res > 0 ? 1.0f / (float)s_shadow_res : 0.0f);
+    glUniform3f(s_fx_u.shadow_dir, gfx_shadow_light_dir[0], gfx_shadow_light_dir[1],
+                gfx_shadow_light_dir[2]);
+    upload_mat4_rowvec(s_fx_u.shadow_vp, gfx_shadow_light_vp);
+    upload_mat4_rowvec(s_fx_u.shadow_caminv, gfx_cam_inv_mtx);
 
     glUniform2f(s_fx_u.res, (float)s_eye_w, (float)s_eye_h);
     glUniform4f(s_fx_u.canvas, (float)s_canvas_x, (float)s_canvas_y,
@@ -1088,6 +1378,9 @@ static int stereo_fx_pass(void) {
         glBindTexture(GL_TEXTURE_2D, s_eye_tex[eye]);
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, s_eye_depth[eye]);
+        glUniform1f(s_fx_u.shear, gfx_eye_shear[eye]);
+        glUniform1f(s_fx_u.toe, gfx_eye_toe[eye]);
+        glUniform1f(s_fx_u.flipy, gfx_eye_flip[eye] ? 1.0f : 0.0f);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     }
 
@@ -1423,7 +1716,11 @@ static GLsizei s_wire_capacity = 0;
 static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_vbo_num_tris) {
     //printf("flushing %d tris\n", buf_vbo_num_tris);
     glBufferData(GL_ARRAY_BUFFER, sizeof(float) * buf_vbo_len, buf_vbo, GL_STREAM_DRAW);
-    if (gfx_stereo_wire) {
+    bool wire_now = gfx_stereo_wire;
+#ifdef __ANDROID__
+    wire_now = wire_now && !s_shadow_rendering;
+#endif
+    if (wire_now) {
         // ES2 has no glPolygonMode: expand each triangle into its 3 edges.
         if (s_wire_capacity < (GLsizei)buf_vbo_num_tris * 6) {
             if (s_wire_ibo) glDeleteBuffers(1, &s_wire_ibo);

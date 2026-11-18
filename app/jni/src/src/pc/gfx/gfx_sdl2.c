@@ -337,6 +337,43 @@ Java_com_vdavid003_sm64port_sm64portActivity_nativeGetSSFX(JNIEnv *env, jobject 
     (void) env; (void) thiz;
     return gfx_opengl_ssfx_get(which);
 }
+
+/* Gameplay enhancements (RAGDOLL / HITRAG / PPCAM) and shadow knobs. */
+JNIEXPORT void JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeSetEnh(JNIEnv *env, jobject thiz,
+                                                         jint which, jint value) {
+    (void) env; (void) thiz;
+    switch (which) {
+        case 0: death_ragdoll_enabled = value ? 1 : 0; break;
+        case 1: hit_ragdoll_enabled = value ? 1 : 0; break;
+        case 2: configPuppycamEnhanced = value ? 1 : 0; break;
+    }
+}
+
+JNIEXPORT jint JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeGetEnh(JNIEnv *env, jobject thiz, jint which) {
+    (void) env; (void) thiz;
+    switch (which) {
+        case 0: return death_ragdoll_enabled;
+        case 1: return hit_ragdoll_enabled;
+        case 2: return configPuppycamEnhanced;
+    }
+    return 0;
+}
+
+JNIEXPORT void JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeSetShadow(JNIEnv *env, jobject thiz,
+                                                            jint which, jint value) {
+    (void) env; (void) thiz;
+    gfx_opengl_ssfx_set(50 + which, value);
+}
+
+JNIEXPORT jint JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeGetShadow(JNIEnv *env, jobject thiz,
+                                                             jint which) {
+    (void) env; (void) thiz;
+    return gfx_opengl_ssfx_get(50 + which);
+}
 #endif
 
 static const Uint32 FRAME_TIME = 1000 / FRAMERATE;
