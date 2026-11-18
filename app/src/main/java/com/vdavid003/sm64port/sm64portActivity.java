@@ -1180,6 +1180,11 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     static native void nativeSetHeadPose(float x, float y, float z, int valid);
     static native void nativeSetGyro(float pitch, float yaw, float roll);
     static native int nativeGetHeadPose(int axis);
+    static native void nativeShootPortal(int which);
+    static native int nativeGetPortalGun();
+    static native int nativeGetPortalCount();
+    static native int nativeGetPortalDebug();
+    static native void nativeGivePortalGun();
     static native void nativeOverlayStick2(int rx, int ry);
     static native void nativeOverlayAnalog(int on);
     static native void nativeHideInGameControls(int hide);
@@ -1239,6 +1244,16 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         }
     }
 
+    void debugPortal(int which) {
+        nativeShootPortal(which);
+        Log.i(TAG, "PORTAL shoot " + which + " count=" + nativeGetPortalCount());
+    }
+
+    void debugGiveGun() {
+        nativeGivePortalGun();
+        Log.i(TAG, "PORTAL gun given");
+    }
+
     void debugFx(int k, int v) {
         nativeSetSSFX(k, v);
         Log.i(TAG, "FX set " + k + "=" + v);
@@ -1285,6 +1300,9 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             case "ANALOG":
                 analogOn = !analogOn;
                 if (touchOverlay != null) touchOverlay.setAnalogMode(analogOn);
+                break;
+            case "GIVEGUN":
+                runOnUiThread(this::debugGiveGun);
                 break;
             case "HEADTRACK":
                 runOnUiThread(() -> {
@@ -1403,6 +1421,8 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                     + " stay=" + stayOn + " uipost=" + uiPostOn
                     + " cam=" + nativeGetCamMode() + " ctlA=" + overlayAlphaPct
                     + " toeauto=" + toeAutoOn
+                    + " gun=" + nativeGetPortalGun() + " portals=" + nativeGetPortalCount()
+                    + " pdbg=" + nativeGetPortalDebug()
                     + " hdt=" + (hdtOn ? 1 : 0) + "/" + hdtStrength
                     + " gyro=" + (gyroOn ? 1 : 0) + "/" + gyroStrength
                     + " pivot=" + gyroPivot

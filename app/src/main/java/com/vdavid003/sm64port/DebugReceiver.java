@@ -55,6 +55,16 @@ public class DebugReceiver extends BroadcastReceiver {
                 Log.i(TAG, "CMD fps " + v);
                 break;
             }
+            case "portal": {
+                int v = intent.getIntExtra("v", 0);
+                a.debugPortal(v);
+                Log.i(TAG, "CMD portal " + v);
+                break;
+            }
+            case "givegun":
+                a.debugGiveGun();
+                Log.i(TAG, "CMD givegun");
+                break;
             case "busy": {
                 int v = intent.getIntExtra("v", 1);
                 a.debugSetBusy(v);

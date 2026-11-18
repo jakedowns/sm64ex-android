@@ -1,6 +1,7 @@
 #include <ultra64.h>
 
 #include "area.h"
+#include "portal.h"
 #include "sm64.h"
 #include "gfx_dimensions.h"
 #include "behavior_data.h"
@@ -380,6 +381,7 @@ void render_game(void) {
 
     if (gCurrentArea != NULL && !gWarpTransition.pauseRendering) {
         geo_process_root(gCurrentArea->unk04, D_8032CE74, D_8032CE78, gFBSetColor);
+        portal_render();
 
         gSPViewport(gDisplayListHead++, VIRTUAL_TO_PHYSICAL(&D_8032CF00));
 
