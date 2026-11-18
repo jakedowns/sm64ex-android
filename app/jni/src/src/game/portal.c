@@ -62,6 +62,7 @@ static int s_cooldown = 0;
 static Vec3f s_prevCom;
 static int s_havePrevCom = 0;
 static int s_lastLevelArea = -1;
+static int s_ticksInArea = 0;
 
 /* ------------------------------------------------------------------ math */
 
@@ -372,6 +373,10 @@ void portal_update(void) {
         lastArea = area;
         portal_clear();
         s_gunSpawned = 0;
+        s_ticksInArea = 0;
+    }
+    if (s_ticksInArea < 1000) {
+        s_ticksInArea++;
     }
     if (s_cooldown > 0) {
         s_cooldown--;
@@ -380,7 +385,13 @@ void portal_update(void) {
     s_gunSpin += 0x0300;
 
     // Gun pickup: spawn the prop next to Mario in the castle grounds.
-    if (!s_hasGun && !s_gunSpawned && gCurrLevelNum == 16 && gCurrAreaIndex == 1 && gMarioState != NULL) {
+    // Wait for the warp into the area to finish (Mario gets a valid object and
+    // position a few ticks after the level loads), otherwise the gun is placed
+    // at the old origin and never seen.
+    if (!s_hasGun && !s_gunSpawned && gCurrLevelNum == 16 && gCurrAreaIndex == 1
+        && gMarioState != NULL && gMarioState->marioObj != NULL
+        && s_ticksInArea > 8 && s_ticksInArea < 400
+        && (gMarioState->pos[0] != 0.0f || gMarioState->pos[2] != 0.0f)) {
         vec3f_copy(s_gunPos, gMarioState->pos);
         s_gunPos[0] += 200.0f;
         s_gunPos[2] -= 200.0f;

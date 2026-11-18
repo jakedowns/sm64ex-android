@@ -1026,6 +1026,7 @@ s32 play_mode_normal(void) {
     }
 
     area_update_objects();
+    portal_update();
     update_hud_values();
 
     if (gCurrentArea != NULL) {

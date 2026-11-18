@@ -82,6 +82,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     private int shadowRes = 1024;
     private int shadowDebug = 0;
     private TextView shadowResButton, shadowDebugButton, shadowEnableToggle;
+    private boolean shadowOn = false;   // dynamic shadows off by default
     private boolean stereoOn = true;
     private boolean testOn = false;
     private boolean tintOn, zbufOn, wireOn, perfOn, swapOn, sameOn, nocullOn, flatOn, analogOn;
@@ -327,6 +328,13 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             // exist (SeekBar.setProgress happens before the listener is set).
             applyOverlayAlpha(overlayAlphaPct);
             updateToeSliderState();
+            try {
+                if (touchOverlay != null) {
+                    touchOverlay.setAnalogMode(true);   // analog camera stick by default
+                }
+            } catch (Throwable t) {
+                Log.w(TAG, "analog default failed", t);
+            }
         }
         leiaView.setViewAsset(asset);
         Log.i(TAG, "setViewAsset done");
@@ -360,14 +368,40 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     }
 
     /** Collapse the tuning panel (used by the hide button, gestures, taps outside). */
-    void collapseDebugPanelIfOpen() {
-        if (!debugPanelOpen()) {
+    private boolean panelAnimating = false;
+
+    void expandDebugPanel() {
+        if (tabContent == null || debugPanelOpen() || panelAnimating) {
             return;
         }
-        tabContent.setVisibility(View.GONE);
+        if (hideButton != null) {
+            hideButton.setText("HIDE");
+        }
+        panelAnimating = true;
+        tabContent.setVisibility(View.VISIBLE);
+        final float off = Math.max(tabContent.getHeight(), dp(120));
+        tabContent.setTranslationY(off);
+        tabContent.setAlpha(0f);
+        tabContent.animate().translationY(0f).alpha(1f).setDuration(180)
+                .withEndAction(() -> panelAnimating = false).start();
+    }
+
+    void collapseDebugPanelIfOpen() {
+        if (!debugPanelOpen() || panelAnimating) {
+            return;
+        }
         if (hideButton != null) {
             hideButton.setText("SHOW");
         }
+        panelAnimating = true;
+        final float off = Math.max(tabContent.getHeight(), dp(120));
+        tabContent.animate().translationY(off).alpha(0f).setDuration(160)
+                .withEndAction(() -> {
+                    tabContent.setVisibility(View.GONE);
+                    tabContent.setTranslationY(0f);
+                    tabContent.setAlpha(1f);
+                    panelAnimating = false;
+                }).start();
     }
 
     /**
@@ -376,7 +410,29 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
      */
     private void handleDebugPanelGestures(android.view.MotionEvent ev) {
         if (!debugPanelOpen()) {
-            panelDownY = -1;
+            // Collapsed: a swipe up on the bar expands the panel.
+            android.graphics.Rect barRect = new android.graphics.Rect();
+            switch (ev.getActionMasked()) {
+                case android.view.MotionEvent.ACTION_DOWN: {
+                    boolean onBar = false;
+                    if (tuningPanelView != null) {
+                        tuningPanelView.getGlobalVisibleRect(barRect);
+                        onBar = barRect.contains((int) ev.getRawX(), (int) ev.getRawY());
+                    }
+                    panelDownY = onBar ? ev.getRawY() : -1;
+                    break;
+                }
+                case android.view.MotionEvent.ACTION_MOVE:
+                    if (panelDownY >= 0 && panelDownY - ev.getRawY() > dp(70)) {
+                        panelDownY = -1;
+                        expandDebugPanel();
+                    }
+                    break;
+                case android.view.MotionEvent.ACTION_UP:
+                case android.view.MotionEvent.ACTION_CANCEL:
+                    panelDownY = -1;
+                    break;
+            }
             return;
         }
         switch (ev.getActionMasked()) {
@@ -733,6 +789,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             case 3: return giOn;      // SSGI
             case 4: return ssrtxOn;   // SSRTX
             case 5: return hdtOn || gyroOn;   // CAMERA
+            case 7: return shadowOn;          // SHADOW
             default: return false;
         }
     }
@@ -837,6 +894,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         ppcamToggle = addEnhToggle("PUPPYCAM+", 2, ppcamOn);
         addEnhButton("LEVEL SELECT", this::openLevelSelect);
         addEnhButton("KILL MARIO (TEST)", this::debugKill);
+        addEnhButton("EQUIP PORTAL GUN", this::debugGiveGun);
         TextView interp = new TextView(this);
         interpButton = interp;
         interp.setText(interpOn ? "INTERP ON" : "INTERP OFF");
@@ -868,7 +926,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
 
         // --- Realtime dynamic shadows (quality / performance) ---
         beginTab();
-        shadowEnableToggle = addShadowToggle("SHADOW ENABLE", 0, true);
+        shadowEnableToggle = addShadowToggle("SHADOW ENABLE", 0, false);
         shadowResButton = addShadowButton("RES 1024", () -> {
             shadowRes = shadowRes <= 512 ? 1024 : (shadowRes <= 1024 ? 2048 : 512);
             if (shadowResButton != null) shadowResButton.setText("RES " + shadowRes);
@@ -1064,6 +1122,10 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             b.setText(name + ": " + (on ? "ON" : "OFF"));
             b.setTextColor(on ? 0xFF66FF99 : 0xFF888888);
             nativeSetShadow(key, on ? 1 : 0);
+            if (key == 0) {
+                shadowOn = on;
+            }
+            refreshTabStyles();
             Log.i(TAG, name + "=" + on);
         });
         controls.addView(b);
@@ -1090,6 +1152,8 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     private void applyShadowEnable(TextView b, boolean on) {
         b.setText("SHADOW ENABLE: " + (on ? "ON" : "OFF"));
         b.setTextColor(on ? 0xFF66FF99 : 0xFF888888);
+        shadowOn = on;
+        refreshTabStyles();
     }
 
     private void recentreGyro() {
@@ -1175,7 +1239,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         // roll channel (and vice versa). Swap them before handing the angles to
         // the renderer; the game side expects (pitch, yaw, roll).
         try {
-            nativeSetGyro(dRoll, -dAz, -dPitch);
+            nativeSetGyro(dRoll, dAz, -dPitch);
         } catch (Throwable ignored) {
             // native library not loaded yet
         }
@@ -1417,18 +1481,29 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             View v = sliderRows.get(i);
             v.setVisibility(v == keep ? View.VISIBLE : View.INVISIBLE);
         }
-        if (tuningPanelView != null) {
-            tuningPanelView.setBackgroundColor(0x00000000);
+        animatePanelBg(0xCC101010, 0x00000000);
+    }
+
+    /** Smoothly cross-fades the panel background colour. */
+    private void animatePanelBg(int from, int to) {
+        if (tuningPanelView == null) {
+            return;
         }
+        android.animation.ValueAnimator anim = android.animation.ValueAnimator.ofArgb(from, to);
+        anim.setDuration(300);
+        anim.addUpdateListener(a -> {
+            if (tuningPanelView != null) {
+                tuningPanelView.setBackgroundColor((int) a.getAnimatedValue());
+            }
+        });
+        anim.start();
     }
 
     private void exitSliderDrag() {
         for (int i = 0; i < sliderRows.size(); i++) {
             sliderRows.get(i).setVisibility(View.VISIBLE);
         }
-        if (tuningPanelView != null) {
-            tuningPanelView.setBackgroundColor(PANEL_BG);
-        }
+        animatePanelBg(0x00000000, PANEL_BG);
     }
 
     private void addToGrid(TextView label, SeekBar bar) {

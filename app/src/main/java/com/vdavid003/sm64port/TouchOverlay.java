@@ -75,7 +75,7 @@ public class TouchOverlay extends View {
     private float overlayAlpha = 1f;
 
     // Right-hand control: 4 C buttons, or an analog camera stick.
-    private boolean analogMode;
+    private boolean analogMode = true;   // analog camera stick by default
     private boolean rstickActive;
     private int rstickPointer = -1;
     private float rstickX, rstickY, rknobX, rknobY;
