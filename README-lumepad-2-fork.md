@@ -11,29 +11,62 @@ the lenticular panel.
 
 Everything below was added on top of upstream in this fork.
 
+## Latest branch additions (`ragdoll-ppcam-shadows`)
+
+- **Death and hit ragdolls**, ported from Epic0522's 3DS Ultimate, runtime
+  toggles on the new **ENH** tab (default on).
+- **Puppycam+**: 70-unit camera wall margin and a Mario close-up fade (default
+  on).
+- **Realtime dynamic shadow map** with a dedicated **SHADOW** quality/perf tab
+  (default on).
+- **SSRTX**: screen-space ray-traced reflections with a dedicated **SSRTX** tab
+  (opt-in, default off).
+- **KILL MARIO (TEST)** button and `cmd kill` for testing the ragdoll path.
+- Headless tooling: `cmd shadow`, `cmd kill`, `cmd pad`, plus new
+  `RAGDOLL/HITRAG/PPCAM/SHADOW/SHADOWDBG/SSRTX` toggles.
+
+Defaults for the gameplay features are on; SSRTX and the pre-existing MXAO /
+C.DOF / SSGI effects stay off so the base look and frame rate are unchanged
+until you enable them.
+
 ---
 
 ## Build
 
-Headless build (no Android Studio):
+Headless build (no Android Studio). This branch builds the native side through
+Gradle's `ndkBuild` task, so no separate `ndk-build` + `EXCLUDE_NATIVE_LIBS`
+dance is needed:
 
 ```sh
-# NDK build + Gradle APK, using prebuilt .so files
-./scripts/../build-worktree.sh .          # see below for the helper
+export JAVA_HOME=/home/ubuntu/opencode/jdk
+export ANDROID_HOME=/home/ubuntu/opencode/sdk
+export ANDROID_SDK_ROOT=$ANDROID_HOME
+export ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018
+export GRADLE_USER_HOME=/home/ubuntu/opencode/gradle-home
+export GNUMAKE=/usr/bin/make
+export PATH="$JAVA_HOME/bin:/media/share/lp2-test/toolchain/hostbin:/media/share/lp2-test/toolchain/x86bin:$PATH"
+
+./scripts/agent-lock.sh build --reason "assembleDebug" -- \
+    ./gradlew assembleDebug --no-daemon
 ```
 
-The build used in this tree:
+- `app/build.gradle` pins `ndkVersion "27.2.12479018"`. NDK r26 has no aarch64
+  host build (`Unknown host CPU architecture`); the shared headless toolchain
+  patches r27's x86_64 tools to run under qemu. `hostbin/uname` and
+  `GNUMAKE=/usr/bin/make` are needed for the NDK's own host detection/make.
+- The only supported target is **arm64-v8a** (Lume Pad 2). Other ABIs are opt-in
+  with `-PSM64_ABIS=arm64-v8a,x86_64,...`.
+- APK output: `app/build/outputs/apk/debug/app-debug.apk`.
+- Multi-agent edits should use `scripts/agent-lock.sh build|device`, which
+  serialises Gradle/NDK builds and `adb` access across worktrees.
 
-1. `ndk-build` in `app/jni` -> `app/libs/arm64-v8a/`
-2. `cp -a app/libs/arm64-v8a/. app/src/main/jniLibs/arm64-v8a/`
-3. `./gradlew assembleDebug -PEXCLUDE_NATIVE_LIBS=1`
+Quick smoke test after installing:
 
-`app/build.gradle` defaults to the `arm64-v8a` ABI; other ABIs are opt-in with
-`-PSM64_ABIS=arm64-v8a,x86_64,...`.
-
-Multi-agent edits should use the lock helper described in
-`multi-agent-rules.md` (`scripts/agent-lock.sh build|device`), which serialises
-Gradle/NDK builds and `adb` access across worktrees.
+```sh
+B="am broadcast -n com.vdavid003.sm64port/.DebugReceiver -a com.vdavid003.sm64port.CMD"
+adb shell $B --es cmd dump          # feature state + FX/shadow knobs
+adb shell $B --es cmd kill          # death ragdoll test
+```
 
 ---
 
@@ -91,8 +124,8 @@ uncapped** (default **120 Hz**, panel refresh matched on resume).
 
 ## Screen-space effects
 
-A per-eye post pass runs after the scene is rendered (options tab **MXAO**,
-**C.DOF**, **SSGI**):
+A per-eye post pass runs after the scene is rendered (options tabs **MXAO**,
+**C.DOF**, **SSGI**, **SSRTX**):
 
 - **MXAO-style ambient occlusion** — intensity, radius, samples, bias, power.
 - **Cinematic DOF** — focus, aperture, max blur, samples, CoC debug view.
@@ -105,6 +138,32 @@ A per-eye post pass runs after the scene is rendered (options tab **MXAO**,
   edge fade, and a reflection debug view. Opt-in (off by default) because it is
   the most expensive post effect.
 - Debug views: AO buffer, CoC, GI, SSRTX reflections.
+
+### SSRTX controls (SSRTX tab)
+
+| Control | Effect |
+|---|---|
+| `SSRTX ENABLE` | master toggle (default **off**) |
+| `Intensity` | reflection contribution % |
+| `Distance` | max ray length in world units |
+| `Steps` | depth-buffer march samples per ray |
+| `Rays` | jittered rays per pixel (1–8); averaging softens |
+| `Thickness` | world-space depth window that counts as a hit |
+| `Roughness` | cone spread for multi-ray soft reflections |
+| `Edge fade` | fade reflections out near the screen borders |
+| `SHOW SSRTX` | debug view of the reflection buffer |
+
+The march reconstructs view-space position/normals, reflects the view vector,
+projects each sample back through the **forward** per-eye stereo
+shear/toe/flip, and blends the hit colour with a Schlick Fresnel term. Headless
+keys are `cmd fx` `70`–`77` (`70` enable, `71` intensity, `72` distance,
+`73` steps, `74` rays, `75` thickness, `76` roughness, `77` edge fade);
+`cmd fx --ei k 31 --ei v 4` shows the reflection buffer.
+
+SSRTX cost scales with `Steps × Rays × pixels × eyes`; at 200 % intensity and
+24 steps the 120 Hz cap dropped to ~56 fps in the castle grounds, so leave it
+off unless you want the effect and tune down from the defaults.
+
 - Everything is a live knob (panel sliders or `cmd fx`), defaults off so the
   base look is unchanged.
 
@@ -157,6 +216,17 @@ touch overlay:
 ---
 
 ## Gameplay
+
+### Runtime feature toggles at a glance
+
+| Feature | Default | Where |
+|---|---|---|
+| Death ragdoll | **on** | ENH tab / `cmd toggle --es name RAGDOLL` |
+| Hit (knockback) ragdoll | **on** | ENH tab / `cmd toggle --es name HITRAG` |
+| Puppycam+ wall margin + Mario fade | **on** | ENH tab / `cmd toggle --es name PPCAM` |
+| Realtime dynamic shadows | **on** | SHADOW tab / `cmd toggle --es name SHADOW` |
+| SSRTX reflections | **off** (opt-in) | SSRTX tab / `cmd toggle --es name SSRTX` |
+| MXAO / C.DOF / SSGI | off | their tabs |
 
 - **Stay in level after a star** (default on): normal stars take the vanilla
   no-exit path (star dance -> save prompt -> idle) instead of the star-exit warp.
@@ -218,6 +288,21 @@ The shadow matrices are built in `rendering_graph_node.c` from the camera node
 (`gfx_cam_inv_mtx`, `gfx_shadow_light_vp`); the depth pass runs before the eye
 passes and is view-independent, so both eyes share one map.
 
+### Debug kill (testing)
+
+The **ENH** tab has a **KILL MARIO (TEST)** button, and the debug channel has
+`cmd kill`. It triggers the death ragdoll when `DEATH RAGDOLL` is on, otherwise
+vanilla standing death; the request waits for a valid gameplay floor, so it is
+safe to fire from a menu.
+
+```sh
+adb shell $B --es cmd kill
+```
+
+This is the fastest way to verify the ragdoll path: on the castle grounds Mario
+immediately collapses into the 14-limb pose, then the normal death warp and
+respawn follow.
+
 ---
 
 ## Debug tooling
@@ -250,7 +335,12 @@ in-scale %, `15` ZBUF, `16` wireframe, `17` toe %, `18` aspect %, `19` no cull,
 `38` UI depth px, `40` TOEAUTO.
 
 FX knobs (`cmd fx`): AO `1`-`6`, DOF `11`-`15` (`16` auto focus, `17` reports
-the auto distance), SSGI `21`-`25`, debug view `31`, normal flip `32`.
+the auto distance), SSGI `21`-`25`, SSRTX `70`-`77`, debug view `31`
+(0 off, 1 AO, 2 CoC, 3 GI, 4 SSRTX), normal flip `32`.
+
+`cmd pad` injects raw overlay input for headless menu/gameplay driving:
+`--ei sx/-127..127 --ei sy/-127..127 --ei buttons <N64 pad bits> --ei ms <hold>`.
+Handy bits: `4096` START, `32768` A, `16384` B, `8192` Z, `16` R.
 
 The on-screen tuning panel is collapsed by default (**SHOW**/**HIDE**) so it does
 not cover the controls; it has tabs for STEREO / MXAO / C.DOF / SSGI / SSRTX /
@@ -265,9 +355,19 @@ agent is driving it.
 - HUD, dialogs, menus and screen transitions still step at 30 Hz (UI-after-post
   keeps them out of the FX but they are not interpolated yet).
 - Skybox rotation, particles and paintings are not interpolated yet.
+- Ragdoll limbs are rebuilt at 30 Hz and are not part of the HFR interpolation
+  table, so they can look one logical tick behind the camera at 120 Hz.
+- Dynamic shadows need the UIPOST scene split and `GL_OES_depth_texture`; the
+  camera inverse is sampled once per 30 Hz tick, and head/gyro tracking is not
+  compensated, so shadows can shift slightly while those optional tracking
+  modes are active.
+- SSRTX is a single-pass, screen-space effect: off-screen geometry cannot
+  reflect, there is no denoiser, and high `Steps`/`Rays` settings are
+  expensive on the Lume Pad 2.
 - Resume from background can leave the Leia surface black (surface teardown
   without recreate).
-- Slider values are not persisted across launches.
+- Slider values (stereo, FX, SSRTX, shadows) are not persisted across launches;
+  the ragdoll/Puppycam/shadow master defaults are.
 - Head/eye-tracked 6DoF (Phase C) is not implemented; the panel currently shows
   fixed-offset stereo.
 
@@ -281,5 +381,6 @@ compositing, the touch overlay and the debug tooling described above.
 
 Death/hit ragdoll physics and the original Puppycam improvements come from
 Epic0522's *Super Mario 64 3DS port — Ultimate* (Puppycam / Better Camera
-authors credited upstream). The Lume Pad 2 dynamic shadow map is an original
-GLES implementation of the same feature.
+authors credited upstream). The Lume Pad 2 dynamic shadow map and SSRTX
+reflections are original GLES implementations; SSRTX is inspired by the
+ReShade SSR/SSRT-style shaders.
