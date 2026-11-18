@@ -7,6 +7,12 @@
 static SDL_AudioDeviceID dev;
 
 static bool audio_sdl_init(void) {
+#ifdef __ANDROID__
+    // SDL's AAudio backend can crash inside aaudio_DetectBrokenPlayState ->
+    // AudioTrack::getTimestamp when the audio route changes. OpenSL ES has been
+    // stable on Android for years, so prefer it.
+    SDL_setenv("SDL_AUDIODRIVER", "opensles", 1);
+#endif
     if (SDL_Init(SDL_INIT_AUDIO) != 0) {
         fprintf(stderr, "SDL init error: %s\n", SDL_GetError());
         return false;

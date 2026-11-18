@@ -50,6 +50,19 @@ Upon a successful build, the output apk file will be located here:
 
 Rename the apk to `sm64ex-android.apk`, install, and play!
 
+## Build tip: stream long builds through the progress relay
+
+When an agent drives the build, pipe it through the progress-tool relay so the
+user's progress indicator streams live (and at zero token cost) instead of the
+agent waiting on a wall of compiler output:
+
+```sh
+progress-relay --id build-1 -- /path/to/build-worktree.sh /path/to/worktree
+# or: /path/to/build-worktree.sh /path/to/worktree | progress-relay --id build-1
+```
+
+The relay parses OSC 9;4 progress sequences and maps the exit code to done/error.
+
 ## Working with multiple agents
 
 If more than one agent works in this checkout at the same time, follow

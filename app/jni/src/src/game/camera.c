@@ -30,6 +30,10 @@
 
 #define CBUTTON_MASK (U_CBUTTONS | D_CBUTTONS | L_CBUTTONS | R_CBUTTONS)
 
+// Camera mode selection + custom orbit camera (customcam.c).
+extern int gfx_cam_mode;
+extern void custom_camera_update(struct Camera *c);
+
 /* Overlay buttons for the free camera (set by controller_touchscreen.c). */
 extern u8 camera_mode_button_pressed;
 extern u8 camera_recenter_button_pressed;
@@ -3290,6 +3294,10 @@ void update_camera(struct Camera *c) {
         if ((gPlayer1Controller->buttonPressed & R_TRIG) && cam_select_alt_mode(0) == CAM_SELECTION_FIXED) {
             play_sound_button_change_blocked();
         }
+    }
+
+    if (gfx_cam_mode == 3 && c->cutscene == 0) {
+        custom_camera_update(c);
     }
 
     update_lakitu(c);

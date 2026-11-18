@@ -119,6 +119,8 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     private int toeValuePct = 0;
     private TextView camStatusView;
     private int sameMode = 0;
+    private int camMode2 = 0;   // 0 vanilla, 1 bettercam, 2 puppycam, 3 custom
+    private TextView camModeButton;
     private float panelDownY = -1;
     private static final int PANEL_BG = 0xCC101010;
     private static final String CHANGELOG =
@@ -875,6 +877,20 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
 
         // --- Camera tracking / sensors ---
         beginTab();
+        camModeButton = new TextView(this);
+        camModeButton.setText(camModeLabel());
+        camModeButton.setTextSize(16);
+        camModeButton.setTextColor(0xFF66CCFF);
+        camModeButton.setPadding(dp(4), dp(10), dp(4), dp(10));
+        camModeButton.setOnClickListener(v -> {
+            camMode2 = (camMode2 + 1) % 4;
+            nativeSetCamMode2(camMode2);
+            camModeButton.setText(camModeLabel());
+            Log.i(TAG, "camera mode -> " + camModeLabel());
+        });
+        controls.addView(camModeButton);
+        nativeSetCamMode2(camMode2);
+
         camHeadToggle = addCamToggle("HEAD TRACK", 41, hdtOn);
         camGyroToggle = addCamToggle("GYRO CAM", 42, gyroOn);
         addCamSlider("HDT strength", 0, 200, hdtStrength, " %", 43);
@@ -974,6 +990,15 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     }
 
     // ---- camera-tracking widgets (stereo-int channel, keys 41..44) ----
+
+    private String camModeLabel() {
+        switch (camMode2) {
+            case 1: return "CAM MODE: BETTERCAM";
+            case 2: return "CAM MODE: PUPPYCAM";
+            case 3: return "CAM MODE: CUSTOM";
+            default: return "CAM MODE: VANILLA";
+        }
+    }
 
     private void addCamSlider(String name, int min, int max, int initial, String unit,
                               final int key) {
@@ -1704,6 +1729,8 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     static native int nativeGetHfrInterp();
     static native int nativeGetHfrMtxCount();
     static native int nativeGetCamMode();
+    static native void nativeSetCamMode2(int mode);
+    static native int nativeGetCamMode2();
     static native void nativeToggleCamMode();
     static native void nativeSetHeadPose(float x, float y, float z, int valid);
     static native void nativeSetGyro(float pitch, float yaw, float roll);
@@ -2033,7 +2060,8 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                     + " ssrr=" + nativeGetSSFX(74) + " ssrt=" + nativeGetSSFX(75)
                     + " dofauto=" + nativeGetSSFX(16) + " dofz=" + nativeGetSSFX(17)
                     + " stay=" + stayOn + " uipost=" + uiPostOn
-                    + " cam=" + nativeGetCamMode() + " ctlA=" + overlayAlphaPct
+                    + " cam=" + nativeGetCamMode() + " cam2=" + nativeGetCamMode2()
+                    + " ctlA=" + overlayAlphaPct
                     + " toeauto=" + toeAutoOn
                     + " gun=" + nativeGetPortalGun() + " portals=" + nativeGetPortalCount()
                     + " pdbg=" + nativeGetPortalDebug()

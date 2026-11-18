@@ -129,8 +129,8 @@ public class TouchOverlay extends View {
         camPos[1][0] = w * 0.84f; camPos[1][1] = h * 0.32f;   // Y
 
         // Portal gun buttons: left of the C cluster, clear of the thumbstick.
-        portalPos[0][0] = w * 0.56f; portalPos[0][1] = h * 0.62f;   // P1 (blue)
-        portalPos[1][0] = w * 0.56f; portalPos[1][1] = h * 0.50f;   // P2 (orange)
+        portalPos[0][0] = w * 0.93f; portalPos[0][1] = h * 0.27f;   // P1 (blue)
+        portalPos[1][0] = w * 0.84f; portalPos[1][1] = h * 0.19f;   // P2 (orange)
 
         // C-buttons / analog-camera toggle, below the C cluster.
         modePos[0] = w * 0.68f; modePos[1] = h * 0.88f;
@@ -509,6 +509,12 @@ public class TouchOverlay extends View {
                         portalPos[i][0] - 22f, portalPos[i][1] + 14f, paint);
             }
 
+        }
+
+        c.restoreToCount(layer);
+
+        // Aiming reticle stays at full opacity even when the controls are faded.
+        if (portalGunHeld()) {
             float cx = getWidth() * 0.5f, cy = getHeight() * 0.5f;
             paint.setStyle(Paint.Style.STROKE);
             paint.setStrokeWidth(3f);
@@ -520,7 +526,5 @@ public class TouchOverlay extends View {
             c.drawLine(cx, cy + 16, cx, cy + 42, paint);
             paint.setStrokeWidth(6f);
         }
-
-        c.restoreToCount(layer);
     }
 }

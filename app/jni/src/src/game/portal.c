@@ -29,8 +29,8 @@
 #include "audio/external.h"
 #include "game/area.h"
 
-#define PORTAL_RX        70.0f     // ellipse half width (world units)
-#define PORTAL_RY        110.0f    // ellipse half height
+#define PORTAL_RX        45.0f     // ellipse half width (world units)
+#define PORTAL_RY        80.0f     // ellipse half height
 #define PORTAL_SEGMENTS  24
 #define PORTAL_RAY_DIST  4000.0f   // hitscan length
 #define PORTAL_EXIT_PUSH 40.0f     // spawn this far out of the exit portal
@@ -298,15 +298,15 @@ static void portal_rotate_vec(const struct Portal *from, const struct Portal *to
     out[2] = to->tan[2] * x + to->bitan[2] * y + to->normal[2] * z;
 }
 
-static void portal_teleport(int srcIdx) {
+static void portal_teleport(int srcIdx, const Vec3f at) {
     struct Portal *src = &s_portal[srcIdx];
     struct Portal *dst = &s_portal[1 - srcIdx];
     Vec3f rel, newCom, vel, newVel;
     float height = gMarioState->marioObj != NULL ? gMarioState->marioObj->hitboxHeight : 160.0f;
 
-    rel[0] = s_prevCom[0] - src->pos[0];
-    rel[1] = s_prevCom[1] - src->pos[1];
-    rel[2] = s_prevCom[2] - src->pos[2];
+    rel[0] = at[0] - src->pos[0];
+    rel[1] = at[1] - src->pos[1];
+    rel[2] = at[2] - src->pos[2];
 
     float x = vdot3(rel, src->tan);
     float y = vdot3(rel, src->bitan);
@@ -421,14 +421,15 @@ void portal_update(void) {
         com[1] = gMarioState->pos[1] + height * 0.5f;
         com[2] = gMarioState->pos[2];
 
-        if (s_portal[0].active && s_portal[1].active && s_cooldown == 0 && s_havePrevCom) {
+        // Proximity trigger, not a plane crossing: solid walls stop Mario a
+        // body-radius short of the portal, so his centre never crosses the
+        // plane. Entering means "inside the ellipse and close to the plane".
+        if (s_portal[0].active && s_portal[1].active && s_cooldown == 0) {
             for (int i = 0; i < 2; i++) {
                 struct Portal *p = &s_portal[i];
-                float dPrev = vdot3(s_prevCom, p->normal);
-                float dPrevRel = dPrev - vdot3(p->pos, p->normal);
-                float dNow = vdot3(com, p->normal) - vdot3(p->pos, p->normal);
-                if (dPrevRel > 0.0f && dNow <= 0.0f && portal_point_inside(p, s_prevCom)) {
-                    portal_teleport(i);
+                float d = vdot3(com, p->normal) - vdot3(p->pos, p->normal);
+                if (d > 0.0f && d < 70.0f && portal_point_inside(p, com)) {
+                    portal_teleport(i, com);
                     break;
                 }
             }
@@ -458,9 +459,9 @@ static void emit_model_matrix(const Vec3f pos, const Vec3f tan, const Vec3f bita
 }
 
 static void fill_vtx(Vtx *v, float x, float y, float z, u8 r, u8 g, u8 b, u8 a) {
-    v->v.ob[0] = (s16)(x * 4.0f);
-    v->v.ob[1] = (s16)(y * 4.0f);
-    v->v.ob[2] = (s16)(z * 4.0f);
+    v->v.ob[0] = (s16)x;
+    v->v.ob[1] = (s16)y;
+    v->v.ob[2] = (s16)z;
     v->v.flag = 0;
     v->v.tc[0] = 0;
     v->v.tc[1] = 0;

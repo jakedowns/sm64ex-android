@@ -331,6 +331,20 @@ Java_com_vdavid003_sm64port_sm64portActivity_nativeGetPortalCount(JNIEnv *env, j
     return portal_count();
 }
 
+JNIEXPORT void JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeSetCamMode2(JNIEnv *env, jclass clazz, jint mode) {
+    (void) env; (void) clazz;
+    extern void custom_camera_apply_mode(int mode);
+    custom_camera_apply_mode((int) mode);
+}
+
+JNIEXPORT jint JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeGetCamMode2(JNIEnv *env, jclass clazz) {
+    (void) env; (void) clazz;
+    extern int gfx_cam_mode;
+    return gfx_cam_mode;
+}
+
 JNIEXPORT jint JNICALL
 Java_com_vdavid003_sm64port_sm64portActivity_nativeGetCamMode(JNIEnv *env, jclass clazz) {
     (void) env; (void) clazz;

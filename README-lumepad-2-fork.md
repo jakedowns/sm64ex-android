@@ -56,6 +56,19 @@ export PATH="$JAVA_HOME/bin:/media/share/lp2-test/toolchain/hostbin:/media/share
     ./gradlew assembleDebug --no-daemon
 ```
 
+**Tip (agent builds):** pipe long builds through the progress-tool relay so the
+user's progress indicator streams live at zero token cost instead of the agent
+sitting on a wall of compiler output:
+
+```sh
+progress-relay --id build-1 -- ./scripts/agent-lock.sh build --reason "assembleDebug" -- \
+    ./gradlew assembleDebug --no-daemon
+# or simply: ./gradlew assembleDebug --no-daemon | progress-relay --id build-1
+```
+
+The relay parses OSC 9;4 progress sequences and maps the exit code to
+done/error.
+
 - `app/build.gradle` pins `ndkVersion "27.2.12479018"`. NDK r26 has no aarch64
   host build (`Unknown host CPU architecture`); the shared headless toolchain
   patches r27's x86_64 tools to run under qemu. `hostbin/uname` and
