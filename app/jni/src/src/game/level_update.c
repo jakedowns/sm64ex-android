@@ -1036,7 +1036,11 @@ s32 play_mode_normal(void) {
     // If either initiate_painting_warp or initiate_delayed_warp initiated a
     // warp, change play mode accordingly.
     if (sCurrPlayMode == PLAY_MODE_NORMAL) {
-        if (sWarpDest.type == WARP_TYPE_CHANGE_LEVEL) {
+        if (level_select_combo_pressed()) {
+            // L + R + START from gameplay: skip the pause menu and go straight
+            // to the level select on the next tick.
+            level_select_request_open(-1);
+        } else if (sWarpDest.type == WARP_TYPE_CHANGE_LEVEL) {
             set_play_mode(PLAY_MODE_CHANGE_LEVEL);
         } else if (sTransitionTimer != 0) {
             set_play_mode(PLAY_MODE_CHANGE_AREA);
