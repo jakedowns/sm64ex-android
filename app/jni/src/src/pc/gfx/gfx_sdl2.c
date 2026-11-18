@@ -362,6 +362,13 @@ Java_com_vdavid003_sm64port_sm64portActivity_nativeGetEnh(JNIEnv *env, jobject t
 }
 
 JNIEXPORT void JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeDebugKill(JNIEnv *env, jclass clazz) {
+    (void) env; (void) clazz;
+    extern void mario_debug_kill(void);
+    mario_debug_kill();
+}
+
+JNIEXPORT void JNICALL
 Java_com_vdavid003_sm64port_sm64portActivity_nativeSetShadow(JNIEnv *env, jobject thiz,
                                                             jint which, jint value) {
     (void) env; (void) thiz;

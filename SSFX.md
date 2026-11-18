@@ -50,7 +50,9 @@ FX knob keys (`cmd fx`):
 - AO: `1` enable, `2` intensity %, `3` radius, `4` samples, `5` bias, `6` power %
 - DOF: `11` enable, `12` focus, `13` aperture %, `14` max blur px, `15` samples
 - SSGI: `21` enable, `22` intensity %, `23` radius, `24` steps, `25` rays
-- Debug views: `31` (0 off, 1 AO, 2 CoC, 3 GI), `32` invert normals
+- SSRTX: `70` enable, `71` intensity %, `72` distance, `73` steps, `74` rays,
+  `75` thickness, `76` roughness %, `77` edge fade %
+- Debug views: `31` (0 off, 1 AO, 2 CoC, 3 GI, 4 SSRTX), `32` invert normals
 
 ## Notes / limitations
 
@@ -96,6 +98,25 @@ toe cant is removed with `ndc.x -= toe * ndc.z`, and `FLIPY` is undone. Without
 this, shadow/AO/DOF/GI lookups would be offset by the eye separation (tens of
 world units at typical depths). Per-eye values are captured in
 `gfx_apply_stereo_shear()` and uploaded for each eye by the post pass.
+
+## SSRTX — screen-space ray-traced reflections (v34)
+
+A ReShade SSR/SSRT-style pass inside the existing per-eye FX shader:
+
+1. Rebuild the view-space position/normal (as above, with the stereo
+   shear/toe removed).
+2. Reflect the view vector about the normal.
+3. March the ray in view space (`Distance` world units over `Steps` samples),
+   projecting each sample back to canvas UV with the *forward* stereo
+   projection (`viewToCanvas`), and read the scene depth.
+4. A sample is a hit when the ray is behind the depth-buffer surface by less
+   than `Thickness`; the scene colour there is accumulated.
+5. Blend `colour * Fresnel * edgeFade * Intensity`. `Rays > 1` jitters the
+   reflection inside a cone (`Roughness`) for soft/rough reflections.
+
+The tab is `SSRTX`; defaults are **off** (opt-in) because the march is the most
+expensive post effect. Headless knobs are keys `70`..`77` via `cmd fx`; debug
+view `4` (`SHOW SSRTX`) displays the reflection buffer.
 
 ## Realtime dynamic shadow map (v33)
 

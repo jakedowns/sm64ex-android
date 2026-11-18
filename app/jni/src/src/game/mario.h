@@ -52,5 +52,7 @@ extern s32 set_water_plunge_action(struct MarioState *m);
 extern s32 execute_mario_action(struct Object *o);
 extern void init_mario(void);
 extern void init_mario_from_save_file(void);
+/** Debug kill hook (headless `cmd kill` / ENH tab). */
+extern void mario_debug_kill(void);
 
 #endif /* _MARIO_H */

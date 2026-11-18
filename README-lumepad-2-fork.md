@@ -100,7 +100,11 @@ A per-eye post pass runs after the scene is rendered (options tab **MXAO**,
   centre minus his hitbox radius, i.e. the front of his body, so the plane sits
   a little closer than his middle.
 - **SSGI-lite** — intensity, radius, steps, rays (screen-space colour bleed).
-- Debug views: AO buffer, CoC, GI.
+- **SSRTX** — screen-space ray-traced reflections (ReShade SSR/SSRT-style):
+  intensity, max ray distance, steps, rays, depth thickness, roughness cone,
+  edge fade, and a reflection debug view. Opt-in (off by default) because it is
+  the most expensive post effect.
+- Debug views: AO buffer, CoC, GI, SSRTX reflections.
 - Everything is a live knob (panel sliders or `cmd fx`), defaults off so the
   base look is unchanged.
 
@@ -224,13 +228,15 @@ A broadcast channel drives everything over adb:
 B="am broadcast -n com.vdavid003.sm64port/.DebugReceiver -a com.vdavid003.sm64port.CMD"
 adb shell $B --es cmd dump                      # full state line
 adb shell $B --es cmd set --ei k 0 --ei v 300   # stereo knob (see table)
-adb shell $B --es cmd toggle --es name MXAO     # MXAO / CDOF / SSGI / STAY / CAM /
-                                                # TOEAUTO / UIPOST / UIPARALLAX / UIBUF /
-                                                # FLAT / 3D / ZBUF / WIRE /
+adb shell $B --es cmd toggle --es name MXAO     # MXAO / CDOF / SSGI / SSRTX / STAY /
+                                                # CAM / TOEAUTO / UIPOST / UIPARALLAX /
+                                                # UIBUF / FLAT / 3D / ZBUF / WIRE /
                                                 # RAGDOLL / HITRAG / PPCAM /
                                                 # SHADOW / SHADOWDBG / ...
 adb shell $B --es cmd fx --ei k 2 --ei v 250    # screen-space FX knob
 adb shell $B --es cmd shadow --ei k 1 --ei v 1024  # shadow knob (res here)
+adb shell $B --es cmd kill                      # kill Mario (ragdoll if enabled)
+adb shell $B --es cmd pad --ei sx 0 --ei sy 0 --ei buttons 4096 --ei ms 250
 adb shell $B --es cmd fps --ei v 2              # 0=30 1=60 2=120 3=uncapped
 adb shell $B --es cmd busy --ei v 1             # debug line red ("hands off") / 0 green
 adb shell $B --es cmd reinit | reset
@@ -247,8 +253,8 @@ FX knobs (`cmd fx`): AO `1`-`6`, DOF `11`-`15` (`16` auto focus, `17` reports
 the auto distance), SSGI `21`-`25`, debug view `31`, normal flip `32`.
 
 The on-screen tuning panel is collapsed by default (**SHOW**/**HIDE**) so it does
-not cover the controls; it has tabs for STEREO / MXAO / C.DOF / SSGI / CAMERA /
-ENH / SHADOW, a toggle row, and a live status line plus FPS meter. The status line is **green (`FREE`)**
+not cover the controls; it has tabs for STEREO / MXAO / C.DOF / SSGI / SSRTX /
+CAMERA / ENH / SHADOW, a toggle row, and a live status line plus FPS meter. The status line is **green (`FREE`)**
 when the app is free to touch and **red (`BUSY - hands off`)** while an automated
 agent is driving it.
 

@@ -70,6 +70,9 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     private TextView aoToggle, dofToggle, giToggle;
     private boolean aoOn, dofOn, giOn;
     private int fxDebug = 0;
+    // SSRTX screen-space ray-traced reflections (opt-in: expensive).
+    private boolean ssrtxOn = false;
+    private TextView ssrtxToggle;
     // Gameplay enhancements (default on; toggled from the ENH tab).
     private boolean ragdollOn = true, hitRagdollOn = true, ppcamOn = true;
     private TextView ragdollToggle, hitRagdollToggle, ppcamToggle;
@@ -413,6 +416,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addTabButton(tabBar, "MXAO");
         addTabButton(tabBar, "C.DOF");
         addTabButton(tabBar, "SSGI");
+        addTabButton(tabBar, "SSRTX");
         addTabButton(tabBar, "CAMERA");
         addTabButton(tabBar, "ENH");
         addTabButton(tabBar, "SHADOW");
@@ -647,6 +651,18 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addFxSlider("Rays", 2, 8, 4, "", 25);
         addFxDebugButton("SHOW GI", 3);
 
+        // --- SSRTX: screen-space ray-traced reflections ---
+        beginTab();
+        ssrtxToggle = addFxToggle("SSRTX ENABLE", 70, ssrtxOn);
+        addFxSlider("Intensity", 0, 300, 100, " %", 71);
+        addFxSlider("Distance", 50, 2000, 600, " u", 72);
+        addFxSlider("Steps", 2, 48, 20, "", 73);
+        addFxSlider("Rays", 1, 8, 1, "", 74);
+        addFxSlider("Thickness", 5, 300, 80, " u", 75);
+        addFxSlider("Roughness", 0, 100, 0, " %", 76);
+        addFxSlider("Edge fade", 0, 100, 100, " %", 77);
+        addFxDebugButton("SHOW SSRTX", 4);
+
         // --- Camera tracking / sensors ---
         beginTab();
         camHeadToggle = addCamToggle("HEAD TRACK", 41, hdtOn);
@@ -661,6 +677,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         ragdollToggle = addEnhToggle("DEATH RAGDOLL", 0, ragdollOn);
         hitRagdollToggle = addEnhToggle("HIT RAGDOLL", 1, hitRagdollOn);
         ppcamToggle = addEnhToggle("PUPPYCAM+", 2, ppcamOn);
+        addEnhButton("KILL MARIO (TEST)", this::debugKill);
 
         // --- Realtime dynamic shadows (quality / performance) ---
         beginTab();
@@ -774,6 +791,23 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         controls.addView(b);
         nativeSetEnh(key, initial ? 1 : 0);
         return b;
+    }
+
+    private TextView addEnhButton(String name, final Runnable action) {
+        TextView b = new TextView(this);
+        b.setText(name);
+        b.setTextSize(16);
+        b.setTextColor(0xFFFF9966);
+        b.setPadding(dp(4), dp(10), dp(4), dp(10));
+        b.setOnClickListener(v -> action.run());
+        controls.addView(b);
+        return b;
+    }
+
+    /** Debug-only: request a death (ragdoll if enabled, vanilla otherwise). */
+    void debugKill() {
+        nativeDebugKill();
+        Log.i(TAG, "KILL MARIO requested");
     }
 
     // ---- realtime shadow widgets (nativeSetShadow channel) ----
@@ -978,6 +1012,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         if (key == 1) aoOn = on;
         else if (key == 11) dofOn = on;
         else if (key == 21) giOn = on;
+        else if (key == 70) ssrtxOn = on;
         Log.i(TAG, "FX toggle " + name + "=" + (on ? 1 : 0));
     }
 
@@ -1318,6 +1353,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     static native void nativeSetHeadPose(float x, float y, float z, int valid);
     static native void nativeSetGyro(float pitch, float yaw, float roll);
     static native int nativeGetHeadPose(int axis);
+    static native void nativeDebugKill();
     static native void nativeOverlayStick2(int rx, int ry);
     static native void nativeOverlayAnalog(int on);
     static native void nativeHideInGameControls(int hide);
@@ -1423,9 +1459,16 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                     else nativeSetSSFX(21, giOn ? 1 : 0);
                 });
                 break;
+            case "SSRTX":
+                runOnUiThread(() -> {
+                    ssrtxOn = !ssrtxOn;
+                    if (ssrtxToggle != null) applyFxToggle(ssrtxToggle, "SSRTX ENABLE", 70, ssrtxOn);
+                    else nativeSetSSFX(70, ssrtxOn ? 1 : 0);
+                });
+                break;
             case "FXDBG":
                 runOnUiThread(() -> {
-                    fxDebug = (fxDebug + 1) % 4;
+                    fxDebug = (fxDebug + 1) % 5;
                     nativeSetSSFX(31, fxDebug);
                     Log.i(TAG, "fxDebug=" + fxDebug);
                 });
@@ -1597,6 +1640,9 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                         + " hfr=" + nativeGetHfrMtxCount() + "/" + nativeGetHfrInterp()
                     + " mxao=" + nativeGetSSFX(1) + " cdof=" + nativeGetSSFX(11)
                     + " ssgi=" + nativeGetSSFX(21) + " fxdbg=" + nativeGetSSFX(31)
+                    + " ssrtx=" + nativeGetSSFX(70) + "/" + nativeGetSSFX(71)
+                    + " ssrd=" + nativeGetSSFX(72) + " ssrs=" + nativeGetSSFX(73)
+                    + " ssrr=" + nativeGetSSFX(74) + " ssrt=" + nativeGetSSFX(75)
                     + " dofauto=" + nativeGetSSFX(16) + " dofz=" + nativeGetSSFX(17)
                     + " stay=" + stayOn + " uipost=" + uiPostOn
                     + " cam=" + nativeGetCamMode() + " ctlA=" + overlayAlphaPct

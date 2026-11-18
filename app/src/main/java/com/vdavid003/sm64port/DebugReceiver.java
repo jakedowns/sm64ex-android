@@ -59,6 +59,10 @@ public class DebugReceiver extends BroadcastReceiver {
                 Log.i(TAG, "CMD pad sx=" + sx + " sy=" + sy + " btn=" + buttons + " ms=" + ms);
                 break;
             }
+            case "kill":
+                a.debugKill();
+                Log.i(TAG, "CMD kill");
+                break;
             case "toggle": {
                 String name = intent.getStringExtra("name");
                 a.debugToggle(name);

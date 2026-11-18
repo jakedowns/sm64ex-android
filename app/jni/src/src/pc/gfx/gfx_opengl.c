@@ -667,6 +667,16 @@ static int s_fx_gi_radius = 150;      // world units
 static int s_fx_gi_steps = 6;
 static int s_fx_gi_rays = 4;
 
+// SSRTX: screen-space ray-traced reflections (ReShade SSR/SSRT-style).
+static int s_fx_ssrtx_on = 0;
+static int s_fx_ssrtx_intensity = 100;  // percent
+static int s_fx_ssrtx_distance = 600;   // max ray length (world units)
+static int s_fx_ssrtx_steps = 20;
+static int s_fx_ssrtx_rays = 1;
+static int s_fx_ssrtx_thickness = 80;   // depth window for a hit (world units)
+static int s_fx_ssrtx_roughness = 0;    // percent cone spread (needs rays > 1)
+static int s_fx_ssrtx_fade = 100;       // screen-edge fade percent
+
 static int s_fx_debug = 0;            // 0 off, 1 AO, 2 CoC, 3 GI
 static int s_fx_normal_flip = 0;
 
@@ -749,6 +759,14 @@ static const char *s_fx_fs =
     "uniform float uShadowSoftness;\n"
     "uniform float uShadowTaps;\n"
     "uniform float uShadowDebug;\n"
+    "uniform float uSSRTXOn;\n"
+    "uniform float uSSRTXIntensity;\n"
+    "uniform float uSSRTXDist;\n"
+    "uniform float uSSRTXSteps;\n"
+    "uniform float uSSRTXRays;\n"
+    "uniform float uSSRTXThick;\n"
+    "uniform float uSSRTXRough;\n"
+    "uniform float uSSRTXFade;\n"
     "float unpackDepth(vec4 rgba) {\n"
     "  return dot(rgba, vec4(1.0, 1.0/255.0, 1.0/65025.0, 1.0/16581375.0));\n"
     "}\n"
@@ -801,6 +819,65 @@ static const char *s_fx_fs =
     "vec2 canvasUV(vec2 eyeUV) {\n"
     "  return (eyeUV * uRes - uCanvas.xy) / uCanvas.zw;\n"
     "}\n"
+    "vec2 eyeUVfromCanvas(vec2 cuv) {\n"
+    "  return (cuv * uCanvas.zw + uCanvas.xy) / uRes;\n"
+    "}\n"
+    "float hash12(vec2 p) {\n"
+    "  return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);\n"
+    "}\n"
+    // Forward projection: view space -> canvas UV, including the per-eye
+    // shear/toe/flip so the reflection ray lands on the right pixel.
+    "vec2 viewToCanvas(vec3 vp) {\n"
+    "  float z = max(-vp.z, 1.0);\n"
+    "  vec2 ndc = vec2(vp.x / (z * uTanHalf * uAspect), vp.y / (z * uTanHalf));\n"
+    "  float ndcz = (uFar + uNear - 2.0 * uNear * uFar / z) / (uFar - uNear);\n"
+    "  ndc.x += uShear + uToe * ndcz;\n"
+    "  if (uFlipY > 0.5) ndc.y = -ndc.y;\n"
+    "  return ndc * 0.5 + 0.5;\n"
+    "}\n"
+    // Screen-space ray-traced reflection: march the reflected view ray through
+    // the depth buffer and grab the colour of the first surface it penetrates.
+    "vec3 ssrtxReflect(vec3 P, vec3 N, vec2 cuv) {\n"
+    "  vec3 V = normalize(P);\n"
+    "  vec3 Rbase = reflect(V, N);\n"
+    "  if (dot(Rbase, N) <= 0.0) return vec3(0.0);\n"
+    "  vec3 acc = vec3(0.0);\n"
+    "  float hits = 0.0;\n"
+    "  float rays = max(uSSRTXRays, 1.0);\n"
+    "  float spread = uSSRTXRough * (rays > 1.5 ? 1.0 : 0.0);\n"
+    "  float stepLen = uSSRTXDist / max(uSSRTXSteps, 1.0);\n"
+    "  vec3 origin = P + N * max(2.0, uSSRTXThick * 0.05);\n"
+    "  vec3 up = abs(Rbase.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);\n"
+    "  vec3 T = normalize(cross(up, Rbase));\n"
+    "  vec3 B = cross(Rbase, T);\n"
+    "  for (int r = 0; r < 8; r++) {\n"
+    "    if (float(r) >= rays) break;\n"
+    "    float ang = (float(r) + 0.5) / rays * 6.2831853 + hash12(cuv * uRes + float(r)) * 6.2831853;\n"
+    "    vec3 R = normalize(Rbase + (T * cos(ang) + B * sin(ang)) * spread * 0.35);\n"
+    "    for (int i = 1; i <= 48; i++) {\n"
+    "      if (float(i) > uSSRTXSteps) break;\n"
+    "      vec3 Ps = origin + R * (float(i) * stepLen);\n"
+    "      float rayDist = -Ps.z;\n"
+    "      if (rayDist <= uNear) break;\n"
+    "      vec2 ruv = viewToCanvas(Ps);\n"
+    "      if (ruv.x < 0.0 || ruv.x > 1.0 || ruv.y < 0.0 || ruv.y > 1.0) break;\n"
+    "      vec2 euv = eyeUVfromCanvas(ruv);\n"
+    "      float sceneDist = linZ(texture2D(uDepth, euv).r);\n"
+    "      float d = rayDist - sceneDist;\n"
+    "      if (d > 0.0 && d < uSSRTXThick) {\n"
+    "        acc += texture2D(uColor, euv).rgb;\n"
+    "        hits += 1.0;\n"
+    "        break;\n"
+    "      }\n"
+    "    }\n"
+    "  }\n"
+    "  if (hits < 0.5) return vec3(0.0);\n"
+    "  float cosT = max(dot(-V, N), 0.0);\n"
+    "  float fres = 0.04 + 0.96 * pow(1.0 - cosT, 5.0);\n"
+    "  float edge = smoothstep(0.0, 0.08, min(min(cuv.x, 1.0 - cuv.x), min(cuv.y, 1.0 - cuv.y)));\n"
+    "  float fade = mix(1.0, edge, uSSRTXFade / 100.0);\n"
+    "  return (acc / hits) * fres * fade * (uSSRTXIntensity / 100.0);\n"
+    "}\n"
     "void main() {\n"
     "  vec3 color = texture2D(uColor, vUV).rgb;\n"
     "  vec2 cuv = canvasUV(vUV);\n"
@@ -823,6 +900,8 @@ static const char *s_fx_fs =
     "  vec3 Nw = normalize((uCamInv * vec4(N, 0.0)).xyz);\n"
     "  float shadow = 1.0;\n"
     "  if (uShadowOn > 0.5) shadow = shadowLookup(Pw, Nw);\n"
+    "  vec3 refl = vec3(0.0);\n"
+    "  if (uSSRTXOn > 0.5) refl = ssrtxReflect(P, N, cuv);\n"
     "  float ao = 1.0;\n"
     "  if (uAOOn > 0.5) {\n"
     "    float occ = 0.0;\n"
@@ -910,11 +989,13 @@ static const char *s_fx_fs =
     "  }\n"
     "  if (uShadowDebug > 1.5) gl_FragColor = vec4(vec3(unpackDepth(texture2D(uShadowMap, clamp(cuv, 0.0, 1.0)))), 1.0);\n"
     "  else if (uShadowDebug > 0.5) gl_FragColor = vec4(vec3(shadow), 1.0);\n"
+    "  else if (uDebug > 3.5) gl_FragColor = vec4(refl * 3.0, 1.0);\n"
     "  else if (uDebug > 2.5) gl_FragColor = vec4(gi * 3.0 * (uGIIntensity / 100.0), 1.0);\n"
     "  else if (uDebug > 1.5) gl_FragColor = vec4(vec3(clamp(cocPx / max(uMaxBlur, 1.0), 0.0, 1.0)), 1.0);\n"
     "  else if (uDebug > 0.5) gl_FragColor = vec4(vec3(ao), 1.0);\n"
     "  else {\n"
-    "    vec3 outc = dofColor * ao * shadow + gi * (uGIIntensity / 100.0) * 0.6;\n"
+    "    vec3 outc = dofColor * ao * shadow + gi * (uGIIntensity / 100.0) * 0.6\n"
+    "              + refl * mix(0.35, 1.0, ao);\n"
     "    gl_FragColor = vec4(outc, 1.0);\n"
     "  }\n"
     "}\n";
@@ -929,6 +1010,8 @@ static struct {
     GLint shadow_map, shadow_vp, shadow_caminv, shadow_dir, shadow_texel;
     GLint shadow_on, shadow_strength, shadow_bias, shadow_nbias;
     GLint shadow_softness, shadow_taps, shadow_debug;
+    GLint ssrtx_on, ssrtx_intensity, ssrtx_dist, ssrtx_steps;
+    GLint ssrtx_rays, ssrtx_thick, ssrtx_rough, ssrtx_fade;
 } s_fx_u;
 
 static GLuint s_fx_prog = 0;
@@ -939,7 +1022,8 @@ static int    s_pp_w = 0, s_pp_h = 0;
 
 static int stereo_fx_any(void) {
     return s_fx_ao_on || s_fx_dof_on || s_fx_gi_on || s_fx_debug != 0
-        || (gfx_shadow_enabled && s_shadow_map_valid);
+        || (gfx_shadow_enabled && s_shadow_map_valid)
+        || s_fx_ssrtx_on;
 }
 
 // Row-vector matrix (translation in row 3). GLSL matrices are column-major,
@@ -968,8 +1052,17 @@ void gfx_opengl_ssfx_set(int which, int value) {
         case 23: s_fx_gi_radius = value < 1 ? 1 : value; break;
         case 24: s_fx_gi_steps = value < 1 ? 1 : (value > 12 ? 12 : value); break;
         case 25: s_fx_gi_rays = value < 1 ? 1 : (value > 8 ? 8 : value); break;
-        case 31: s_fx_debug = value < 0 ? 0 : (value > 3 ? 3 : value); break;
+        case 31: s_fx_debug = value < 0 ? 0 : (value > 4 ? 4 : value); break;
         case 32: s_fx_normal_flip = value ? 1 : 0; break;
+        /* SSRTX screen-space ray-traced reflections. */
+        case 70: s_fx_ssrtx_on = value ? 1 : 0; break;
+        case 71: s_fx_ssrtx_intensity = value < 0 ? 0 : (value > 300 ? 300 : value); break;
+        case 72: s_fx_ssrtx_distance = value < 50 ? 50 : (value > 2000 ? 2000 : value); break;
+        case 73: s_fx_ssrtx_steps = value < 2 ? 2 : (value > 48 ? 48 : value); break;
+        case 74: s_fx_ssrtx_rays = value < 1 ? 1 : (value > 8 ? 8 : value); break;
+        case 75: s_fx_ssrtx_thickness = value < 5 ? 5 : (value > 300 ? 300 : value); break;
+        case 76: s_fx_ssrtx_roughness = value < 0 ? 0 : (value > 100 ? 100 : value); break;
+        case 77: s_fx_ssrtx_fade = value < 0 ? 0 : (value > 100 ? 100 : value); break;
         /* Realtime dynamic shadow map (SHADOW tab). */
         case 50: gfx_shadow_enabled = value ? 1 : 0; break;
         case 51: gfx_shadow_quality = value <= 512 ? 512 : (value <= 1024 ? 1024 : (value <= 2048 ? 2048 : 4096)); break;
@@ -1014,6 +1107,14 @@ int gfx_opengl_ssfx_get(int which) {
         case 25: return s_fx_gi_rays;
         case 31: return s_fx_debug;
         case 32: return s_fx_normal_flip;
+        case 70: return s_fx_ssrtx_on;
+        case 71: return s_fx_ssrtx_intensity;
+        case 72: return s_fx_ssrtx_distance;
+        case 73: return s_fx_ssrtx_steps;
+        case 74: return s_fx_ssrtx_rays;
+        case 75: return s_fx_ssrtx_thickness;
+        case 76: return s_fx_ssrtx_roughness;
+        case 77: return s_fx_ssrtx_fade;
         case 50: return gfx_shadow_enabled;
         case 51: return gfx_shadow_quality;
         case 52: return gfx_shadow_interval;
@@ -1122,6 +1223,14 @@ static void stereo_fx_init(void) {
     s_fx_u.shadow_softness = glGetUniformLocation(s_fx_prog, "uShadowSoftness");
     s_fx_u.shadow_taps = glGetUniformLocation(s_fx_prog, "uShadowTaps");
     s_fx_u.shadow_debug = glGetUniformLocation(s_fx_prog, "uShadowDebug");
+    s_fx_u.ssrtx_on = glGetUniformLocation(s_fx_prog, "uSSRTXOn");
+    s_fx_u.ssrtx_intensity = glGetUniformLocation(s_fx_prog, "uSSRTXIntensity");
+    s_fx_u.ssrtx_dist = glGetUniformLocation(s_fx_prog, "uSSRTXDist");
+    s_fx_u.ssrtx_steps = glGetUniformLocation(s_fx_prog, "uSSRTXSteps");
+    s_fx_u.ssrtx_rays = glGetUniformLocation(s_fx_prog, "uSSRTXRays");
+    s_fx_u.ssrtx_thick = glGetUniformLocation(s_fx_prog, "uSSRTXThick");
+    s_fx_u.ssrtx_rough = glGetUniformLocation(s_fx_prog, "uSSRTXRough");
+    s_fx_u.ssrtx_fade = glGetUniformLocation(s_fx_prog, "uSSRTXFade");
     s_fx_prog_state = 1;
     __android_log_print(ANDROID_LOG_INFO, "SM64FX", "FX program ready (%u)", s_fx_prog);
 }
@@ -1323,6 +1432,14 @@ static int stereo_fx_pass(void) {
                 gfx_shadow_light_dir[2]);
     upload_mat4_rowvec(s_fx_u.shadow_vp, gfx_shadow_light_vp);
     upload_mat4_rowvec(s_fx_u.shadow_caminv, gfx_cam_inv_mtx);
+    glUniform1f(s_fx_u.ssrtx_on, s_fx_ssrtx_on ? 1.0f : 0.0f);
+    glUniform1f(s_fx_u.ssrtx_intensity, (float)s_fx_ssrtx_intensity);
+    glUniform1f(s_fx_u.ssrtx_dist, (float)s_fx_ssrtx_distance);
+    glUniform1f(s_fx_u.ssrtx_steps, (float)s_fx_ssrtx_steps);
+    glUniform1f(s_fx_u.ssrtx_rays, (float)s_fx_ssrtx_rays);
+    glUniform1f(s_fx_u.ssrtx_thick, (float)s_fx_ssrtx_thickness);
+    glUniform1f(s_fx_u.ssrtx_rough, (float)s_fx_ssrtx_roughness / 100.0f);
+    glUniform1f(s_fx_u.ssrtx_fade, (float)s_fx_ssrtx_fade);
 
     glUniform2f(s_fx_u.res, (float)s_eye_w, (float)s_eye_h);
     glUniform4f(s_fx_u.canvas, (float)s_canvas_x, (float)s_canvas_y,

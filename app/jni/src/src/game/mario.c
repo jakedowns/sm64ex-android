@@ -1740,6 +1740,12 @@ void func_sh_8025574C(void) {
 /**
  * Main function for executing Mario's behavior.
  */
+static volatile int sDebugKillRequest = 0;
+
+/** Debug channel / ENH tab: kill Mario on the next gameplay tick. */
+void mario_debug_kill(void) {
+    sDebugKillRequest = 1;
+}
 s32 execute_mario_action(UNUSED struct Object *o) {
     s32 inLoop = TRUE;
     /**
@@ -1811,6 +1817,22 @@ s32 execute_mario_action(UNUSED struct Object *o) {
         squish_mario_model(gMarioState);
         set_submerged_cam_preset_and_spawn_bubbles(gMarioState);
         update_mario_health(gMarioState);
+        if (sDebugKillRequest && gMarioState->floor != NULL
+            && gMarioState->floor->type != SURFACE_DEATH_PLANE
+            && !(gMarioState->action & ACT_FLAG_INTANGIBLE)) {
+            u32 started = FALSE;
+
+            sDebugKillRequest = 0;
+            if (death_ragdoll_enabled) {
+                started = death_ragdoll_start(gMarioState, DEATH_RAGDOLL_SOURCE_DEFAULT);
+            }
+            if (!started) {
+                gMarioState->health = 0xFF;
+                gMarioState->hurtCounter = 0;
+                gMarioState->healCounter = 0;
+                set_mario_action(gMarioState, ACT_STANDING_DEATH, 0);
+            }
+        }
         if (death_ragdoll_enabled) {
             death_ragdoll_try_start_from_health_depleted(gMarioState);
         }
