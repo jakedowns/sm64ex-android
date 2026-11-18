@@ -1184,6 +1184,8 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     static native int nativeGetPortalGun();
     static native int nativeGetPortalCount();
     static native int nativeGetPortalDebug();
+    static native int nativeGetMarioPos(int axis);
+    static native int nativeGetPortalField(int which, int field);
     static native void nativeGivePortalGun();
     static native void nativeOverlayStick2(int rx, int ry);
     static native void nativeOverlayAnalog(int on);
@@ -1423,6 +1425,12 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                     + " toeauto=" + toeAutoOn
                     + " gun=" + nativeGetPortalGun() + " portals=" + nativeGetPortalCount()
                     + " pdbg=" + nativeGetPortalDebug()
+                    + " pos=" + nativeGetMarioPos(0) + "," + nativeGetMarioPos(1)
+                    + "," + nativeGetMarioPos(2)
+                    + " p0=" + nativeGetPortalField(0, 0) + "," + nativeGetPortalField(0, 1)
+                    + "," + nativeGetPortalField(0, 2)
+                    + " p1=" + nativeGetPortalField(1, 0) + "," + nativeGetPortalField(1, 1)
+                    + "," + nativeGetPortalField(1, 2)
                     + " hdt=" + (hdtOn ? 1 : 0) + "/" + hdtStrength
                     + " gyro=" + (gyroOn ? 1 : 0) + "/" + gyroStrength
                     + " pivot=" + gyroPivot

@@ -303,6 +303,21 @@ Java_com_vdavid003_sm64port_sm64portActivity_nativeGetPortalGun(JNIEnv *env, jcl
 }
 
 JNIEXPORT jint JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeGetMarioPos(JNIEnv *env, jclass clazz, jint axis) {
+    (void) env; (void) clazz;
+    extern int gfx_mario_pos(int axis);
+    return gfx_mario_pos((int) axis);
+}
+
+JNIEXPORT jint JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeGetPortalField(JNIEnv *env, jclass clazz,
+                                                                  jint which, jint field) {
+    (void) env; (void) clazz;
+    extern int gfx_portal_field(int which, int field);
+    return gfx_portal_field((int) which, (int) field);
+}
+
+JNIEXPORT jint JNICALL
 Java_com_vdavid003_sm64port_sm64portActivity_nativeGetPortalDebug(JNIEnv *env, jclass clazz) {
     (void) env; (void) clazz;
     extern int g_portal_debug;

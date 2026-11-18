@@ -134,8 +134,11 @@ static void portal_basis_from_normal(const Vec3f n, Vec3f tan, Vec3f bitan) {
     vnorm3(bitan);
 }
 
+// Terrain collision is tessellated per triangle, so "same surface" cannot mean
+// the same Surface pointer. Compare the plane instead: same normal and the hit
+// point lies on the plane of the original hit.
 static int portal_rim_ok(const Vec3f centre, const Vec3f n, const Vec3f tan, const Vec3f bitan,
-                         float rx, float ry, struct Surface *want) {
+                         float rx, float ry, const Vec3f planePos) {
     static const float ang[8] = { 0.0f, 0.7854f, 1.5708f, 2.3562f, 3.1416f, 3.9270f, 4.7124f, 5.4978f };
 
     for (int i = 0; i < 8; i++) {
@@ -155,8 +158,23 @@ static int portal_rim_ok(const Vec3f centre, const Vec3f n, const Vec3f tan, con
         dir[1] = -n[1] * 32.0f;
         dir[2] = -n[2] * 32.0f;
         find_surface_on_ray(p, dir, &hit, hitPos);
-        if (hit != want) {
+        if (hit == NULL) {
             return 0;
+        }
+        {
+            Vec3f hn;
+            float dn, dp;
+            hn[0] = hit->normal.x;
+            hn[1] = hit->normal.y;
+            hn[2] = hit->normal.z;
+            vnorm3(hn);
+            dn = vdot3(hn, n);
+            dp = (hitPos[0] - planePos[0]) * n[0]
+               + (hitPos[1] - planePos[1]) * n[1]
+               + (hitPos[2] - planePos[2]) * n[2];
+            if (dn < 0.99f || fabsf(dp) > 6.0f) {
+                return 0;
+            }
         }
     }
     return 1;
@@ -209,7 +227,7 @@ void portal_shoot(int which) {
 
     for (int shrink = 0; shrink < 3 && !fitted; shrink++) {
         for (int iter = 0; iter < 8 && !fitted; iter++) {
-            if (portal_rim_ok(centre, n, tan, bitan, rx, ry, surf)) {
+            if (portal_rim_ok(centre, n, tan, bitan, rx, ry, hit)) {
                 fitted = 1;
                 break;
             }
@@ -223,7 +241,7 @@ void portal_shoot(int which) {
                 cand[0] += (tan[0] * dirs[d][0] + bitan[0] * dirs[d][1]) * rx * 0.35f;
                 cand[1] += (tan[1] * dirs[d][0] + bitan[1] * dirs[d][1]) * ry * 0.35f;
                 cand[2] += (tan[2] * dirs[d][0] + bitan[2] * dirs[d][1]) * rx * 0.35f;
-                if (portal_rim_ok(cand, n, tan, bitan, rx, ry, surf)) {
+                if (portal_rim_ok(cand, n, tan, bitan, rx, ry, hit)) {
                     vec3f_copy(centre, cand);
                     fitted = 1;
                     improved = 1;
@@ -540,6 +558,23 @@ void portal_render(void) {
 void portal_give_gun(void) {
     s_hasGun = 1;
     s_gunSpawned = 0;
+}
+
+int gfx_portal_field(int which, int field) {
+    if (which < 0 || which > 1 || field < 0 || field > 5) {
+        return 0;
+    }
+    if (field < 3) {
+        return (int) s_portal[which].pos[field];
+    }
+    return (int) (s_portal[which].normal[field - 3] * 1000.0f);
+}
+
+int gfx_mario_pos(int axis) {
+    if (gMarioState == NULL || axis < 0 || axis > 2) {
+        return 0;
+    }
+    return (int) gMarioState->pos[axis];
 }
 
 int portal_gun_has(void) {
