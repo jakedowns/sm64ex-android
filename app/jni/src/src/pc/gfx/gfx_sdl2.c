@@ -107,7 +107,7 @@ extern int gfx_opengl_ssfx_get(int which);
 #include <jni.h>
 
 static float s_base_ipd = 140.0f;
-static float s_base_convergence = 0.0f;
+static float s_base_convergence = 10.0f;   // matches the slider default
 static float s_depth_scale = 1.0f;
 
 JNIEXPORT void JNICALL

@@ -92,7 +92,7 @@ public class TouchOverlay extends View {
 
     /** Overall opacity of the floating controls (1.0 = fully opaque). */
     public void setOverlayAlpha(float a) {
-        if (a < 0.05f) a = 0.05f;
+        if (a < 0f) a = 0f;
         if (a > 1f) a = 1f;
         overlayAlpha = a;
         invalidate();
@@ -184,6 +184,71 @@ public class TouchOverlay extends View {
         return -1;
     }
 
+    /**
+     * Moves a button press between overlay buttons while a finger is dragged.
+     * Only pointers that already own a button participate, so sliding a thumb
+     * across the screen never starts an accidental press.
+     */
+    private void updateButtonDrag(int id, float px, float py) {
+        int owner = -1, cowner = -1, camOwner = -1;
+
+        for (int b = 0; b < btnIds.length; b++) {
+            if (pressedPointer[b] == id) { owner = b; break; }
+        }
+        for (int cIdx = 0; cIdx < cIds.length; cIdx++) {
+            if (cPressed[cIdx] == id) { cowner = cIdx; break; }
+        }
+        for (int cIdx = 0; cIdx < camIds.length; cIdx++) {
+            if (camPressed[cIdx] == id) { camOwner = cIdx; break; }
+        }
+        if (owner < 0 && cowner < 0 && camOwner < 0) {
+            return;
+        }
+
+        int nb = hitButton(px, py);
+        int ncb = nb < 0 ? hitCButton(px, py) : -1;
+        int ncam = (nb < 0 && ncb < 0) ? hitCamButton(px, py) : -1;
+        boolean changed = false;
+
+        if (owner >= 0 && nb != owner) {
+            buttons &= ~btnIds[owner];
+            pressedPointer[owner] = -1;
+            owner = -1;
+            changed = true;
+        }
+        if (cowner >= 0 && ncb != cowner) {
+            buttons &= ~cIds[cowner];
+            cPressed[cowner] = -1;
+            cowner = -1;
+            changed = true;
+        }
+        if (camOwner >= 0 && ncam != camOwner) {
+            buttons &= ~camIds[camOwner];
+            camPressed[camOwner] = -1;
+            camOwner = -1;
+            changed = true;
+        }
+
+        if (owner < 0 && nb >= 0) {
+            buttons |= btnIds[nb];
+            pressedPointer[nb] = id;
+            changed = true;
+        } else if (cowner < 0 && ncb >= 0) {
+            buttons |= cIds[ncb];
+            cPressed[ncb] = id;
+            changed = true;
+        } else if (camOwner < 0 && ncam >= 0) {
+            buttons |= camIds[ncam];
+            camPressed[ncam] = id;
+            changed = true;
+        }
+
+        if (changed) {
+            pushInput();
+            invalidate();
+        }
+    }
+
     @Override
     public boolean onTouchEvent(MotionEvent e) {
         if (btnPos[0][0] == 0) layoutButtons();
@@ -264,6 +329,10 @@ public class TouchOverlay extends View {
                         rknobY = rstickY + dy;
                         pushInput();
                         invalidate();
+                    } else {
+                        // Drag a held button over another one: leave the old
+                        // button and press the new one (Z -> A mid-air, etc).
+                        updateButtonDrag(id, e.getX(i), e.getY(i));
                     }
                 }
                 return true;

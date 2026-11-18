@@ -23,6 +23,7 @@ android {
         namespace "com.vdavid003.sm64port"
     }
     compileSdkVersion 34
+    buildFeatures { buildConfig true }
     // NDK r26 has no aarch64 host build and fails "Unknown host CPU
     // architecture"; the shared headless toolchain patches r27 for qemu.
     ndkVersion "27.2.12479018"
@@ -31,6 +32,8 @@ android {
         targetSdkVersion 34
         versionCode 1
         versionName "1.0"
+        // Real build timestamp for the in-game changelog tab.
+        buildConfigField "String", "BUILD_STAMP", "\"${new Date().format('yyyy-MM-dd HH:mm')}\""
         externalNativeBuild {
             ndkBuild {
                 arguments "APP_PLATFORM=android-21"

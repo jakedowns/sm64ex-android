@@ -108,6 +108,27 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     /** Cycle the panel refresh rate: default -> 60 -> 120 Hz. */
     private int fpsMode = 2;   // 120 Hz render rate by default
     private boolean interpOn = true;
+    // Debug panel: slider drag mode, tab styling, changelog.
+    private LinearLayout tuningPanelView;
+    private final java.util.List<View> sliderRows = new java.util.ArrayList<>();
+    private TextView hideButton;
+    private int selectedTab = 0;
+    private static final int PANEL_BG = 0xCC101010;
+    private static final String CHANGELOG =
+            "Portal gun: walk into the gun in the castle grounds, aim with the\n"
+          + "  centre reticle, P1/P2 place blue/orange portals on solid geometry,\n"
+          + "  walk in to teleport with momentum kept.\n"
+          + "Camera tracking: Leia head-tracked parallax + gyro canting, with\n"
+          + "  strength sliders and a tilt-pivot height (CAMERA tab).\n"
+          + "HFR: 120 Hz interpolated rendering, simulation stays at 30 Hz.\n"
+          + "UI after post: HUD/menus composited after MXAO/DOF/SSGI/SSRTX.\n"
+          + "DOF auto focus on Mario; TOEAUTO aims both eyes at that distance.\n"
+          + "Free camera (X toggle, Y recentre, ANA stick), Ctl opacity.\n"
+          + "Stay in level after stars; debug level select; cheats menu.\n"
+          + "Ragdolls (death + hit), puppycam+, dynamic shadows, SSRTX.\n"
+          + "Gamepad: rumble, RT = Z, drag-through on-screen buttons.\n"
+          + "Debug: tabs (underline = selected, green = effect on), slider\n"
+          + "  drag mode, changelog, adb channel (dump/set/toggle/fx/portal).";
 
     /** Cycle render rate: 30 -> 60 -> 120 -> uncapped, and match panel refresh. */
     private void cycleFpsMode() {
@@ -202,7 +223,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         } catch (Throwable t) {
             overlayAlphaPct = 33;
         }
-        if (overlayAlphaPct < 10) overlayAlphaPct = 10;
+        if (overlayAlphaPct < 0) overlayAlphaPct = 0;
         if (overlayAlphaPct > 100) overlayAlphaPct = 100;
         Log.i(TAG, "overlay opacity restored: " + overlayAlphaPct + "%");
 
@@ -330,7 +351,8 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     private LinearLayout buildTuningPanel() {
         LinearLayout panel = new LinearLayout(this);
         panel.setOrientation(LinearLayout.VERTICAL);
-        panel.setBackgroundColor(0xCC101010);
+        tuningPanelView = panel;
+        panel.setBackgroundColor(PANEL_BG);
         int pad = (int) (16 * getResources().getDisplayMetrics().density);
         panel.setPadding(pad, pad / 2, pad * 3, pad / 2);
 
@@ -345,6 +367,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
 
         final TextView hide = new TextView(this);
         hide.setText("SHOW");
+        hideButton = hide;
         hide.setTextColor(0xFF66CCFF);
         hide.setTextSize(16);
         hide.setPadding(pad, pad / 2, pad, pad / 2);
@@ -387,20 +410,6 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             }
         });
 
-        TextView interpBtn = new TextView(this);
-        interpButton = interpBtn;
-        interpBtn.setText("INTERP ON");
-        interpBtn.setTextColor(0xFFCCCCCC);
-        interpBtn.setTextSize(16);
-        interpBtn.setPadding(pad, pad / 2, pad, pad / 2);
-        header.addView(interpBtn, abs(200, 0, 260, 64));
-        interpBtn.setOnClickListener(v -> {
-            interpOn = !interpOn;
-            nativeSetHfrInterp(interpOn ? 1 : 0);
-            interpBtn.setText(interpOn ? "INTERP ON" : "INTERP OFF");
-            Log.i(TAG, "INTERP " + interpOn);
-        });
-
         TextView fpsBtn = new TextView(this);
         fpsButton = fpsBtn;
         fpsBtn.setText("FPS 120");
@@ -436,6 +445,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addTabButton(tabBar, "CAMERA");
         addTabButton(tabBar, "ENH");
         addTabButton(tabBar, "SHADOW");
+        addTabButton(tabBar, "LOG");
         panel.addView(tabBar);
 
         tabContent = new LinearLayout(this);
@@ -468,7 +478,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         grid.setOrientation(android.widget.GridLayout.HORIZONTAL);
         controls.addView(grid);
         addSlider("IPD", -300, 300, 0, " px", 0);
-        addSlider("Zero parallax", -100, 100, 0, " px", 1);
+        addSlider("Zero parallax", -100, 100, 10, " px", 1);
         addSlider("Depth", -200, 200, 10, " %", 2);
         addSlider("UI depth", -60, 60, 0, " px", 38);
         addSlider("Toe in/out", -100, 100, 0, " %", 17);
@@ -478,7 +488,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         });
         addSlider("Eye margin%", 50, 100, 100, " %", 14);
         addSlider("FOV %", 1, 200, 100, " %", 20);
-        addIntSlider("Ctl opacity", 10, 100, overlayAlphaPct, new java.util.function.IntConsumer() {
+        addIntSlider("Ctl opacity", 0, 100, overlayAlphaPct, new java.util.function.IntConsumer() {
             @Override public void accept(int v) { applyOverlayAlpha(v); }
         });
         // Hidden for now (kept for later): V%, W-px, H-shift%, V-shift.
@@ -602,17 +612,50 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         b.setTextColor(0xFF888888);
         b.setPadding(dp(14), dp(6), dp(14), dp(6));
         final int idx = tabButtons.size();
-        b.setOnClickListener(v -> selectTab(idx));
+        b.setOnClickListener(v -> {
+            if (tabContent != null && tabContent.getVisibility() != View.VISIBLE) {
+                tabContent.setVisibility(View.VISIBLE);
+                if (hideButton != null) hideButton.setText("HIDE");
+            }
+            selectTab(idx);
+        });
         bar.addView(b);
         tabButtons.add(b);
     }
 
     private void selectTab(int idx) {
+        selectedTab = idx;
         for (int i = 0; i < tabViews.size(); i++) {
             tabViews.get(i).setVisibility(i == idx ? View.VISIBLE : View.GONE);
         }
+        refreshTabStyles();
+    }
+
+    /** Which tabs show "feature enabled" in green. */
+    private boolean tabFeatureOn(int i) {
+        switch (i) {
+            case 1: return aoOn;      // MXAO
+            case 2: return dofOn;     // C.DOF
+            case 3: return giOn;      // SSGI
+            case 4: return ssrtxOn;   // SSRTX
+            case 5: return hdtOn || gyroOn;   // CAMERA
+            default: return false;
+        }
+    }
+
+    /** Selected tab: white + underline. Enabled feature: green. */
+    private void refreshTabStyles() {
         for (int i = 0; i < tabButtons.size(); i++) {
-            tabButtons.get(i).setTextColor(i == idx ? 0xFF66FF99 : 0xFF888888);
+            TextView b = tabButtons.get(i);
+            boolean sel = (i == selectedTab);
+            b.setTextColor(sel ? 0xFFFFFFFF : (tabFeatureOn(i) ? 0xFF44FF66 : 0xFF888888));
+            int flags = b.getPaintFlags();
+            if (sel) {
+                flags |= android.graphics.Paint.UNDERLINE_TEXT_FLAG;
+            } else {
+                flags &= ~android.graphics.Paint.UNDERLINE_TEXT_FLAG;
+            }
+            b.setPaintFlags(flags);
         }
     }
 
@@ -695,6 +738,20 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         ppcamToggle = addEnhToggle("PUPPYCAM+", 2, ppcamOn);
         addEnhButton("LEVEL SELECT", this::openLevelSelect);
         addEnhButton("KILL MARIO (TEST)", this::debugKill);
+        TextView interp = new TextView(this);
+        interpButton = interp;
+        interp.setText(interpOn ? "INTERP ON" : "INTERP OFF");
+        interp.setTextSize(16);
+        interp.setTextColor(interpOn ? 0xFF66FF99 : 0xFF888888);
+        interp.setPadding(dp(4), dp(8), dp(4), dp(8));
+        interp.setOnClickListener(v -> {
+            interpOn = !interpOn;
+            nativeSetHfrInterp(interpOn ? 1 : 0);
+            interp.setText(interpOn ? "INTERP ON" : "INTERP OFF");
+            interp.setTextColor(interpOn ? 0xFF66FF99 : 0xFF888888);
+            Log.i(TAG, "INTERP " + interpOn);
+        });
+        controls.addView(interp);
 
         // --- Realtime dynamic shadows (quality / performance) ---
         beginTab();
@@ -725,6 +782,24 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         });
         // Push the current values once so the native defaults match the labels.
         nativeSetShadow(1, shadowRes);
+
+        // --- Changelog ---
+        beginTab();
+        TextView log = new TextView(this);
+        log.setTextSize(12);
+        log.setTextColor(0xFFCCEECC);
+        log.setTypeface(android.graphics.Typeface.MONOSPACE);
+        String stamp = "?";
+        try {
+            stamp = com.vdavid003.sm64port.BuildConfig.BUILD_STAMP;
+        } catch (Throwable ignored) {
+        }
+        log.setText("sm64ex-android - Lume Pad 2 fork\n"
+                + "version " + BUILD_NAME + "\n"
+                + "built   " + stamp + "\n"
+                + "------------------------------------------\n"
+                + CHANGELOG);
+        controls.addView(log);
     }
 
     // ---- camera-tracking widgets (stereo-int channel, keys 41..44) ----
@@ -770,6 +845,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                 gyroOn = on;
                 if (on) gyroRefSet = false;   // recentre on enable
             }
+            refreshTabStyles();
             Log.i(TAG, name + "=" + on);
         });
         controls.addView(b);
@@ -1045,6 +1121,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         else if (key == 11) dofOn = on;
         else if (key == 21) giOn = on;
         else if (key == 70) ssrtxOn = on;
+        refreshTabStyles();
         Log.i(TAG, "FX toggle " + name + "=" + (on ? 1 : 0));
     }
 
@@ -1072,7 +1149,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
 
     /** Opacity of the floating touch-control overlay (percent). */
     private void applyOverlayAlpha(int pct) {
-        if (pct < 10) pct = 10;
+        if (pct < 0) pct = 0;
         if (pct > 100) pct = 100;
         overlayAlphaPct = pct;
         if (touchOverlay != null) {
@@ -1199,12 +1276,47 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addToGrid(label, bar);
     }
 
+    private void enterSliderDrag(View keep) {
+        for (int i = 0; i < sliderRows.size(); i++) {
+            View v = sliderRows.get(i);
+            v.setVisibility(v == keep ? View.VISIBLE : View.GONE);
+        }
+        if (tuningPanelView != null) {
+            tuningPanelView.setBackgroundColor(0x00000000);
+        }
+    }
+
+    private void exitSliderDrag() {
+        for (int i = 0; i < sliderRows.size(); i++) {
+            sliderRows.get(i).setVisibility(View.VISIBLE);
+        }
+        if (tuningPanelView != null) {
+            tuningPanelView.setBackgroundColor(PANEL_BG);
+        }
+    }
+
     private void addToGrid(TextView label, SeekBar bar) {
         android.widget.LinearLayout col = new android.widget.LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
         col.setPadding(0, 0, dp(8), 0);
         col.addView(label);
         col.addView(bar);
+        sliderRows.add(col);
+        // While a slider is being dragged, hide every other slider row and make
+        // the panel background transparent so the scene stays visible.
+        final View colRef = col;
+        bar.setOnTouchListener((v, ev) -> {
+            switch (ev.getActionMasked()) {
+                case android.view.MotionEvent.ACTION_DOWN:
+                    enterSliderDrag(colRef);
+                    break;
+                case android.view.MotionEvent.ACTION_UP:
+                case android.view.MotionEvent.ACTION_CANCEL:
+                    exitSliderDrag();
+                    break;
+            }
+            return false;
+        });
         if (grid != null) {
             android.widget.GridLayout.LayoutParams lp = new android.widget.GridLayout.LayoutParams();
             lp.width = 0;
@@ -1334,9 +1446,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                 }
                 debugView.setTextColor(busyOn ? 0xFFFF5555 : 0xFFAAFFAA);
                 debugView.setText((busyOn ? "BUSY - hands off  |  " : "FREE  |  ")
-                        + BUILD_NAME + " drawable " + nativeGetDrawableWidth() + "x"
-                        + nativeGetDrawableHeight()
-                        + "  mode=" + (stereoOn ? "3D" : "2D")
+                        + BUILD_NAME
                         + "  ipd=" + (int) bars[0].getProgress()
                         + " conv=" + (bars[1].getProgress() - 100)
                         + " depth=" + bars[2].getProgress() + "%"
@@ -1684,7 +1794,17 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                     barDefaults.get(i).bar.setProgress(barDefaults.get(i).def);
                 }
             }
-            Log.i(TAG, "RESET applied");
+            // Optional effects off as well (user request).
+            if (aoToggle != null) applyFxToggle(aoToggle, "MXAO ENABLE", 1, false);
+            if (dofToggle != null) applyFxToggle(dofToggle, "CINEMATIC DOF", 11, false);
+            if (giToggle != null) applyFxToggle(giToggle, "SSGI ENABLE", 21, false);
+            if (ssrtxToggle != null) applyFxToggle(ssrtxToggle, "SSRTX ENABLE", 70, false);
+            wireOn = false;
+            zbufOn = false;
+            nativeSetStereoInt(16, 0);
+            nativeSetStereoInt(15, 0);
+            refreshTabStyles();
+            Log.i(TAG, "RESET applied (effects off)");
         });
     }
 
