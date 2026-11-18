@@ -65,6 +65,12 @@ public class TouchOverlay extends View {
     private final int[] camPressed = {-1, -1};
     private final float camRadius = 52f;
 
+    // Portal gun buttons (P1 = blue, P2 = orange) and the aiming reticle.
+    private final float[][] portalPos = new float[2][2];
+    private final float portalRadius = 46f;
+    private int portalPressed = -1;
+    private int portalPointer = -1;
+
     // Overall opacity of the control layer (0.1 .. 1.0).
     private float overlayAlpha = 1f;
 
@@ -122,8 +128,29 @@ public class TouchOverlay extends View {
         camPos[0][0] = w * 0.93f; camPos[0][1] = h * 0.40f;   // X
         camPos[1][0] = w * 0.84f; camPos[1][1] = h * 0.32f;   // Y
 
+        // Portal gun buttons: left of the C cluster, clear of the thumbstick.
+        portalPos[0][0] = w * 0.56f; portalPos[0][1] = h * 0.62f;   // P1 (blue)
+        portalPos[1][0] = w * 0.56f; portalPos[1][1] = h * 0.50f;   // P2 (orange)
+
         // C-buttons / analog-camera toggle, below the C cluster.
         modePos[0] = w * 0.68f; modePos[1] = h * 0.88f;
+    }
+
+    private boolean portalGunHeld() {
+        try {
+            return sm64portActivity.nativeGetPortalGun() != 0;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** Index 0/1 of a portal button hit, else -1. */
+    private int hitPortalButton(float x, float y) {
+        for (int i = 0; i < 2; i++) {
+            float dx = x - portalPos[i][0], dy = y - portalPos[i][1];
+            if (dx * dx + dy * dy <= (portalRadius * 1.25f) * (portalRadius * 1.25f)) return i;
+        }
+        return -1;
     }
 
     private boolean hitModeToggle(float x, float y) {
@@ -172,6 +199,8 @@ public class TouchOverlay extends View {
                 int b = hitButton(px, py);
                 int cb = b < 0 ? hitCButton(px, py) : -1;
                 int cam = (b < 0 && cb < 0) ? hitCamButton(px, py) : -1;
+                int pb = (b < 0 && cb < 0 && cam < 0 && portalGunHeld())
+                        ? hitPortalButton(px, py) : -1;
                 if (b >= 0) {
                     buttons |= btnIds[b];
                     pressedPointer[b] = id;
@@ -181,6 +210,11 @@ public class TouchOverlay extends View {
                 } else if (cam >= 0) {
                     buttons |= camIds[cam];
                     camPressed[cam] = id;
+                } else if (pb >= 0) {
+                    sm64portActivity.nativeShootPortal(pb);
+                    portalPressed = pb;
+                    portalPointer = id;
+                    invalidate();
                 } else if (hitModeToggle(px, py)) {
                     analogMode = !analogMode;
                     sm64portActivity.nativeOverlayAnalog(analogMode ? 1 : 0);
@@ -246,6 +280,11 @@ public class TouchOverlay extends View {
                 if (id == rstickPointer) {
                     rstickActive = false;
                     rstickPointer = -1;
+                }
+                if (id == portalPointer) {
+                    portalPressed = -1;
+                    portalPointer = -1;
+                    invalidate();
                 }
                 for (int b = 0; b < btnIds.length; b++) {
                     if (pressedPointer[b] == id) {
@@ -378,6 +417,39 @@ public class TouchOverlay extends View {
             paint.setStyle(Paint.Style.FILL);
             paint.setColor(Color.BLACK);
             c.drawText(camLabels[i], camPos[i][0], camPos[i][1] + 17f, paint);
+        }
+
+        // Portal gun: two colour buttons plus a screen-centre aiming reticle.
+        if (portalGunHeld()) {
+            paint.setTextSize(38f);
+            for (int i = 0; i < 2; i++) {
+                boolean on = portalPressed == i;
+                paint.setStyle(Paint.Style.FILL);
+                if (i == 0) {
+                    paint.setColor(on ? 0xFF3366FF : 0x993060FF);
+                } else {
+                    paint.setColor(on ? 0xFFFF9933 : 0x99FF8020);
+                }
+                c.drawCircle(portalPos[i][0], portalPos[i][1], portalRadius, paint);
+                paint.setStyle(Paint.Style.STROKE);
+                paint.setColor(0xCCFFFFFF);
+                c.drawCircle(portalPos[i][0], portalPos[i][1], portalRadius, paint);
+                paint.setStyle(Paint.Style.FILL);
+                paint.setColor(Color.WHITE);
+                c.drawText(i == 0 ? "P1" : "P2",
+                        portalPos[i][0] - 22f, portalPos[i][1] + 14f, paint);
+            }
+
+            float cx = getWidth() * 0.5f, cy = getHeight() * 0.5f;
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(3f);
+            paint.setColor(0xCCFFFFFF);
+            c.drawCircle(cx, cy, 24f, paint);
+            c.drawLine(cx - 42, cy, cx - 16, cy, paint);
+            c.drawLine(cx + 16, cy, cx + 42, cy, paint);
+            c.drawLine(cx, cy - 42, cx, cy - 16, paint);
+            c.drawLine(cx, cy + 16, cx, cy + 42, paint);
+            paint.setStrokeWidth(6f);
         }
 
         c.restoreToCount(layer);

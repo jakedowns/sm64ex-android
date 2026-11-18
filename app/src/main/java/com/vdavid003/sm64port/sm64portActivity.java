@@ -1372,6 +1372,13 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     static native void nativeDebugKill();
     static native void nativeLevelSelect();
     static native void nativeDebugLevel(int level);
+    static native void nativeShootPortal(int which);
+    static native int nativeGetPortalGun();
+    static native int nativeGetPortalCount();
+    static native int nativeGetPortalDebug();
+    static native int nativeGetMarioPos(int axis);
+    static native int nativeGetPortalField(int which, int field);
+    static native void nativeGivePortalGun();
     static native void nativeOverlayStick2(int rx, int ry);
     static native void nativeOverlayAnalog(int on);
     static native void nativeHideInGameControls(int hide);
@@ -1429,6 +1436,16 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         } else {
             nativeSetStereo(k, v);
         }
+    }
+
+    void debugPortal(int which) {
+        nativeShootPortal(which);
+        Log.i(TAG, "PORTAL shoot " + which + " count=" + nativeGetPortalCount());
+    }
+
+    void debugGiveGun() {
+        nativeGivePortalGun();
+        Log.i(TAG, "PORTAL gun given");
     }
 
     void debugFx(int k, int v) {
@@ -1544,6 +1561,9 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             case "ANALOG":
                 analogOn = !analogOn;
                 if (touchOverlay != null) touchOverlay.setAnalogMode(analogOn);
+                break;
+            case "GIVEGUN":
+                runOnUiThread(this::debugGiveGun);
                 break;
             case "HEADTRACK":
                 runOnUiThread(() -> {
@@ -1665,6 +1685,14 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                     + " stay=" + stayOn + " uipost=" + uiPostOn
                     + " cam=" + nativeGetCamMode() + " ctlA=" + overlayAlphaPct
                     + " toeauto=" + toeAutoOn
+                    + " gun=" + nativeGetPortalGun() + " portals=" + nativeGetPortalCount()
+                    + " pdbg=" + nativeGetPortalDebug()
+                    + " pos=" + nativeGetMarioPos(0) + "," + nativeGetMarioPos(1)
+                    + "," + nativeGetMarioPos(2)
+                    + " p0=" + nativeGetPortalField(0, 0) + "," + nativeGetPortalField(0, 1)
+                    + "," + nativeGetPortalField(0, 2)
+                    + " p1=" + nativeGetPortalField(1, 0) + "," + nativeGetPortalField(1, 1)
+                    + "," + nativeGetPortalField(1, 2)
                     + " hdt=" + (hdtOn ? 1 : 0) + "/" + hdtStrength
                     + " gyro=" + (gyroOn ? 1 : 0) + "/" + gyroStrength
                     + " pivot=" + gyroPivot

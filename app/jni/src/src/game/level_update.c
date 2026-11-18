@@ -6,6 +6,7 @@
 #include "dialog_ids.h"
 #include "audio/external.h"
 #include "level_update.h"
+#include "portal.h"
 #include "game_init.h"
 #include "level_update.h"
 #include "main.h"
@@ -994,6 +995,7 @@ void update_hud_values(void) {
  */
 void basic_update(UNUSED s16 *arg) {
     area_update_objects();
+    portal_update();
     update_hud_values();
 
     if (gCurrentArea != NULL) {

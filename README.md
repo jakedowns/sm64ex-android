@@ -68,6 +68,34 @@ building; branch and commit are recorded automatically. Acquire/release/timeout
 events are appended as JSONL next to the locks, and `status` prints the exact
 log paths.
 
+## Lume Pad 2 fork additions
+
+This fork turns the port into a glasses-free 3D, high-framerate build for the
+**Leia Lume Pad 2** and adds a lot of debug tooling on top of upstream:
+
+- **Leia interlaced 3D** output: per-eye framebuffers, adjustable IPD,
+  zero-parallax/convergence, depth, toe (auto-toe to the DOF focus), UI depth,
+  plus a screen-locked UI layer.
+- **Interpolated 60/120 Hz rendering** while the simulation stays at a fixed
+  30 Hz (camera, objects, animation, shadows).
+- **Screen-space effects**: MXAO, cinematic DOF (auto focus on Mario) and
+  SSGI-lite, with live sliders and debug views.
+- **UI after post**: the HUD, dialogs, menus and transitions are composited
+  after the FX pass so they stay sharp and never bleed into the scene.
+- **Touch overlay**: floating left stick, A/B/Z/R/L, C-buttons or an analog
+  camera stick, START, portal buttons, adjustable opacity.
+- **Camera**: free camera (X enables, Y recentres), head-tracked parallax and
+  gyro camera canting with independent strength sliders and a tilt-pivot height.
+- **Stay in level after a star** (default on).
+- **Portal gun prototype**: pick the gun up in the castle grounds, aim with the
+  centre reticle, place a blue (P1) and an orange (P2) portal on solid
+  geometry, and walk into one to teleport with momentum preserved.
+- **Debug channel** over adb (`dump`, `set`, `toggle`, `fx`, `fps`, `portal`,
+  `givegun`, `busy`, ...) plus a red/green hands-off indicator.
+
+See [README-lumepad-2-fork.md](README-lumepad-2-fork.md) for the full feature
+list, the knob/key tables and the known gaps.
+
 ## Sources
 
 https://github.com/libsdl-org/SDL/tree/release-2.30.3

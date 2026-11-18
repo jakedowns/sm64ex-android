@@ -281,6 +281,56 @@ Java_com_vdavid003_sm64port_sm64portActivity_nativeGetHeadPose(JNIEnv *env, jcla
     return (jint) gfx_head_pose[axis];
 }
 
+JNIEXPORT void JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeShootPortal(JNIEnv *env, jclass clazz, jint which) {
+    (void) env; (void) clazz;
+    extern void portal_shoot(int which);
+    portal_shoot((int) which);
+}
+
+JNIEXPORT void JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeGivePortalGun(JNIEnv *env, jclass clazz) {
+    (void) env; (void) clazz;
+    extern void portal_give_gun(void);
+    portal_give_gun();
+}
+
+JNIEXPORT jint JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeGetPortalGun(JNIEnv *env, jclass clazz) {
+    (void) env; (void) clazz;
+    extern int portal_gun_has(void);
+    return portal_gun_has();
+}
+
+JNIEXPORT jint JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeGetMarioPos(JNIEnv *env, jclass clazz, jint axis) {
+    (void) env; (void) clazz;
+    extern int gfx_mario_pos(int axis);
+    return gfx_mario_pos((int) axis);
+}
+
+JNIEXPORT jint JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeGetPortalField(JNIEnv *env, jclass clazz,
+                                                                  jint which, jint field) {
+    (void) env; (void) clazz;
+    extern int gfx_portal_field(int which, int field);
+    return gfx_portal_field((int) which, (int) field);
+}
+
+JNIEXPORT jint JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeGetPortalDebug(JNIEnv *env, jclass clazz) {
+    (void) env; (void) clazz;
+    extern int g_portal_debug;
+    return g_portal_debug;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeGetPortalCount(JNIEnv *env, jclass clazz) {
+    (void) env; (void) clazz;
+    extern int portal_count(void);
+    return portal_count();
+}
+
 JNIEXPORT jint JNICALL
 Java_com_vdavid003_sm64port_sm64portActivity_nativeGetCamMode(JNIEnv *env, jclass clazz) {
     (void) env; (void) clazz;

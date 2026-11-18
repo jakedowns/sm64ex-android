@@ -21,8 +21,10 @@ Everything below was added on top of upstream in this fork.
   (default on).
 - **SSRTX**: screen-space ray-traced reflections with a dedicated **SSRTX** tab
   (opt-in, default off).
-- **Debug level select**: ENH button, `cmd level`, or **L + R + START** in the
-  pause menu/title screen.
+- **Debug level select**: ENH button, `cmd level`, or **L + R + START** in
+  gameplay, the pause menu, or the title screen.
+- **Cheats menu enabled by default** (pause → R → CHEATS); the vanilla triple-L
+  unlock still works if the in-menu toggle turns it off.
 - **KILL MARIO (TEST)** button and `cmd kill` for testing the ragdoll path.
 - Headless tooling: `cmd shadow`, `cmd kill`, `cmd pad`, plus new
   `RAGDOLL/HITRAG/PPCAM/SHADOW/SHADOWDBG/SSRTX` toggles.
@@ -217,6 +219,28 @@ touch overlay:
 
 ---
 
+## Camera tracking (head tracking + gyro)
+
+Two independent view-matrix effects, both off by default, in the **CAMERA** tab:
+
+- **HEAD TRACK** — polls Leia's face tracker (`LeiaSDK.getPrimaryFace()`, ~60 Hz)
+  and translates the real view matrix by the tracked head position, so the scene
+  behaves like a window. The tracker exposes x, y and z (plus pose angles), so
+  leaning in/out dollies the camera rather than zooming it. Strength slider
+  0–200 %; the positions are millimetres scaled to game units (1 unit ≈ 1 cm).
+- **GYRO CAM** — Android `GAME_ROTATION_VECTOR` (fallback `ROTATION_VECTOR`)
+  drives pitch/yaw/roll relative to the pose captured when it was enabled,
+  applied as a rotation about a pivot **below the eye midpoint**. The **Pivot
+  height** slider (0–200 cm, default 12) moves that pivot from a virtual neck
+  joint down to chest height, which changes how the world swings when you tilt
+  the tablet. `RECENTRE GYRO` re-captures the reference pose.
+
+Both are applied as a view-space matrix on every modelview load, so they are
+real camera motion (independent of the stereo IPD/toe shears) and are skipped
+while the UI range is replayed so the HUD does not sway.
+
+---
+
 ## Gameplay
 
 ### Runtime feature toggles at a glance
@@ -296,7 +320,7 @@ The decomp debug level select (`src/menu/level_select_menu.c`) is wired up:
 
 - **ENH → LEVEL SELECT**, or `cmd level` with no `n`, opens the menu.
 - `cmd level --ei n <id>` jumps straight to that level id.
-- **L + R + START** opens it from the pause menu or the title screen.
+- **L + R + START** opens it from gameplay, the pause menu, or the title screen.
 - Navigate with the left stick, **A/B** (±1) or the C-button cluster
   (up/down ±1, left/right ±10). **START** warps; the vanilla quit combo is
   `Z + START + L-C + R-C`.
@@ -310,6 +334,14 @@ adb shell $B --es cmd level --ei n 24    # warp straight to level 24
 
 This is the fastest way to test a specific course with the stereo/shadow/FX
 tabs after changing a setting.
+
+### Cheats menu
+
+The extended pause-menu options are opened with **R** (`R Options` on the pause
+screen). The **CHEATS** submenu is enabled by default in this Android build, so
+God Mode, Moon Jump, Infinite Lives, Super Speed, Responsive, Exit Anywhere,
+Huge/Tiny Mario etc. are available without a command line. Triple-L in the pause
+menu still re-enables it if the in-menu toggle was used to hide it.
 
 ### Debug kill (testing)
 
@@ -325,6 +357,42 @@ adb shell $B --es cmd kill
 This is the fastest way to verify the ragdoll path: on the castle grounds Mario
 immediately collapses into the 14-limb pose, then the normal death warp and
 respawn follow.
+
+---
+
+## Portal gun
+
+A Portal-style portal gun (`src/game/portal.c`), enabled by default in the castle
+grounds.
+
+- **Pickup** — a placeholder gun (spinning box for now) sits next to Mario's
+  spawn in the castle grounds; walk into it to pick it up. The gun is retained
+  across level loads, paintings and level select. While held, the touch overlay
+  shows a centre **aiming reticle** and two buttons: **P1** (blue) and **P2**
+  (orange).
+- **Placing** — P1/P2 fire a hitscan from the centre of the camera view (up to
+  4000 units). A shot only sticks to solid level geometry: object-owned surfaces
+  (NPCs, coins, question blocks, breakable bricks, signs, doors…) and
+  water/lava/death-plane/vanish-cap/quicksand surfaces are rejected.
+- **Orientation** — the decal is an ellipse oriented to the surface: upright on
+  walls, world-X aligned on floors and ceilings, offset 1.5 units out of the
+  surface to avoid z-fighting.
+- **Edge fitting** — eight rim probes must land on the same *plane* (same normal
+  and coplanar, so tessellated triangles are fine); otherwise the centre is
+  nudged inward and the ellipse shrunk until it fits, and the shot is dropped if
+  it cannot. This keeps a portal from spanning a wall/floor edge.
+- **Teleport** — when Mario's centre of mass crosses a portal plane inside the
+  ellipse he is moved to the other portal: position, velocity and facing are
+  transformed by the portal pair's matrix (momentum preserved), he is pushed out
+  of the exit portal, the camera is re-initialised, and a 20-tick cooldown
+  prevents ping-pong. Walking into a wall portal works; a floor portal is
+  entered by falling through it.
+- Portals are cleared when the level/area changes; the gun itself is not.
+
+Not implemented yet: the through-portal view (camera relay) and the clone of
+Mario seen standing in the destination portal. The usual recipe for those is the
+portal-pair camera transform plus an oblique near-plane clip so geometry behind
+the exit portal is not drawn.
 
 ---
 
@@ -349,6 +417,8 @@ adb shell $B --es cmd level --ei n 24           # warp straight to level id 24
 adb shell $B --es cmd pad --ei sx 0 --ei sy 0 --ei buttons 4096 --ei ms 250
 adb shell $B --es cmd fps --ei v 2              # 0=30 1=60 2=120 3=uncapped
 adb shell $B --es cmd busy --ei v 1             # debug line red ("hands off") / 0 green
+adb shell $B --es cmd givegun                   # grant the portal gun (testing)
+adb shell $B --es cmd portal --ei v 0           # fire P1 (0 = blue, 1 = orange)
 adb shell $B --es cmd reinit | reset
 ```
 
@@ -357,7 +427,8 @@ Stereo knobs (`cmd set`): `0` IPD px, `1` zero parallax px, `2` depth %,
 legacy touch offsets, `11` source width %, `12` half-res, `13` fit, `14`
 in-scale %, `15` ZBUF, `16` wireframe, `17` toe %, `18` aspect %, `19` no cull,
 `20` FOV %, `21` 2D, `30` STAY, `35` UIPOST, `36` UIPARALLAX, `37` UIBUF,
-`38` UI depth px, `40` TOEAUTO.
+`38` UI depth px, `40` TOEAUTO, `41` HEADTRACK, `42` GYRO, `43` HDT strength %,
+`44` gyro strength %, `45` gyro pivot height.
 
 FX knobs (`cmd fx`): AO `1`-`6`, DOF `11`-`15` (`16` auto focus, `17` reports
 the auto distance), SSGI `21`-`25`, SSRTX `70`-`77`, debug view `31`
@@ -393,8 +464,12 @@ agent is driving it.
   without recreate).
 - Slider values (stereo, FX, SSRTX, shadows) are not persisted across launches;
   the ragdoll/Puppycam/shadow master defaults are.
-- Head/eye-tracked 6DoF (Phase C) is not implemented; the panel currently shows
-  fixed-offset stereo.
+- Head/eye-tracked 6DoF (Phase C) is partially there: head-tracked parallax and
+  gyro canting exist (CAMERA tab), but there is no per-eye 6DoF rig yet and the
+  tracker's z axis has not been validated on hardware.
+- Portal gun: the through-portal camera relay and the Mario clone in the exit
+  portal are not implemented (phase 3); portals are solid coloured decals and
+  the teleport is instantaneous.
 
 ---
 
