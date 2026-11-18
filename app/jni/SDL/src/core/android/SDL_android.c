@@ -1040,12 +1040,35 @@ JNIEXPORT void JNICALL SDL_JAVA_INTERFACE(onNativeSurfaceCreated)(JNIEnv *env, j
     SDL_LockMutex(Android_ActivityMutex);
 
     if (Android_Window) {
+        SDL_VideoDevice *_this = SDL_GetVideoDevice();
         SDL_WindowData *data = (SDL_WindowData *)Android_Window->driverdata;
+        ANativeWindow *new_window = Android_JNI_GetNativeWindow();
 
-        data->native_window = Android_JNI_GetNativeWindow();
-        if (data->native_window == NULL) {
-            SDL_SetError("Could not fetch native window from UI thread");
+        if (new_window != data->native_window) {
+#ifdef SDL_VIDEO_OPENGL_EGL
+            if (data->egl_surface != EGL_NO_SURFACE) {
+                SDL_EGL_DestroySurface(_this, data->egl_surface);
+                data->egl_surface = EGL_NO_SURFACE;
+            }
+#endif
+            if (data->native_window != NULL) {
+                ANativeWindow_release(data->native_window);
+            }
+            data->native_window = new_window;
+            if (data->native_window == NULL) {
+                SDL_SetError("Could not fetch native window from UI thread");
+            }
+        } else if (new_window != NULL) {
+            // Android_JNI_GetNativeWindow returns a new reference; it is the
+            // same window, so drop the duplicate instead of leaking it.
+            ANativeWindow_release(new_window);
         }
+
+#ifdef SDL_VIDEO_OPENGL_EGL
+        if (data->egl_surface == EGL_NO_SURFACE && data->native_window != NULL) {
+            data->egl_surface = SDL_EGL_CreateSurface(_this, (NativeWindowType)data->native_window);
+        }
+#endif
     }
 
     SDL_UnlockMutex(Android_ActivityMutex);

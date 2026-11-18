@@ -25,6 +25,8 @@ Everything below was added on top of upstream in this fork.
   gameplay, the pause menu, or the title screen.
 - **Cheats menu enabled by default** (pause → R → CHEATS); the vanilla triple-L
   unlock still works if the in-menu toggle turns it off.
+- **Control overlay opacity** defaults to 33% and persists across app launches.
+- **Resume rendering fixed**: the Leia surface is rebound to SDL after background.
 - **KILL MARIO (TEST)** button and `cmd kill` for testing the ragdoll path.
 - Headless tooling: `cmd shadow`, `cmd kill`, `cmd pad`, plus new
   `RAGDOLL/HITRAG/PPCAM/SHADOW/SHADOWDBG/SSRTX` toggles.
@@ -213,7 +215,7 @@ touch overlay:
 - The controls are a Java view layered above the Leia view (never per-eye, never
   letterboxed into the game canvas), drawn above the interlaced output.
 - **Ctl opacity** fades the whole control layer (replaces the old Ctl X/Y/scale
-  sliders).
+  sliders). Defaults to **33%** and is persisted across launches.
 - The in-game N64 touch sprites are hidden; the native overlay feeds the game's
   controller state directly.
 
@@ -460,10 +462,11 @@ agent is driving it.
 - SSRTX is a single-pass, screen-space effect: off-screen geometry cannot
   reflect, there is no denoiser, and high `Steps`/`Rays` settings are
   expensive on the Lume Pad 2.
-- Resume from background can leave the Leia surface black (surface teardown
-  without recreate).
+- Resume from background is fixed: the Leia SurfaceTexture is rebound to SDL's
+  native window/EGL surface when the activity comes back.
 - Slider values (stereo, FX, SSRTX, shadows) are not persisted across launches;
-  the ragdoll/Puppycam/shadow master defaults are.
+  the ragdoll/Puppycam/shadow master defaults are. Control opacity is persisted
+  separately in Android SharedPreferences.
 - Head/eye-tracked 6DoF (Phase C) is partially there: head-tracked parallax and
   gyro canting exist (CAMERA tab), but there is no per-eye 6DoF rig yet and the
   tracker's z axis has not been validated on hardware.

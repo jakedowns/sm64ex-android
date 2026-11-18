@@ -37,6 +37,8 @@ import org.libsdl.app.SDLActivity;
 public class sm64portActivity extends SDLActivity implements SensorEventListener {
     private static final String TAG = "SM64Leia";
     private static final String BUILD_NAME = "hfr3+ssfx";
+    private static final String PREFS_NAME = "sm64port";
+    private static final String PREF_OVERLAY_OPACITY = "overlay_opacity";
     public static volatile sm64portActivity instance;
     /** Leia's convention: a 2-view SBS source is 2 x viewResolution
      *  (1920x1200 each), i.e. 3840x1200 total. The interlacer derives its
@@ -95,7 +97,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     private int hdtLogCount;
     private TextView camHeadToggle, camGyroToggle;
     private boolean uiPostOn = true;
-    private int overlayAlphaPct = 100;
+    private int overlayAlphaPct = 33;
     // true = the assistant is driving the app: debug line turns red.
     private boolean busyOn;
     private final java.util.List<TextView> fitButtons = new java.util.ArrayList<>();
@@ -193,6 +195,17 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         super.onCreate(savedInstanceState);
         instance = this;
 
+        // UI preferences (SharedPreferences persists across launches).
+        try {
+            overlayAlphaPct = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                    .getInt(PREF_OVERLAY_OPACITY, 33);
+        } catch (Throwable t) {
+            overlayAlphaPct = 33;
+        }
+        if (overlayAlphaPct < 10) overlayAlphaPct = 10;
+        if (overlayAlphaPct > 100) overlayAlphaPct = 100;
+        Log.i(TAG, "overlay opacity restored: " + overlayAlphaPct + "%");
+
         try {
             initLeia();
         } catch (Throwable t) {
@@ -283,6 +296,9 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                     RelativeLayout.LayoutParams.WRAP_CONTENT);
             panelParams.addRule(RelativeLayout.ALIGN_PARENT_BOTTOM);
             layout.addView(buildTuningPanel(), panelParams);
+            // Apply the persisted opacity after both the overlay and its slider
+            // exist (SeekBar.setProgress happens before the listener is set).
+            applyOverlayAlpha(overlayAlphaPct);
         }
         leiaView.setViewAsset(asset);
         Log.i(TAG, "setViewAsset done");
@@ -462,7 +478,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         });
         addSlider("Eye margin%", 50, 100, 100, " %", 14);
         addSlider("FOV %", 1, 200, 100, " %", 20);
-        addIntSlider("Ctl opacity", 10, 100, 100, new java.util.function.IntConsumer() {
+        addIntSlider("Ctl opacity", 10, 100, overlayAlphaPct, new java.util.function.IntConsumer() {
             @Override public void accept(int v) { applyOverlayAlpha(v); }
         });
         // Hidden for now (kept for later): V%, W-px, H-shift%, V-shift.
@@ -1056,9 +1072,17 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
 
     /** Opacity of the floating touch-control overlay (percent). */
     private void applyOverlayAlpha(int pct) {
+        if (pct < 10) pct = 10;
+        if (pct > 100) pct = 100;
         overlayAlphaPct = pct;
         if (touchOverlay != null) {
             touchOverlay.setOverlayAlpha(pct / 100f);
+        }
+        try {
+            getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                    .edit().putInt(PREF_OVERLAY_OPACITY, pct).apply();
+        } catch (Throwable t) {
+            Log.w(TAG, "could not persist overlay opacity", t);
         }
         Log.i(TAG, "overlay alpha " + pct);
     }

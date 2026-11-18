@@ -1388,9 +1388,19 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
     private static final Object mOverrideLock = new Object();
 
     public static void setOverrideSurface(Surface surface) {
+        Surface previous;
         synchronized (mOverrideLock) {
+            previous = mOverrideSurface;
             mOverrideSurface = surface;
             mOverrideLock.notifyAll();
+        }
+        // On resume the Leia view creates a NEW SurfaceTexture after SDL has
+        // already rebuilt its window from the old one. Rebind SDL's
+        // ANativeWindow/EGLSurface so the game keeps rendering into the live
+        // surface instead of a released one (background -> black screen bug).
+        if (surface != previous && mSDLThread != null) {
+            onNativeSurfaceCreated();
+            onNativeSurfaceChanged();
         }
     }
 
