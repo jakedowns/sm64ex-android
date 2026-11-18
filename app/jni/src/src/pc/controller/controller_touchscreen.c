@@ -276,21 +276,24 @@ static void touchscreen_init(void) {
 }
 
 static void touchscreen_read(OSContPad *pad) {
+    // Overlay buttons are always merged on top of the hardware controller's
+    // pad; only the overlay stick takes the axes over, and only while it is
+    // actually being held. (Taking the stick unconditionally killed the left
+    // stick of a paired gamepad after any tap on the overlay.)
+    unsigned int pressed = gfx_ovl_buttons & ~s_prev_ovl_buttons;
+    s_prev_ovl_buttons = gfx_ovl_buttons;
+    if (pressed & OVL_BTN_CAM) {
+        camera_mode_button_pressed = 1;
+    }
+    if (pressed & OVL_BTN_RECENTER) {
+        camera_recenter_button_pressed = 1;
+    }
+    pad->button |= (u16)(gfx_ovl_buttons & 0xFFFFu);
     if (gfx_ovl_active) {
-        unsigned int pressed = gfx_ovl_buttons & ~s_prev_ovl_buttons;
-        s_prev_ovl_buttons = gfx_ovl_buttons;
-        if (pressed & OVL_BTN_CAM) {
-            camera_mode_button_pressed = 1;
-        }
-        if (pressed & OVL_BTN_RECENTER) {
-            camera_recenter_button_pressed = 1;
-        }
         pad->stick_x = (s8)gfx_ovl_stick_x;
         pad->stick_y = (s8)gfx_ovl_stick_y;
-        pad->button |= (u16)(gfx_ovl_buttons & 0xFFFFu);
         return;
     }
-    s_prev_ovl_buttons = 0;
     for(int i = 0; i < ControlElementsLength; i++) {
         switch (ControlElements[i].type) {
             case Joystick:

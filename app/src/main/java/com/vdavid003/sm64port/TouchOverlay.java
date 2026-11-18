@@ -22,6 +22,7 @@ public class TouchOverlay extends View {
     public static final int BTN_B = 0x4000;
     public static final int BTN_Z = 0x2000;
     public static final int BTN_R = 0x0010;
+    public static final int BTN_L = 0x0020;
     public static final int BTN_START = 0x1000;
     public static final int BTN_CUP = 0x0008;
     public static final int BTN_CDOWN = 0x0004;
@@ -39,9 +40,9 @@ public class TouchOverlay extends View {
     private int stickPointer = -1;
 
     private int buttons;
-    private final int[] btnIds = {BTN_A, BTN_B, BTN_Z, BTN_R, BTN_START};
-    private final String[] btnLabels = {"A", "B", "Z", "R", "S"};
-    private final float[][] btnPos = new float[5][2];
+    private final int[] btnIds = {BTN_A, BTN_B, BTN_Z, BTN_R, BTN_START, BTN_L};
+    private final String[] btnLabels = {"A", "B", "Z", "R", "S", "L"};
+    private final float[][] btnPos = new float[6][2];
     private int buttonPointer = -1;
 
     private final float radius = 90f;      // button radius
@@ -108,6 +109,7 @@ public class TouchOverlay extends View {
         btnPos[2][0] = w * 0.94f; btnPos[2][1] = h * 0.58f;   // Z
         btnPos[3][0] = w * 0.79f; btnPos[3][1] = h * 0.60f;   // R
         btnPos[4][0] = w * 0.50f; btnPos[4][1] = h * 0.88f;   // START (bottom centre)
+        btnPos[5][0] = w * 0.90f; btnPos[5][1] = h * 0.84f;   // L (below A)
 
         // C-button cluster: cross to the left of A/B
         float cx = w * 0.68f, cy = h * 0.70f, d = cRadius * 1.35f;
@@ -283,9 +285,10 @@ public class TouchOverlay extends View {
             ry = (int) (-(rknobY - rstickY) / stickRadius * 127f);
         }
         sm64portActivity.nativeOverlayStick2(rx, ry);
-        // The overlay is the sole input source, so always stay active -
-        // otherwise button presses were dropped when the stick wasn't held.
-        sm64portActivity.nativeOverlayInput(1, sx, sy, buttons);
+        // Buttons are always merged by the native side. The stick only takes
+        // over while the overlay stick is actually held, so a paired gamepad
+        // keeps its left stick after tapping the overlay.
+        sm64portActivity.nativeOverlayInput(stickActive ? 1 : 0, sx, sy, buttons);
     }
 
     @Override

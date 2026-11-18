@@ -262,7 +262,9 @@ static void controller_sdl_read(OSContPad *pad) {
     if (righty > 0x4000) pad->button |= D_CBUTTONS;
 
     if (ltrig > 30 * 256) pad->button |= Z_TRIG;
-    if (rtrig > 30 * 256) pad->button |= R_TRIG;
+    // Right trigger is the natural "Z" trigger on an Xbox-style pad (R stays on
+    // the right shoulder button).
+    if (rtrig > 30 * 256) pad->button |= Z_TRIG;
 
     uint32_t magnitude_sq = (uint32_t)(leftx * leftx) + (uint32_t)(lefty * lefty);
     uint32_t stickDeadzoneActual = configStickDeadzone * DEADZONE_STEP;
@@ -274,11 +276,19 @@ static void controller_sdl_read(OSContPad *pad) {
 }
 
 static void controller_sdl_rumble_play(f32 strength, f32 length) {
+    u32 ms = (u32)(length * 1000.0f);
+    u16 amt = (u16)(strength * 0xFFFF);
+    // Bluetooth pads on Android are normally driven through the joystick rumble
+    // API; SDL_Haptic is often unsupported there, so use both when available.
+    if (sdl_cntrl)
+        SDL_GameControllerRumble(sdl_cntrl, amt, amt, ms);
     if (sdl_haptic)
-        SDL_HapticRumblePlay(sdl_haptic, strength, (u32)(length * 1000.0f));
+        SDL_HapticRumblePlay(sdl_haptic, strength, ms);
 }
 
 static void controller_sdl_rumble_stop(void) {
+    if (sdl_cntrl)
+        SDL_GameControllerRumble(sdl_cntrl, 0, 0, 0);
     if (sdl_haptic)
         SDL_HapticRumbleStop(sdl_haptic);
 }

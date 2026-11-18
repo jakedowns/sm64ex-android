@@ -95,6 +95,7 @@ extern float gfx_gyro_strength;
 extern float gfx_head_pose[3];
 extern int gfx_head_valid;
 extern float gfx_gyro_ypr[3];
+extern float gfx_gyro_pivot;
 extern float gfx_render_delta;
 extern float gfx_stereo_ipd_px;
 extern float gfx_stereo_convergence_px;
@@ -176,6 +177,7 @@ Java_com_vdavid003_sm64port_sm64portActivity_nativeSetStereoInt(JNIEnv *env, job
         case 42: gfx_gyro_enabled = value != 0; break;
         case 43: gfx_hdt_strength = (float) value; break;
         case 44: gfx_gyro_strength = (float) value; break;
+        case 45: gfx_gyro_pivot = (float) value; break;
         case 8: gfx_touch_dx = (float) value * 4.0f; break;    // percent -> px (approx)
         case 9: gfx_touch_dy = (float) value * 4.0f; break;
         case 10: gfx_touch_scale = (float) value / 100.0f; break;
@@ -270,6 +272,13 @@ Java_com_vdavid003_sm64port_sm64portActivity_nativeSetGyro(JNIEnv *env, jclass c
     gfx_gyro_ypr[0] = pitch;
     gfx_gyro_ypr[1] = yaw;
     gfx_gyro_ypr[2] = roll;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeGetHeadPose(JNIEnv *env, jclass clazz, jint axis) {
+    (void) env; (void) clazz;
+    if (axis < 0 || axis > 2) return 0;
+    return (jint) gfx_head_pose[axis];
 }
 
 JNIEXPORT jint JNICALL

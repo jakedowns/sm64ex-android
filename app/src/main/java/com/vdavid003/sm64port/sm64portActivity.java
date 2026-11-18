@@ -77,11 +77,12 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     private boolean toeAutoOn = true;
     // Camera tracking (Leia eye/face tracking + tablet gyro).
     private boolean hdtOn, gyroOn;
-    private int hdtStrength = 100, gyroStrength = 100;
+    private int hdtStrength = 100, gyroStrength = 100, gyroPivot = 12;
     private SensorManager sensorManager;
     private Sensor gyroSensor;
     private final float[] gyroRef = new float[3];
     private boolean gyroRefSet, gyroHaveSample;
+    private int hdtLogCount;
     private TextView camHeadToggle, camGyroToggle;
     private boolean uiPostOn = true;
     private int overlayAlphaPct = 100;
@@ -643,6 +644,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         camGyroToggle = addCamToggle("GYRO CAM", 42, gyroOn);
         addCamSlider("HDT strength", 0, 200, hdtStrength, " %", 43);
         addCamSlider("Gyro strength", 0, 200, gyroStrength, " %", 44);
+        addCamSlider("Pivot height", 0, 200, gyroPivot, " cm", 45);
         addCamButton("RECENTRE GYRO", () -> recentreGyro());
     }
 
@@ -664,6 +666,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                 nativeSetStereoInt(key, v);
                 if (key == 43) hdtStrength = v;
                 if (key == 44) gyroStrength = v;
+                if (key == 45) gyroPivot = v;
             }
             @Override public void onStartTrackingTouch(SeekBar sb) {}
             @Override public void onStopTrackingTouch(SeekBar sb) {}
@@ -742,13 +745,19 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             @Override public void run() {
                 if (hdtOn && sdk != null) {
                     try {
-                        if (sdk.isFaceTrackingStarted()) {
-                            com.leia.core.Vector3 f = sdk.getPrimaryFace();
-                            if (f != null) {
-                                nativeSetHeadPose(f.x, f.y, f.z, 1);
-                            }
+                        boolean started = sdk.isFaceTrackingStarted();
+                        com.leia.core.Vector3 f = started ? sdk.getPrimaryFace() : null;
+                        if (f != null) {
+                            nativeSetHeadPose(f.x, f.y, f.z, 1);
                         }
-                    } catch (Throwable ignored) {
+                        if ((++hdtLogCount % 60) == 0) {
+                            Log.i(TAG, "head started=" + started + " face="
+                                    + (f == null ? "null"
+                                                 : (Math.round(f.x) + "," + Math.round(f.y) + ","
+                                                    + Math.round(f.z))));
+                        }
+                    } catch (Throwable t) {
+                        if ((++hdtLogCount % 60) == 0) Log.w(TAG, "head poll failed", t);
                     }
                 }
                 h.postDelayed(this, 16);
@@ -1170,6 +1179,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     static native void nativeToggleCamMode();
     static native void nativeSetHeadPose(float x, float y, float z, int valid);
     static native void nativeSetGyro(float pitch, float yaw, float roll);
+    static native int nativeGetHeadPose(int axis);
     static native void nativeOverlayStick2(int rx, int ry);
     static native void nativeOverlayAnalog(int on);
     static native void nativeHideInGameControls(int hide);
@@ -1395,6 +1405,9 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                     + " toeauto=" + toeAutoOn
                     + " hdt=" + (hdtOn ? 1 : 0) + "/" + hdtStrength
                     + " gyro=" + (gyroOn ? 1 : 0) + "/" + gyroStrength
+                    + " pivot=" + gyroPivot
+                    + " head=" + nativeGetHeadPose(0) + "," + nativeGetHeadPose(1)
+                    + "," + nativeGetHeadPose(2)
                     + " uipar=" + uiParallaxOn + " uibuf=" + uiBufOn);
         });
     }

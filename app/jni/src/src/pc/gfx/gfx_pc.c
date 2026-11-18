@@ -245,9 +245,9 @@ int   gfx_head_valid = 0;
 // Device orientation relative to the pose captured when GYRO was enabled,
 // in radians: pitch (x), yaw (y), roll (z).
 float gfx_gyro_ypr[3] = {0.0f, 0.0f, 0.0f};
-// Rotation pivot: slightly below the midpoint between the eyes, in game units
-// (1 unit is roughly 1 cm, so ~12 cm down is about a neck joint).
-#define GFX_TRACK_PIVOT_DROP 12.0f
+// Rotation pivot: how far below the midpoint between the eyes the camera
+// rotates around, in game units (~1 unit is 1 cm). 12 = neck-ish, 40+ = chest.
+float gfx_gyro_pivot = 12.0f;
 
 static float s_track_mtx[4][4];     // view-space offset applied to every modelview
 static int   s_track_active = 0;
@@ -917,8 +917,8 @@ static void gfx_track_update(void) {
     }
 
     // Rotate about the pivot: T(-P) * R * T(P), then translate by the head.
-    gfx_mtx_translation(tneg, 0.0f, GFX_TRACK_PIVOT_DROP, 0.0f);   // -P
-    gfx_mtx_translation(tpos, 0.0f, -GFX_TRACK_PIVOT_DROP, 0.0f);  // +P
+    gfx_mtx_translation(tneg, 0.0f, gfx_gyro_pivot, 0.0f);   // -P
+    gfx_mtx_translation(tpos, 0.0f, -gfx_gyro_pivot, 0.0f);  // +P
     gfx_matrix_mul(tmp, tneg, rot);
     gfx_matrix_mul(s_track_mtx, tmp, tpos);
     if (gfx_hdt_enabled) {
