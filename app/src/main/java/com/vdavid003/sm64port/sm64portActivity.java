@@ -1220,6 +1220,30 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         ragdollToggle = addEnhToggle("DEATH RAGDOLL", 0, ragdollOn);
         hitRagdollToggle = addEnhToggle("HIT RAGDOLL", 1, hitRagdollOn);
         // PUPPYCAM+ is hidden: the CAMERA tab's PUPpycam mode supersedes it.
+        addEnhToggle("WALLRUN", 3, true);
+        addEnhToggle("GRAPPLE (L)", 4, true);
+        addEnhToggle("JETPACK (L)", 5, false);
+        final TextView fuelUp = new TextView(this);
+        fuelUp.setText("FUEL TANK L" + (nativeGetFuelTier() + 1));
+        fuelUp.setTextSize(16);
+        fuelUp.setTextColor(0xFF66CCFF);
+        fuelUp.setPadding(dp(4), dp(8), dp(4), dp(8));
+        fuelUp.setOnClickListener(v -> {
+            nativeMovekitUpgrade(0);
+            fuelUp.setText("FUEL TANK L" + (nativeGetFuelTier() + 1));
+        });
+        controls.addView(fuelUp);
+
+        final TextView refillUp = new TextView(this);
+        refillUp.setText("REFILL PUMP L" + (nativeGetRefillTier() + 1));
+        refillUp.setTextSize(16);
+        refillUp.setTextColor(0xFF66CCFF);
+        refillUp.setPadding(dp(4), dp(8), dp(4), dp(8));
+        refillUp.setOnClickListener(v -> {
+            nativeMovekitUpgrade(1);
+            refillUp.setText("REFILL PUMP L" + (nativeGetRefillTier() + 1));
+        });
+        controls.addView(refillUp);
         addEnhButton("LEVEL SELECT", this::openLevelSelect);
         addEnhButton("KILL MARIO (TEST)", this::debugKill);
         uncappedTestToggle = new TextView(this);
@@ -2450,6 +2474,11 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     static native int nativeGetCamMode();
     static native void nativeSetCamMode2(int mode);
     static native int nativeGetCamMode2();
+    static native int nativeGetMovekitState();
+    static native int nativeGetJetpackFuel();
+    static native void nativeMovekitUpgrade(int which);
+    static native int nativeGetFuelTier();
+    static native int nativeGetRefillTier();
     static native void nativeToggleCamMode();
     static native void nativeSetHeadPose(float x, float y, float z, int valid);
     static native void nativeSetGyro(float pitch, float yaw, float roll);
@@ -2713,6 +2742,18 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                 updateToeSliderState();
                 Log.i(TAG, "TOEAUTO=" + toeAutoOn);
                 break;
+            case "WALLRUN":
+                nativeSetEnh(3, (nativeGetMovekitState() & 1) != 0 ? 0 : 1);
+                Log.i(TAG, "WALLRUN -> mv=" + nativeGetMovekitState());
+                break;
+            case "GRAPPLE":
+                nativeSetEnh(4, (nativeGetMovekitState() & 2) != 0 ? 0 : 1);
+                Log.i(TAG, "GRAPPLE -> mv=" + nativeGetMovekitState());
+                break;
+            case "JETPACK":
+                nativeSetEnh(5, (nativeGetMovekitState() & 4) != 0 ? 0 : 1);
+                Log.i(TAG, "JETPACK -> mv=" + nativeGetMovekitState());
+                break;
             case "CAM":
                 nativeToggleCamMode();
                 Log.i(TAG, "CAM toggle -> " + nativeGetCamMode());
@@ -2846,6 +2887,8 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                     + " dofauto=" + nativeGetSSFX(16) + " dofz=" + nativeGetSSFX(17)
                     + " stay=" + stayOn + " uipost=" + uiPostOn
                     + " cam=" + nativeGetCamMode() + " cam2=" + nativeGetCamMode2()
+                    + " mv=" + nativeGetMovekitState() + " fuel=" + nativeGetJetpackFuel()
+                    + " ftank=" + nativeGetFuelTier() + " frefill=" + nativeGetRefillTier()
                     + " ctlA=" + overlayAlphaPct
                     + " toeauto=" + toeAutoOn
                     + " gun=" + nativeGetPortalGun() + " portals=" + nativeGetPortalCount()

@@ -7,6 +7,7 @@
 #include "interaction.h"
 #include "mario.h"
 #include "mario_step.h"
+#include "movekit.h"
 #include "game_init.h"
 #include "camera.h"
 #include "save_file.h"
@@ -2118,6 +2119,7 @@ s32 mario_execute_airborne_action(struct MarioState *m) {
     }
 
     play_far_fall_sound(m);
+    movekit_try_wallrun(m);
 
     /* clang-format off */
     switch (m->action) {
@@ -2166,6 +2168,7 @@ s32 mario_execute_airborne_action(struct MarioState *m) {
         case ACT_RIDING_HOOT:          cancel = act_riding_hoot(m);          break;
         case ACT_TOP_OF_POLE_JUMP:     cancel = act_top_of_pole_jump(m);     break;
         case ACT_VERTICAL_WIND:        cancel = act_vertical_wind(m);        break;
+        case ACT_WALLRUN:              cancel = movekit_act_wallrun(m);      break;
     }
     /* clang-format on */
 
