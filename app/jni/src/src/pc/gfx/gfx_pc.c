@@ -2082,8 +2082,10 @@ void gfx_init(struct GfxWindowManagerAPI *wapi, struct GfxRenderingAPI *rapi, co
     gfx_rapi = rapi;
     gfx_wapi->init(window_title);
     gfx_rapi->init();
-    // Persisted default; the SHADOW tab / `cmd toggle SHADOW` override it live.
-    gfx_shadow_enabled = configDynamicShadows ? 1 : 0;
+    // Dynamic shadows are opt-in: start disabled and let the SHADOW tab (or
+    // `cmd toggle SHADOW`) turn them on. A saved sm64config.txt with
+    // dynamic_shadows=1 used to switch them back on behind the UI's back.
+    gfx_shadow_enabled = 0;
     
     // Used in the 120 star TAS
     static uint32_t precomp_shaders[] = {
