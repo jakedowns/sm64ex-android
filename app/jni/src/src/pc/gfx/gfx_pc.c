@@ -118,6 +118,9 @@ static struct RSP {
     
     float MP_matrix[4][4];
     float P_matrix[4][4];
+    /* Perspective projections already encode the canvas aspect.  The legacy
+     * 4:3 x-correction must only be applied to ortho (2D/UI/skybox) vertices. */
+    bool proj_is_perspective;
     // Shadow pass: object -> light clip (modelview * camera inverse * light VP).
     float shadow_MP_matrix[4][4];
     
@@ -1048,6 +1051,8 @@ static void gfx_sp_matrix(uint8_t parameters, const int32_t *addr) {
     if (parameters & G_MTX_PROJECTION) {
         if (parameters & G_MTX_LOAD) {
             memcpy(rsp.P_matrix, matrix, sizeof(matrix));
+            /* guPerspective() sets m[2][3] = -1; guOrtho() leaves it 0. */
+            rsp.proj_is_perspective = (matrix[2][3] < -0.5f);
         } else {
             gfx_matrix_mul(rsp.P_matrix, matrix, rsp.P_matrix);
         }
@@ -1101,7 +1106,8 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx *verti
         float z = v->ob[0] * mp[0][2] + v->ob[1] * mp[1][2] + v->ob[2] * mp[2][2] + mp[3][2];
         float w = v->ob[0] * mp[0][3] + v->ob[1] * mp[1][3] + v->ob[2] * mp[2][3] + mp[3][3];
         
-        if (!gfx_shadow_pass) {
+        if (!gfx_shadow_pass && !rsp.proj_is_perspective) {
+            /* 2D/UI ortho only: the 3D perspective already has the aspect. */
             x = gfx_adjust_x_for_aspect_ratio(x);
         }
         
@@ -2122,6 +2128,7 @@ static void gfx_sp_reset() {
     rsp.modelview_matrix_stack_size = 1;
     rsp.current_num_lights = 2;
     rsp.lights_changed = true;
+    rsp.proj_is_perspective = true;
 }
 
 void gfx_get_dimensions(uint32_t *width, uint32_t *height) {

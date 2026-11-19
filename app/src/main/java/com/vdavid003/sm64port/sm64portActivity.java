@@ -198,6 +198,8 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
           + "  grouped under their enable toggles (CAMERA tab).\n"
           + "Stereo: live debug pictogram with depth-range gauge, cam->Mario\n"
           + "  distance and the UI-depth plane; IPD/baseline label.\n"
+          + "Aspect % (in) defaults to 84% and shows the mapped ratio; 3D\n"
+          + "  geometry keeps square pixels at every aspect (perspective fix).\n"
           + "HFR: 120 Hz interpolated rendering, simulation stays at 30 Hz.\n"
           + "UI after post: HUD/menus composited after MXAO/DOF/SSGI/SSRTX.\n"
           + "DOF auto focus on Mario; TOEAUTO aims both eyes at that distance.\n"
@@ -826,7 +828,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addSlider("Depth", -200, 200, 10, " %", 2);
         addSlider("UI depth", -60, 60, 0, " px", 38);
         addSlider("Toe in/out", -100, 100, 0, " %", 17);
-        addSlider("Aspect % (in)", 10, 400, 85, " %", 18);
+        addSlider("Aspect % (in)", 10, 400, 84, " %", 18);
         addSlider("Eye margin%", 50, 100, 100, " %", 14);
         addIntSlider("Ctl opacity", 0, 100, overlayAlphaPct, new java.util.function.IntConsumer() {
             @Override public void accept(int v) { applyOverlayAlpha(v); }
@@ -2111,9 +2113,9 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     private static String aspectLabel(int pct) {
         double r = pct / 100.0;
         double[] vals = {1.0, 16.0 / 9.0, 4.0 / 3.0, 3.0 / 2.0, 21.0 / 9.0,
-                         9.0 / 16.0, 3.0 / 4.0, 0.85};
+                         9.0 / 16.0, 3.0 / 4.0, 0.84};
         String[] names = {"1:1", "16:9", "4:3", "3:2", "21:9",
-                          "9:16", "3:4", "17:20"};
+                          "9:16", "3:4", "21:25"};
         for (int i = 0; i < vals.length; i++) {
             if (Math.abs(r - vals[i]) < 0.005) {
                 return names[i];
