@@ -225,6 +225,11 @@ struct GraphNodeObject *gCurGraphNodeObject = NULL;
 struct GraphNodeHeldObject *gCurGraphNodeHeldObject = NULL;
 u16 gAreaUpdateCounter = 0;
 
+// Splat slice: true while traversing an object selected for splatting. The
+// object's display list is deferred into the master list, so this is copied
+// onto each DisplayListNode and emitted as a marker when the list is drawn.
+static u8 gSplatCurrentObject = 0;
+
 #ifdef F3DEX_GBI_2
 LookAt lookAt;
 #endif
@@ -256,9 +261,11 @@ static void geo_process_master_list_sub(struct GraphNodeMasterList *node) {
         if ((currList = node->listHeads[i]) != NULL) {
             gDPSetRenderMode(gDisplayListHead++, modeList->modes[i], mode2List->modes[i]);
             while (currList != NULL) {
+                if (currList->splat) gfx_sp_splat_marker(1);
                 gSPMatrix(gDisplayListHead++, VIRTUAL_TO_PHYSICAL(currList->transform),
                           G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);
                 gSPDisplayList(gDisplayListHead++, currList->displayList);
+                if (currList->splat) gfx_sp_splat_marker(0);
                 currList = currList->next;
             }
         }
@@ -288,6 +295,7 @@ static void geo_append_display_list(void *displayList, s16 layer) {
         // interpolation together with the previous tick's transform.
         hfr_record(listNode->transform, gMatStackPrev[gMatStackIndex]);
         listNode->displayList = displayList;
+        listNode->splat = gSplatCurrentObject;
         listNode->next = 0;
         if (gCurGraphNodeMasterList->listHeads[layer] == 0) {
             gCurGraphNodeMasterList->listHeads[layer] = listNode;
@@ -1235,11 +1243,12 @@ static void geo_process_object(struct Object *node) {
             gMatStackFixed[gMatStackIndex] = mtx;
             if (node->header.gfx.sharedChild != NULL) {
                 int splat = splat_object_selected(node);
+                u8 prevSplat = gSplatCurrentObject;
                 gCurGraphNodeObject = (struct GraphNodeObject *) node;
                 node->header.gfx.sharedChild->parent = &node->header.gfx.node;
-                if (splat) gfx_sp_splat_marker(1);
+                if (splat) gSplatCurrentObject = 1;
                 geo_process_node_and_siblings(node->header.gfx.sharedChild);
-                if (splat) gfx_sp_splat_marker(0);
+                gSplatCurrentObject = prevSplat;
                 node->header.gfx.sharedChild->parent = NULL;
                 gCurGraphNodeObject = NULL;
             }

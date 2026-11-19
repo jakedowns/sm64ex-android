@@ -222,7 +222,7 @@ static int gfx_shadow_frame = 0;    // frames since the last map update
 // the display list; gfx_opengl_draw_triangles sees gfx_splat_active and draws
 // their vertices as point sprites instead of textured triangles.
 int gfx_splat_target = 0;
-int gfx_splat_size_px = 8;
+int gfx_splat_size_px = 14;
 int gfx_splat_opacity = 100;
 int gfx_splat_softness = 70;
 int gfx_splat_active = 0;
@@ -237,14 +237,6 @@ void gfx_sp_splat_marker(int on) {
     cmd = gDisplayListHead++;
     cmd->words.w0 = ((uint32_t)GFX_OP_SPLAT_MARKER) << 24;
     cmd->words.w1 = on ? 1u : 0u;
-#ifdef __ANDROID__
-    if (on) {
-        static unsigned int emits;
-        if ((emits++ % 300) == 0) {
-            SPLAT_LOG("emit marker #%u", emits);
-        }
-    }
-#endif
 }
 
 // --- UI after post ----------------------------------------------------------
@@ -1961,12 +1953,6 @@ static void gfx_run_dl_range(Gfx* cmd, Gfx* end) {
                 if (gfx_splat_active != on) {
                     gfx_flush();
                     gfx_splat_active = on;
-#ifdef __ANDROID__
-                    {
-                        static unsigned int runs;
-                        SPLAT_LOG("marker run on=%d #%u", on, ++runs);
-                    }
-#endif
                     if (on) {
                         gfx_rapi->set_use_alpha(1);
                         rendering_state.alpha_blend = 1;

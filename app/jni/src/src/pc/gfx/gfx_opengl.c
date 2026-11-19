@@ -426,7 +426,7 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint32_t shad
     append_line(fs_buf, &fs_len, "float r2 = dot(sp, sp) * 4.0;");
     append_line(fs_buf, &fs_len, "if (r2 > 1.0) discard;");
     append_line(fs_buf, &fs_len, "float edge = 1.0 - r2;");
-    append_line(fs_buf, &fs_len, "outColor.a *= uSplatOpacity * edge * exp(-r2 * (0.5 + 5.0 * uSplatSoftness));");
+    append_line(fs_buf, &fs_len, "outColor.a = uSplatOpacity * edge * exp(-r2 * (0.5 + 5.0 * uSplatSoftness));");
     append_line(fs_buf, &fs_len, "}");
     append_line(fs_buf, &fs_len, "gl_FragColor = outColor;");
     append_line(fs_buf, &fs_len, "}");
@@ -1922,15 +1922,6 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
             glBufferData(GL_ELEMENT_ARRAY_BUFFER, need * sizeof(GLushort),
                          cpu_idx, GL_STREAM_DRAW);
             glDrawElements(GL_POINTS, (GLsizei)need, GL_UNSIGNED_SHORT, NULL);
-#ifdef __ANDROID__
-            {
-                static unsigned int draws;
-                if ((draws++ % 300) == 0)
-                    __android_log_print(ANDROID_LOG_INFO, "SM64SPLAT",
-                                        "draw splats tris=%zu size=%d #%u",
-                                        need, gfx_splat_size_px, draws);
-            }
-#endif
         }
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
 #ifndef USE_GLES

@@ -6,8 +6,10 @@ Branch: `feat/splat-prototype` (worktree `worktrees/splat-prototype`).
 ## What this slice does
 
 - Tags selected **objects** while the scene graph is built (Mario, trees, or all
-  objects). A renderer-local marker command travels in the display list, so the
-  tag survives the deferred build and both per-eye Leia passes.
+  objects). Object display lists are deferred into the master list, so the tag
+  is stored on each `DisplayListNode` and emitted as a renderer-local marker
+  immediately around that list. It therefore survives the deferred build and
+  both per-eye Leia passes.
 - Draws one camera-facing point sprite per tagged triangle instead of the
   textured triangle. Colour comes from the draw's existing vertex/material
   colour, so it already picks up textures/lights. The point shader applies a
@@ -24,7 +26,7 @@ sorting.
 | Key | Meaning | Default |
 |---|---|---|
 | `60` | target: `0` off, `1` Mario, `2` trees, `3` all objects | `0` |
-| `61` | splat footprint in eye-buffer pixels | `8` |
+| `61` | splat footprint in eye-buffer pixels | `14` |
 | `62` | opacity % | `100` |
 | `63` | softness % (`0` crisp disc → `100` soft Gaussian) | `70` |
 
@@ -59,8 +61,9 @@ Suggested test: Bob-omb Battlefield (`target=2`, trees), or the castle lobby
   tessellation; sparse meshes look sparse.
 - No G-buffer albedo sampling or build-time bake (plan §5.6.2 options 1–2), so
   motion/temporal stability is not addressed.
-- Alpha blending relies on the object draw's blend state; translucent source
-  materials can still look wrong.
+- Alpha blending relies on the object draw's blend state; splat alpha is forced
+  from the footprint so cutout/leaf textures still show, but their RGB is the
+  centre-sample colour.
 - Level geometry, HUD, skybox and particles are not splatted.
 - Knobs are session-only; no config persistence or debug-panel widgets yet.
 - `SM64SPLAT` logcat tag reports marker emission/execution and draw counts for
