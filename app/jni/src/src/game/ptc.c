@@ -42,6 +42,13 @@
  * 9..12 room walls), set by ptc_occlusion_update(). */
 u32 g_ptc_fade_mask = 0;
 
+/* Debug calibration quad: a camera-facing world-space square, drawn to check
+ * that 3D geometry keeps square pixels at any aspect setting. */
+int g_ptc_aspect_calib = 0;
+void ptc_aspect_calib_toggle(void) {
+    g_ptc_aspect_calib = !g_ptc_aspect_calib;
+}
+
 static const Gfx *const s_ptc_solid_dl[9] = {
     ptc_dl_p1, ptc_dl_p2, ptc_dl_p3, ptc_dl_p4,
     ptc_dl_p5, ptc_dl_p6, ptc_dl_p7, ptc_dl_p9, ptc_dl_ramp,
@@ -938,6 +945,8 @@ static void ptc_apply_command(const char *action) {
         camera_portal_blend_toggle();
     } else if (strcmp(action, "rumble") == 0) {
         controller_rumble_play(1.0f, 0.8f);
+    } else if (strcmp(action, "aspecttest") == 0) {
+        ptc_aspect_calib_toggle();
     } else if (strcmp(action, "walltest") == 0) {
         s_wallTest = portal_test_walls();
     } else if (strcmp(action, "stop") == 0) {

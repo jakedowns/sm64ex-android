@@ -1193,12 +1193,15 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
 
         addCamSlider("Cam distance", 1, 1500, 700, " u", 46);
         addCamSlider("FOV %", 1, 400, 100, " %", 20);
+        addCamSlider("3D height", 50, 150, 100, " %", 50);
+        addCamSlider("3D width", 50, 150, 100, " %", 51);
         addCamSlider("Cam height", 0, 400, 110, " u", 47);
         addCamSlider("Cam recentre", 0, 200, 50, " %", 48);
         addCamSlider("Cam sensitivity", 10, 300, 100, " %", 49);
         addCamSlider("HDT strength", 0, 200, hdtStrength, " %", 43);
         addCamSlider("Pivot height", 0, 200, gyroPivot, " cm", 45);
         addCamSlider("Gyro strength", 0, 200, gyroStrength, " %", 44);
+        addCamButton("ASPECT TEST", () -> nativePtcCommand("aspecttest"));
         camStatusView = new TextView(this);
         camStatusView.setTextSize(14);
         camStatusView.setTextColor(0xFFAACCFF);

@@ -48,5 +48,6 @@ int  portal_test_walls(void);   // bitmask: front/back/left/right wall accepted
 /* Aiming reticle drawn in the N64 UI pass with its own stereo depth. */
 extern float g_portal_reticle_depth_px;
 int  portal_render_reticle(void);
+void portal_render_aspect_calib(void);
 
 #endif

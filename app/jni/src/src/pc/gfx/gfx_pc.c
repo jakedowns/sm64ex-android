@@ -253,6 +253,9 @@ int gfx_stereo_out_h = 0;
 int gfx_stereo_perf = 0;   // 1 = render each eye at half resolution
 int gfx_stereo_fit = 2;    // 0 = fill eye, 1 = 4:3 fit, 2 = 16:9 fit (best)
 int gfx_stereo_aspect_pct = 0;
+/* Debug calibration for panel/weave pixel aspect: scales 3D Y only. */
+float gfx_geo_y_scale = 1.0f;
+float gfx_geo_x_scale = 1.0f;
 int gfx_stereo_fov_pct = 100;   // camera FOV scale
 int gfx_stereo_2d = 0;          // 2D mode: keep the stereo path, zero the parallax  // 0 = auto; else aspect*100 for the eye canvas
 int gfx_stereo_toe_pct = 0;    // toe-in (-) / toe-out (+) camera canting
@@ -1106,9 +1109,15 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx *verti
         float z = v->ob[0] * mp[0][2] + v->ob[1] * mp[1][2] + v->ob[2] * mp[2][2] + mp[3][2];
         float w = v->ob[0] * mp[0][3] + v->ob[1] * mp[1][3] + v->ob[2] * mp[2][3] + mp[3][3];
         
-        if (!gfx_shadow_pass && !rsp.proj_is_perspective) {
-            /* 2D/UI ortho only: the 3D perspective already has the aspect. */
-            x = gfx_adjust_x_for_aspect_ratio(x);
+        if (!gfx_shadow_pass) {
+            if (!rsp.proj_is_perspective) {
+                /* 2D/UI ortho only: the 3D perspective already has the aspect. */
+                x = gfx_adjust_x_for_aspect_ratio(x);
+            } else {
+                /* Panel/weave calibration: 3D only, UI stays 1:1. */
+                if (gfx_geo_x_scale != 1.0f) x *= gfx_geo_x_scale;
+                if (gfx_geo_y_scale != 1.0f) y *= gfx_geo_y_scale;
+            }
         }
         
         short U = v->tc[0] * rsp.texture_scaling_factor.s >> 16;

@@ -388,6 +388,7 @@ void render_game(void) {
         geo_process_root(gCurrentArea->unk04, D_8032CE74, D_8032CE78, gFBSetColor);
         portal_render();
         movekit_render();
+        portal_render_aspect_calib();
 
         gSPViewport(gDisplayListHead++, VIRTUAL_TO_PHYSICAL(&D_8032CF00));
 

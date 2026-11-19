@@ -28,6 +28,7 @@
 #include "game/print.h"
 #include "audio/external.h"
 #include "game/area.h"
+#include "gfx_dimensions.h"
 
 /* Generated low-poly portal-gun mesh + display list (CC0 model). */
 #include "ptc_gun_model.inc"
@@ -918,6 +919,81 @@ int portal_render_reticle(void) {
     gDPSetTexturePersp(gDisplayListHead++, G_TP_PERSP);
     gDPSetPrimColor(gDisplayListHead++, 0, 0, 255, 255, 255, 255);
     return 1;
+}
+
+extern int g_ptc_aspect_calib;
+extern float gfx_cam_tan_half_fov_y;
+extern float gfx_cam_near, gfx_cam_far;
+
+/* Camera-facing magenta square (160x160 world units at 400u) used to verify
+ * that the 3D projection keeps square pixels.  Toggled by `ptc aspecttest`. */
+void portal_render_aspect_calib(void) {
+    Vec3f fwd, right, up, pos;
+    Mat4 view;
+    Vtx *v;
+
+    if (!g_ptc_aspect_calib || gMarioState == NULL) {
+        return;
+    }
+    vec3f_copy(fwd, gLakituState.focus);
+    vec3f_sub(fwd, gLakituState.pos);
+    if (vdot3(fwd, fwd) < 0.001f) {
+        return;
+    }
+    vnorm3(fwd);
+    up[0] = 0.0f; up[1] = 1.0f; up[2] = 0.0f;
+    vcross3(right, fwd, up);
+    if (vdot3(right, right) < 0.001f) {
+        right[0] = 1.0f; right[1] = 0.0f; right[2] = 0.0f;
+    }
+    vnorm3(right);
+    vcross3(up, right, fwd);
+    vnorm3(up);
+
+    pos[0] = gLakituState.pos[0] + fwd[0] * 400.0f;
+    pos[1] = gLakituState.pos[1] + fwd[1] * 400.0f;
+    pos[2] = gLakituState.pos[2] + fwd[2] * 400.0f;
+
+    v = alloc_display_list(sizeof(Vtx) * 4);
+    if (v == NULL) {
+        return;
+    }
+    fill_vtx(&v[0], -80.0f, -80.0f, 0.0f, 255, 0, 255, 255);
+    fill_vtx(&v[1],  80.0f, -80.0f, 0.0f, 255, 0, 255, 255);
+    fill_vtx(&v[2],  80.0f,  80.0f, 0.0f, 255, 0, 255, 255);
+    fill_vtx(&v[3], -80.0f,  80.0f, 0.0f, 255, 0, 255, 255);
+
+    mtxf_lookat(view, gLakituState.pos, gLakituState.focus, 0);
+    emit_model_matrix(pos, right, up, fwd, view);
+
+    /* The scene may have left an ortho (skybox/HUD) projection active.
+     * Load the real camera perspective explicitly so the square is measured
+     * through the same projection as the world geometry. */
+    {
+        Mtx *proj = alloc_display_list(sizeof(Mtx));
+        u16 norm = 0;
+        f32 fov = 45.0f;
+        if (proj != NULL) {
+            if (gfx_cam_tan_half_fov_y > 0.01f) {
+                fov = 2.0f * atanf(gfx_cam_tan_half_fov_y) * 180.0f / 3.14159265f;
+            }
+            guPerspective(proj, &norm, fov, gfx_current_dimensions.aspect_ratio,
+                          gfx_cam_near > 0.0f ? gfx_cam_near : 10.0f,
+                          gfx_cam_far > 0.0f ? gfx_cam_far : 20000.0f, 1.0f);
+            gSPPerspNormalize(gDisplayListHead++, norm);
+            gSPMatrix(gDisplayListHead++, VIRTUAL_TO_PHYSICAL(proj),
+                      G_MTX_PROJECTION | G_MTX_LOAD | G_MTX_NOPUSH);
+        }
+    }
+
+    gSPSetGeometryMode(gDisplayListHead++, G_ZBUFFER | G_SHADE | G_CULL_BACK);
+    gSPClearGeometryMode(gDisplayListHead++, G_LIGHTING);
+    gDPSetCombineMode(gDisplayListHead++, G_CC_SHADE, G_CC_SHADE);
+    gDPSetRenderMode(gDisplayListHead++, G_RM_AA_ZB_OPA_SURF, G_RM_AA_ZB_OPA_SURF2);
+    gSPVertex(gDisplayListHead++, VIRTUAL_TO_PHYSICAL(v), 4, 0);
+    gSP1Triangle(gDisplayListHead++, 0, 1, 2, 0);
+    gSP1Triangle(gDisplayListHead++, 0, 2, 3, 0);
+    gSPClearGeometryMode(gDisplayListHead++, G_ZBUFFER);
 }
 
 int portal_test_walls(void) {
