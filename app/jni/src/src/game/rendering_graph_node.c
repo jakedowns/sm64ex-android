@@ -12,6 +12,10 @@
 #include "memory.h"
 #include "game_init.h"
 #include "rendering_graph_node.h"
+#include "behavior_data.h"
+#include "mario.h"
+#include "memory.h"
+#include "../pc/gfx/gfx_pc.h"
 
 /**
  * This file contains the code that processes the scene graph for rendering.
@@ -1135,6 +1139,19 @@ static int obj_is_in_view(struct GraphNodeObject *node, Mat4 matrix) {
 /**
  * Process an object node.
  */
+static int splat_object_selected(struct Object *node) {
+    switch (gfx_splat_target) {
+        case 1:  // Mario's model
+            return node == gMarioObject;
+        case 2:  // any tree object
+            return node->behavior == segmented_to_virtual(bhvTree);
+        case 3:  // every object (level geometry untouched)
+            return 1;
+        default:
+            return 0;
+    }
+}
+
 static void geo_process_object(struct Object *node) {
     Mat4 mtxf;
     s32 hasAnimation = (node->header.gfx.node.flags & GRAPH_RENDER_HAS_ANIMATION) != 0;
@@ -1217,9 +1234,12 @@ static void geo_process_object(struct Object *node) {
             mtxf_to_mtx(mtx, gMatStack[gMatStackIndex]);
             gMatStackFixed[gMatStackIndex] = mtx;
             if (node->header.gfx.sharedChild != NULL) {
+                int splat = splat_object_selected(node);
                 gCurGraphNodeObject = (struct GraphNodeObject *) node;
                 node->header.gfx.sharedChild->parent = &node->header.gfx.node;
+                if (splat) gfx_sp_splat_marker(1);
                 geo_process_node_and_siblings(node->header.gfx.sharedChild);
+                if (splat) gfx_sp_splat_marker(0);
                 node->header.gfx.sharedChild->parent = NULL;
                 gCurGraphNodeObject = NULL;
             }

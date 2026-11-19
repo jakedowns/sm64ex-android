@@ -53,6 +53,12 @@ extern float gfx_cam_tan_half_fov_y;
 
 #define TEX_CACHE_STEP 512
 
+// Splat mode config (defined in gfx_pc.c)
+extern int gfx_splat_active;
+extern int gfx_splat_size_px;
+extern int gfx_splat_opacity;
+extern int gfx_splat_softness;
+
 struct ShaderProgram {
     uint32_t shader_id;
     GLuint opengl_program_id;
@@ -61,6 +67,10 @@ struct ShaderProgram {
     uint8_t num_floats;
     GLint attrib_locations[7];
     GLint uniform_locations[5];
+    GLint splat_size_loc;
+    GLint splat_on_loc;
+    GLint splat_opacity_loc;
+    GLint splat_softness_loc;
     uint8_t attrib_sizes[7];
     uint8_t num_attribs;
     bool used_noise;
@@ -104,6 +114,14 @@ static void gfx_opengl_vertex_array_set_attribs(struct ShaderProgram *prg) {
 static inline void gfx_opengl_set_shader_uniforms(struct ShaderProgram *prg) {
     if (prg->used_noise)
         glUniform1f(prg->uniform_locations[4], (float)frame_count);
+    if (prg->splat_size_loc >= 0)
+        glUniform1f(prg->splat_size_loc, (float)gfx_splat_size_px);
+    if (prg->splat_on_loc >= 0)
+        glUniform1f(prg->splat_on_loc, gfx_splat_active ? 1.0f : 0.0f);
+    if (prg->splat_opacity_loc >= 0)
+        glUniform1f(prg->splat_opacity_loc, gfx_splat_opacity / 100.0f);
+    if (prg->splat_softness_loc >= 0)
+        glUniform1f(prg->splat_softness_loc, gfx_splat_softness / 100.0f);
 }
 
 static inline void gfx_opengl_set_texture_uniforms(struct ShaderProgram *prg, const int tile) {
@@ -258,6 +276,7 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint32_t shad
     append_line(vs_buf, &vs_len, "#version 120");
 #endif
     append_line(vs_buf, &vs_len, "attribute vec4 aVtxPos;");
+    append_line(vs_buf, &vs_len, "uniform float uSplatSize;");
     if (used_textures[0] || used_textures[1]) {
         append_line(vs_buf, &vs_len, "attribute vec2 aTexCoord;");
         append_line(vs_buf, &vs_len, "varying vec2 vTexCoord;");
@@ -284,6 +303,7 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint32_t shad
         vs_len += sprintf(vs_buf + vs_len, "vInput%d = aInput%d;\n", i + 1, i + 1);
     }
     append_line(vs_buf, &vs_len, "gl_Position = aVtxPos;");
+    append_line(vs_buf, &vs_len, "gl_PointSize = uSplatSize;");
     append_line(vs_buf, &vs_len, "}");
 
     // Fragment shader
@@ -293,6 +313,9 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint32_t shad
 #else
     append_line(fs_buf, &fs_len, "#version 120");
 #endif
+    append_line(fs_buf, &fs_len, "uniform float uSplatOn;\n"
+                                  "uniform float uSplatOpacity;\n"
+                                  "uniform float uSplatSoftness;");
 
     if (used_textures[0] || used_textures[1]) {
         append_line(fs_buf, &fs_len, "varying vec2 vTexCoord;");
@@ -392,10 +415,20 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint32_t shad
         append_line(fs_buf, &fs_len, "texel.a *= floor(random(floor(vec3(gl_FragCoord.xy, frame_count))) + 0.5);");
 
     if (opt_alpha) {
-        append_line(fs_buf, &fs_len, "gl_FragColor = texel;");
+        append_line(fs_buf, &fs_len, "vec4 outColor = texel;");
     } else {
-        append_line(fs_buf, &fs_len, "gl_FragColor = vec4(texel, 1.0);");
+        append_line(fs_buf, &fs_len, "vec4 outColor = vec4(texel, 1.0);");
     }
+    // Splat mode: soft elliptical fleck from the point-sprite footprint.
+    // uSplatOn is 0 for every normal triangle batch.
+    append_line(fs_buf, &fs_len, "if (uSplatOn > 0.5) {");
+    append_line(fs_buf, &fs_len, "vec2 sp = gl_PointCoord - 0.5;");
+    append_line(fs_buf, &fs_len, "float r2 = dot(sp, sp) * 4.0;");
+    append_line(fs_buf, &fs_len, "if (r2 > 1.0) discard;");
+    append_line(fs_buf, &fs_len, "float edge = 1.0 - r2;");
+    append_line(fs_buf, &fs_len, "outColor.a *= uSplatOpacity * edge * exp(-r2 * (0.5 + 5.0 * uSplatSoftness));");
+    append_line(fs_buf, &fs_len, "}");
+    append_line(fs_buf, &fs_len, "gl_FragColor = outColor;");
     append_line(fs_buf, &fs_len, "}");
 
     vs_buf[vs_len] = '\0';
@@ -478,6 +511,10 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint32_t shad
     prg->used_textures[1] = used_textures[1];
     prg->num_floats = num_floats;
     prg->num_attribs = cnt;
+    prg->splat_size_loc = glGetUniformLocation(shader_program, "uSplatSize");
+    prg->splat_on_loc = glGetUniformLocation(shader_program, "uSplatOn");
+    prg->splat_opacity_loc = glGetUniformLocation(shader_program, "uSplatOpacity");
+    prg->splat_softness_loc = glGetUniformLocation(shader_program, "uSplatSoftness");
 
     gfx_opengl_load_shader(prg);
 
@@ -700,6 +737,10 @@ extern int gfx_shadow_matrices_ready;
 extern float gfx_eye_shear[2];
 extern float gfx_eye_toe[2];
 extern int gfx_eye_flip[2];
+extern int gfx_splat_active;
+extern int gfx_splat_size_px;
+extern int gfx_splat_opacity;
+extern int gfx_splat_softness;
 static int s_shadow_map_valid = 0;    // set by gfx_opengl_shadow_end()
 
 /* Shadow map FBO: RGBA8 colour with packed depth + a depth renderbuffer. */
@@ -1837,6 +1878,67 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
 #ifdef __ANDROID__
     wire_now = wire_now && !s_shadow_rendering;
 #endif
+    if (gfx_splat_active) {
+        // Splat pass (first slice): one camera-facing point sprite per triangle.
+        // A single corner is picked (round-robin, deduped) so shared vertices do
+        // not blend several times at the same depth.
+        static GLuint s_splat_ibo = 0;
+        static GLsizei s_splat_cap = 0;
+        static GLushort *cpu_idx = NULL;
+        static size_t cpu_cap = 0;
+        size_t need = buf_vbo_num_tris;
+
+        if (opengl_prg != NULL) {
+            if (opengl_prg->splat_size_loc >= 0)
+                glUniform1f(opengl_prg->splat_size_loc, (float)gfx_splat_size_px);
+            if (opengl_prg->splat_on_loc >= 0)
+                glUniform1f(opengl_prg->splat_on_loc, 1.0f);
+            if (opengl_prg->splat_opacity_loc >= 0)
+                glUniform1f(opengl_prg->splat_opacity_loc, gfx_splat_opacity / 100.0f);
+            if (opengl_prg->splat_softness_loc >= 0)
+                glUniform1f(opengl_prg->splat_softness_loc, gfx_splat_softness / 100.0f);
+        }
+#ifndef USE_GLES
+        glEnable(GL_POINT_SPRITE);
+        glEnable(GL_VERTEX_PROGRAM_POINT_SIZE);
+#endif
+        if (s_splat_cap < (GLsizei)need) {
+            if (s_splat_ibo == 0)
+                glGenBuffers(1, &s_splat_ibo);
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, s_splat_ibo);
+            s_splat_cap = (GLsizei)need;
+            glBufferData(GL_ELEMENT_ARRAY_BUFFER, s_splat_cap * sizeof(GLushort),
+                         NULL, GL_STREAM_DRAW);
+        }
+        if (need > cpu_cap) {
+            free(cpu_idx);
+            cpu_idx = (GLushort *)malloc(need * sizeof(GLushort));
+            cpu_cap = cpu_idx ? need : 0;
+        }
+        if (cpu_idx != NULL) {
+            for (size_t t = 0; t < need; t++)
+                cpu_idx[t] = (GLushort)(3 * t + (t % 3));
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, s_splat_ibo);
+            glBufferData(GL_ELEMENT_ARRAY_BUFFER, need * sizeof(GLushort),
+                         cpu_idx, GL_STREAM_DRAW);
+            glDrawElements(GL_POINTS, (GLsizei)need, GL_UNSIGNED_SHORT, NULL);
+#ifdef __ANDROID__
+            {
+                static unsigned int draws;
+                if ((draws++ % 300) == 0)
+                    __android_log_print(ANDROID_LOG_INFO, "SM64SPLAT",
+                                        "draw splats tris=%zu size=%d #%u",
+                                        need, gfx_splat_size_px, draws);
+            }
+#endif
+        }
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+#ifndef USE_GLES
+        glDisable(GL_POINT_SPRITE);
+        glDisable(GL_VERTEX_PROGRAM_POINT_SIZE);
+#endif
+        return;
+    }
     if (wire_now) {
         // ES2 has no glPolygonMode: expand each triangle into its 3 edges.
         if (s_wire_capacity < (GLsizei)buf_vbo_num_tris * 6) {

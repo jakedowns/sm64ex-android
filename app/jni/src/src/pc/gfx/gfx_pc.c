@@ -28,6 +28,13 @@
 #include "../configfile.h"
 #include "../fs/fs.h"
 
+#ifdef __ANDROID__
+#include <android/log.h>
+#define SPLAT_LOG(...) __android_log_print(ANDROID_LOG_INFO, "SM64SPLAT", __VA_ARGS__)
+#else
+#define SPLAT_LOG(...) do {} while (0)
+#endif
+
 #define SUPPORT_CHECK(x) assert(x)
 
 // SCALE_M_N: upscale/downscale M-bit integer to N-bit
@@ -209,6 +216,36 @@ int gfx_shadow_debug = 0;           // 0 off, 1 factor, 2 map
 
 static int gfx_shadow_pass = 0;     // currently replaying the scene for depth
 static int gfx_shadow_frame = 0;    // frames since the last map update
+
+// --- Splat mode (first slice) ----------------------------------------------
+// Objects selected by gfx_splat_target are bracketed by a marker command in
+// the display list; gfx_opengl_draw_triangles sees gfx_splat_active and draws
+// their vertices as point sprites instead of textured triangles.
+int gfx_splat_target = 0;
+int gfx_splat_size_px = 8;
+int gfx_splat_opacity = 100;
+int gfx_splat_softness = 70;
+int gfx_splat_active = 0;
+
+void gfx_sp_splat_marker(int on) {
+    extern Gfx *gDisplayListHead;
+    Gfx *cmd;
+
+    if (gDisplayListHead == NULL) {
+        return;
+    }
+    cmd = gDisplayListHead++;
+    cmd->words.w0 = ((uint32_t)GFX_OP_SPLAT_MARKER) << 24;
+    cmd->words.w1 = on ? 1u : 0u;
+#ifdef __ANDROID__
+    if (on) {
+        static unsigned int emits;
+        if ((emits++ % 300) == 0) {
+            SPLAT_LOG("emit marker #%u", emits);
+        }
+    }
+#endif
+}
 
 // --- UI after post ----------------------------------------------------------
 // render_game() records where the 3D scene ends and the 2D UI begins in the
@@ -1917,6 +1954,26 @@ static void gfx_run_dl_range(Gfx* cmd, Gfx* end) {
                     --cmd; // increase after break
                 }
                 break;
+            case GFX_OP_SPLAT_MARKER: {
+                // Object-scoped splat tag. Flush so a batch never mixes tagged
+                // and untagged geometry; the marker survives every eye pass.
+                int on = cmd->words.w1 != 0;
+                if (gfx_splat_active != on) {
+                    gfx_flush();
+                    gfx_splat_active = on;
+#ifdef __ANDROID__
+                    {
+                        static unsigned int runs;
+                        SPLAT_LOG("marker run on=%d #%u", on, ++runs);
+                    }
+#endif
+                    if (on) {
+                        gfx_rapi->set_use_alpha(1);
+                        rendering_state.alpha_blend = 1;
+                    }
+                }
+                break;
+            }
             case (uint8_t)G_ENDDL:
                 return;
 #ifdef F3DEX_GBI_2
@@ -2071,6 +2128,7 @@ static void gfx_sp_reset() {
     rsp.modelview_matrix_stack_size = 1;
     rsp.current_num_lights = 2;
     rsp.lights_changed = true;
+    gfx_splat_active = 0;
 }
 
 void gfx_get_dimensions(uint32_t *width, uint32_t *height) {
