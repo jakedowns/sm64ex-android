@@ -916,6 +916,27 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addEnhToggle("WALLRUN", 3, true);
         addEnhToggle("GRAPPLE (L)", 4, true);
         addEnhToggle("JETPACK (L)", 5, false);
+        final TextView fuelUp = new TextView(this);
+        fuelUp.setText("FUEL TANK L" + (nativeGetFuelTier() + 1));
+        fuelUp.setTextSize(16);
+        fuelUp.setTextColor(0xFF66CCFF);
+        fuelUp.setPadding(dp(4), dp(8), dp(4), dp(8));
+        fuelUp.setOnClickListener(v -> {
+            nativeMovekitUpgrade(0);
+            fuelUp.setText("FUEL TANK L" + (nativeGetFuelTier() + 1));
+        });
+        controls.addView(fuelUp);
+
+        final TextView refillUp = new TextView(this);
+        refillUp.setText("REFILL PUMP L" + (nativeGetRefillTier() + 1));
+        refillUp.setTextSize(16);
+        refillUp.setTextColor(0xFF66CCFF);
+        refillUp.setPadding(dp(4), dp(8), dp(4), dp(8));
+        refillUp.setOnClickListener(v -> {
+            nativeMovekitUpgrade(1);
+            refillUp.setText("REFILL PUMP L" + (nativeGetRefillTier() + 1));
+        });
+        controls.addView(refillUp);
         addEnhButton("LEVEL SELECT", this::openLevelSelect);
         addEnhButton("KILL MARIO (TEST)", this::debugKill);
         addEnhButton("EQUIP PORTAL GUN", this::debugGiveGun);
@@ -1741,6 +1762,9 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     static native int nativeGetCamMode2();
     static native int nativeGetMovekitState();
     static native int nativeGetJetpackFuel();
+    static native void nativeMovekitUpgrade(int which);
+    static native int nativeGetFuelTier();
+    static native int nativeGetRefillTier();
     static native void nativeToggleCamMode();
     static native void nativeSetHeadPose(float x, float y, float z, int valid);
     static native void nativeSetGyro(float pitch, float yaw, float roll);
@@ -2084,6 +2108,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                     + " stay=" + stayOn + " uipost=" + uiPostOn
                     + " cam=" + nativeGetCamMode() + " cam2=" + nativeGetCamMode2()
                     + " mv=" + nativeGetMovekitState() + " fuel=" + nativeGetJetpackFuel()
+                    + " ftank=" + nativeGetFuelTier() + " frefill=" + nativeGetRefillTier()
                     + " ctlA=" + overlayAlphaPct
                     + " toeauto=" + toeAutoOn
                     + " gun=" + nativeGetPortalGun() + " portals=" + nativeGetPortalCount()

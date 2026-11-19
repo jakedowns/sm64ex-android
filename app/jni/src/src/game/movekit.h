@@ -17,6 +17,9 @@ u32 movekit_act_wallrun(struct MarioState *m);
 s16 movekit_camera_roll(void);
 
 int movekit_fuel_pct(void);
+void movekit_upgrade(int which);   // 0 = fuel capacity, 1 = refill rate
+int movekit_fuel_tier(void);
+int movekit_refill_tier(void);
 int movekit_state(void);   // bit0 wallrun, bit1 grapple, bit2 jetpack, bit3 attached
 void movekit_set_flag(int which, int on);
 

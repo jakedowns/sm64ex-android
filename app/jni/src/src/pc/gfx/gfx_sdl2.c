@@ -350,6 +350,27 @@ Java_com_vdavid003_sm64port_sm64portActivity_nativeGetCamMode2(JNIEnv *env, jcla
     return gfx_cam_mode;
 }
 
+JNIEXPORT void JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeMovekitUpgrade(JNIEnv *env, jclass clazz, jint which) {
+    (void) env; (void) clazz;
+    extern void movekit_upgrade(int which);
+    movekit_upgrade((int) which);
+}
+
+JNIEXPORT jint JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeGetFuelTier(JNIEnv *env, jclass clazz) {
+    (void) env; (void) clazz;
+    extern int movekit_fuel_tier(void);
+    return movekit_fuel_tier();
+}
+
+JNIEXPORT jint JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeGetRefillTier(JNIEnv *env, jclass clazz) {
+    (void) env; (void) clazz;
+    extern int movekit_refill_tier(void);
+    return movekit_refill_tier();
+}
+
 JNIEXPORT jint JNICALL
 Java_com_vdavid003_sm64port_sm64portActivity_nativeGetMovekitState(JNIEnv *env, jclass clazz) {
     (void) env; (void) clazz;

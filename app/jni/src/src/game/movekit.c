@@ -46,6 +46,12 @@ static float s_fuel = 100.0f;
 static float s_fuel_max = 100.0f;
 static s16 s_roll = 0;
 static int s_cooldown = 0;
+static Vec3f s_lastWallNormal;
+static f32 s_lastWallY = 0.0f;
+static int s_haveLastWall = 0;
+static f32 s_rope_len = 0.0f;
+static int s_fuel_tier = 0;
+static int s_refill_tier = 0;
 
 static int s_attached = 0;
 static Vec3f s_anchor;
@@ -101,6 +107,17 @@ void movekit_try_wallrun(struct MarioState *m) {
         return;   // not moving into the wall
     }
 
+    // Same-wall regrab rule: only if we dropped at least 20 units or the wall
+    // turned by more than ~25 degrees.
+    if (s_haveLastWall) {
+        f32 d = wall->normal.x * s_lastWallNormal[0]
+              + wall->normal.y * s_lastWallNormal[1]
+              + wall->normal.z * s_lastWallNormal[2];
+        if (d > 0.906f && m->pos[1] > s_lastWallY - 20.0f) {
+            return;
+        }
+    }
+
     // Side chosen so the tangent follows the current velocity.
     {
         f32 tx = -wall->normal.z;
@@ -108,6 +125,12 @@ void movekit_try_wallrun(struct MarioState *m) {
         int side = (tx * m->vel[0] + tz * m->vel[2] >= 0.0f) ? 1 : 0;
         set_mario_action(m, ACT_WALLRUN, side);
         m->actionTimer = WALLRUN_TICKS;
+        set_mario_animation(m, MARIO_ANIM_RUNNING);
+        s_lastWallNormal[0] = wall->normal.x;
+        s_lastWallNormal[1] = wall->normal.y;
+        s_lastWallNormal[2] = wall->normal.z;
+        s_lastWallY = m->pos[1];
+        s_haveLastWall = 1;
     }
 }
 
@@ -207,6 +230,9 @@ static void grapple_update(struct MarioState *m, u32 pressed, u32 down) {
             s_from[0] = m->pos[0];
             s_from[1] = m->pos[1] + 60.0f;
             s_from[2] = m->pos[2];
+            s_rope_len = sqrtf((hit[0] - m->pos[0]) * (hit[0] - m->pos[0])
+                             + (hit[1] - (m->pos[1] + 60.0f)) * (hit[1] - (m->pos[1] + 60.0f))
+                             + (hit[2] - m->pos[2]) * (hit[2] - m->pos[2]));
             s_attached = 1;
         }
     }
@@ -227,7 +253,7 @@ static void grapple_update(struct MarioState *m, u32 pressed, u32 down) {
         d[1] = s_anchor[1] - (m->pos[1] + 60.0f);
         d[2] = s_anchor[2] - m->pos[2];
         dist = sqrtf(vdot(d, d));
-        if (dist < GRAPPLE_MIN_DIST) {
+        if (dist < 1.0f) {
             s_attached = 0;
             return;
         }
@@ -235,9 +261,31 @@ static void grapple_update(struct MarioState *m, u32 pressed, u32 down) {
         d[1] /= dist;
         d[2] /= dist;
 
-        m->vel[0] += d[0] * GRAPPLE_PULL;
-        m->vel[1] += d[1] * GRAPPLE_PULL;
-        m->vel[2] += d[2] * GRAPPLE_PULL;
+        // Rope constraint: kill outward radial velocity, keep the tangential
+        // component so Mario swings under gravity, and reel in slowly.
+        {
+            f32 along = vdot(m->vel, d);
+            if (along < 0.0f) {
+                m->vel[0] -= d[0] * along;
+                m->vel[1] -= d[1] * along;
+                m->vel[2] -= d[2] * along;
+            }
+        }
+        if (dist > s_rope_len) {
+            f32 k = dist - s_rope_len;
+            m->pos[0] += d[0] * k;
+            m->pos[1] += d[1] * k;
+            m->pos[2] += d[2] * k;
+        }
+        if (s_rope_len > GRAPPLE_MIN_DIST) {
+            s_rope_len -= 0.8f;
+            if (s_rope_len < GRAPPLE_MIN_DIST) {
+                s_rope_len = GRAPPLE_MIN_DIST;
+            }
+        }
+        m->vel[0] += d[0] * GRAPPLE_PULL * 0.35f;
+        m->vel[1] += d[1] * GRAPPLE_PULL * 0.35f;
+        m->vel[2] += d[2] * GRAPPLE_PULL * 0.35f;
 
         {
             f32 sp = sqrtf(vdot(m->vel, m->vel));
@@ -247,6 +295,10 @@ static void grapple_update(struct MarioState *m, u32 pressed, u32 down) {
                 m->vel[1] *= k;
                 m->vel[2] *= k;
             }
+        }
+        if (dist < GRAPPLE_MIN_DIST) {
+            s_attached = 0;
+            return;
         }
         s_from[0] = m->pos[0];
         s_from[1] = m->pos[1] + 60.0f;
@@ -270,7 +322,8 @@ static void jetpack_update(struct MarioState *m, u32 down) {
             s_fuel = 0.0f;
         }
     } else {
-        f32 rate = (m->action & ACT_FLAG_AIR) ? JET_REFILL * 0.5f : JET_REFILL;
+        f32 mult = 1.0f + 0.5f * (f32) s_refill_tier;
+        f32 rate = ((m->action & ACT_FLAG_AIR) ? JET_REFILL * 0.5f : JET_REFILL) * mult;
         s_fuel += rate;
         if (s_fuel > s_fuel_max) {
             s_fuel = s_fuel_max;
@@ -389,6 +442,26 @@ int movekit_fuel_pct(void) {
 int movekit_state(void) {
     return (s_wallrun_on ? 1 : 0) | (s_grapple_on ? 2 : 0) | (s_jetpack_on ? 4 : 0)
          | (s_attached ? 8 : 0);
+}
+
+void movekit_upgrade(int which) {
+    if (which == 0) {
+        s_fuel_tier = (s_fuel_tier + 1) % 3;
+        s_fuel_max = 100.0f + 50.0f * (f32) s_fuel_tier;
+        if (s_fuel > s_fuel_max) {
+            s_fuel = s_fuel_max;
+        }
+    } else {
+        s_refill_tier = (s_refill_tier + 1) % 3;
+    }
+}
+
+int movekit_fuel_tier(void) {
+    return s_fuel_tier;
+}
+
+int movekit_refill_tier(void) {
+    return s_refill_tier;
 }
 
 void movekit_set_flag(int which, int on) {
