@@ -19,4 +19,8 @@ enum LevelNum
 #undef STUB_LEVEL
 #undef DEFINE_LEVEL
 
+// The graybox Portal Test Chamber reuses the last unused level slot so the
+// level count (and every table sized by LEVEL_COUNT) stays unchanged.
+#define LEVEL_PTC LEVEL_UNKNOWN_38
+
 #endif // _LEVEL_TABLE_H

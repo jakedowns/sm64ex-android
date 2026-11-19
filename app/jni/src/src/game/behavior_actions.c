@@ -36,6 +36,7 @@
 #include "rendering_graph_node.h"
 #include "level_table.h"
 #include "thread6.h"
+#include "ptc.h"
 
 #define o gCurrentObject
 
@@ -195,6 +196,7 @@ Gfx *geo_move_mario_part_from_parent(s32 run, UNUSED struct GraphNode *node, Mat
 }
 
 #include "behaviors/heave_ho.inc.c"
+#include "behaviors/ptc_star.inc.c"
 #include "behaviors/spawn_star_exit.inc.c"
 #include "behaviors/unused_poundable_platform.inc.c"
 #include "behaviors/beta_trampoline.inc.c"

@@ -25,6 +25,8 @@
 #endif // End of OS-Specific GL defines
 
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include "gfx_window_manager_api.h"
 #include "gfx_screen_config.h"
@@ -34,6 +36,8 @@
 
 #include "src/pc/controller/controller_keyboard.h"
 #include "src/pc/controller/controller_touchscreen.h"
+
+#include "game/ptc.h"
 
 // TODO: figure out if this shit even works
 #ifdef VERSION_EU
@@ -248,6 +252,21 @@ Java_com_vdavid003_sm64port_sm64portActivity_nativeGetFpsMode(JNIEnv *env, jclas
 }
 
 JNIEXPORT void JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeSetUncappedTest(JNIEnv *env, jclass clazz,
+                                                                   jint on) {
+    (void) env; (void) clazz;
+    extern void gfx_set_test_uncapped(int);
+    gfx_set_test_uncapped(on);
+}
+
+JNIEXPORT jint JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeGetUncappedTest(JNIEnv *env, jclass clazz) {
+    (void) env; (void) clazz;
+    extern int gfx_get_test_uncapped(void);
+    return gfx_get_test_uncapped();
+}
+
+JNIEXPORT void JNICALL
 Java_com_vdavid003_sm64port_sm64portActivity_nativeSetHfrInterp(JNIEnv *env, jclass clazz, jint on) {
     (void) env; (void) clazz;
     gfx_hfr_interp = on ? 1 : 0;
@@ -334,6 +353,41 @@ Java_com_vdavid003_sm64port_sm64portActivity_nativeGetPortalCount(JNIEnv *env, j
     (void) env; (void) clazz;
     extern int portal_count(void);
     return portal_count();
+}
+
+JNIEXPORT void JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativePtcCommand(JNIEnv *env, jclass clazz,
+                                                              jstring action) {
+    (void) clazz;
+    const char *s = action != NULL ? (*env)->GetStringUTFChars(env, action, NULL) : NULL;
+    ptc_debug_command(s != NULL ? s : "");
+    if (s != NULL) {
+        (*env)->ReleaseStringUTFChars(env, action, s);
+    }
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativePtcStatus(JNIEnv *env, jclass clazz) {
+    char buf[2048];
+    (void) clazz;
+    ptc_format_status(buf, (int) sizeof(buf));
+    return (*env)->NewStringUTF(env, buf);
+}
+
+JNIEXPORT jint JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativePtcPhase(JNIEnv *env, jclass clazz) {
+    (void) env; (void) clazz;
+    char buf[2048];
+    char *p;
+    ptc_format_status(buf, (int) sizeof(buf));
+    p = strstr(buf, "phase=");
+    return p != NULL ? (jint) atoi(p + 6) : 0;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativePtcStar(JNIEnv *env, jclass clazz) {
+    (void) env; (void) clazz;
+    return ptc_star_collected();
 }
 
 JNIEXPORT void JNICALL
@@ -474,6 +528,19 @@ static const Uint32 FRAME_TIME = 1000 / FRAMERATE;
 int gfx_fps_mode = 2;
 // HFR: 0 disables frame interpolation (useful for A/B comparison).
 int gfx_hfr_interp = 1;
+
+// Test-only execution mode: run one fixed 30 Hz simulation tick per loop
+// iteration, with no display pacing and no rendering.  Physics, collision and
+// movement rules are untouched; only the wall-clock wait is removed.
+int gfx_test_uncapped = 0;
+
+void gfx_set_test_uncapped(int on) {
+    gfx_test_uncapped = on ? 1 : 0;
+}
+
+int gfx_get_test_uncapped(void) {
+    return gfx_test_uncapped;
+}
 
 void gfx_set_fps_mode(int mode) {
     if (mode < 0) mode = 0;
@@ -687,6 +754,14 @@ static void gfx_sdl_main_loop(void (*run_one_game_iter)(void)) {
     extern void gfx_start_frame(void);
     extern float gfx_render_delta;
     extern float gfx_render_alpha;
+
+    if (gfx_test_uncapped) {
+        // One full 1/30 s simulation tick per iteration.  send_display_list()
+        // skips the GL pass in this mode, so this loop is limited only by CPU.
+        // The screen intentionally keeps the last rendered frame.
+        run_one_game_iter();
+        return;
+    }
 
     static double last = 0.0;
     static double acc = 0.0;

@@ -23,6 +23,13 @@ Everything below was added on top of upstream in this fork.
   (opt-in, default off).
 - **Debug level select**: ENH button, `cmd level`, or **L + R + START** in
   gameplay, the pause menu, or the title screen.
+- **Portal Test Chamber** (level 38, level select + ENH shortcut): deterministic
+  graybox room, calibrated jump/ledge-grab platforms, debug-only star, and an
+  automated portal-traversal regression test. See
+  [PORTAL-TEST-CHAMBER.md](PORTAL-TEST-CHAMBER.md).
+- **Uncapped test simulation** (ENH tab / `cmd uncapped`): runs normal fixed
+  30 Hz sim ticks without display pacing for automated tests; gameplay and
+  physics are unchanged.
 - **Cheats menu enabled by default** (pause → R → CHEATS); the vanilla triple-L
   unlock still works if the in-menu toggle turns it off.
 - **Control overlay opacity** defaults to 33% and persists across app launches.
@@ -380,11 +387,16 @@ respawn follow.
 A Portal-style portal gun (`src/game/portal.c`), enabled by default in the castle
 grounds.
 
-- **Pickup** — a placeholder gun (spinning box for now) sits next to Mario's
-  spawn in the castle grounds; walk into it to pick it up. The gun is retained
-  across level loads, paintings and level select. While held, the touch overlay
-  shows a centre **aiming reticle** and two buttons: **P1** (blue) and **P2**
-  (orange).
+- **Pickup** — a placeholder prop sits next to Mario's spawn in the castle
+  grounds; walk into it to pick it up. The gun is retained across level loads,
+  paintings and level select. While held, the touch overlay shows a centre
+  **aiming reticle** and two buttons: **P1** (blue) and **P2** (orange).
+- **Held model** — after pickup, Mario carries a low-poly Portal gun generated
+  from the CC0 model *Portal Gun* by 3DESIGNER27 (Tim Gubski), thingiverse
+  3022786. `scripts/gen-portal-gun.py` decimates the 47k-triangle STL by vertex
+  clustering (currently 1,103 verts / 2,933 tris) and emits a static N64
+  display list (`src/game/ptc_gun_model.inc`). It is positioned at Mario's right
+  hand and follows his interpolated render position and yaw.
 - **Placing** — P1/P2 fire a hitscan from the centre of the camera view (up to
   4000 units). A shot only sticks to solid level geometry: object-owned surfaces
   (NPCs, coins, question blocks, breakable bricks, signs, doors…) and
@@ -404,10 +416,15 @@ grounds.
   entered by falling through it.
 - Portals are cleared when the level/area changes; the gun itself is not.
 
-Not implemented yet: the through-portal view (camera relay) and the clone of
-Mario seen standing in the destination portal. The usual recipe for those is the
-portal-pair camera transform plus an oblique near-plane clip so geometry behind
-the exit portal is not drawn.
+**Through-portal view (experimental, off by default):** toggle with
+`adb shell $B --es cmd ptc --es action portalview`. It renders the scene a
+second time into an FBO from the portal-mirrored camera
+(`C = V * M * V^-1`), then draws the source portal as a textured, depth-tested
+ellipse. The first version is mono (both eyes sample the same portal image) and
+does not yet do oblique near-plane clipping, so geometry behind the exit portal
+can leak in; treat it as a prototype until it has been verified on device.
+
+Not implemented yet: the clone of Mario seen standing in the destination portal.
 
 ---
 
@@ -434,6 +451,12 @@ adb shell $B --es cmd fps --ei v 2              # 0=30 1=60 2=120 3=uncapped
 adb shell $B --es cmd busy --ei v 1             # debug line red ("hands off") / 0 green
 adb shell $B --es cmd givegun                   # grant the portal gun (testing)
 adb shell $B --es cmd portal --ei v 0           # fire P1 (0 = blue, 1 = orange)
+adb shell $B --es cmd ptc --es action run       # Portal Test Chamber traversal
+adb shell $B --es cmd ptc --es action reset     # reset level/portals/star
+adb shell $B --es cmd ptc --es action calibrate # measure jump/ledge limits
+adb shell $B --es cmd ptc --es action momentum  # floor -> 45-degree ramp launch test
+adb shell $B --es cmd uncapped --ei v 1         # debug-only uncapped test ticks
+adb shell $B --es cmd hz --ei v 60              # physical panel 60/120 Hz mode
 adb shell $B --es cmd reinit | reset
 ```
 

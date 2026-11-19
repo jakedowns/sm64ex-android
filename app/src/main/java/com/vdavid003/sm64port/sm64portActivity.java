@@ -8,8 +8,10 @@ import android.hardware.SensorManager;
 import android.graphics.SurfaceTexture;
 import android.os.Bundle;
 import android.util.Log;
+import android.view.Display;
 import android.view.Gravity;
 import android.view.Surface;
+import android.view.WindowManager;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
@@ -78,6 +80,9 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     // Gameplay enhancements (default on; toggled from the ENH tab).
     private boolean ragdollOn = true, hitRagdollOn = true, ppcamOn = true;
     private TextView ragdollToggle, hitRagdollToggle, ppcamToggle;
+    // Portal Test Chamber + uncapped test execution (debug tooling only).
+    private boolean uncappedTestOn = false;
+    private TextView uncappedTestToggle;
     // Realtime shadow map (SHADOW tab).
     private int shadowRes = 1024;
     private int shadowDebug = 0;
@@ -914,8 +919,20 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         hitRagdollToggle = addEnhToggle("HIT RAGDOLL", 1, hitRagdollOn);
         ppcamToggle = addEnhToggle("PUPPYCAM+", 2, ppcamOn);
         addEnhButton("LEVEL SELECT", this::openLevelSelect);
+        addEnhButton("PORTAL TEST CHAMBER", () -> debugLevel(38));
+        addEnhButton("RUN PORTAL SMOKE TEST", () -> debugPtc("run"));
+        addEnhButton("RUN MOMENTUM TEST", () -> debugPtc("momentum"));
+        addEnhButton("RESET PORTAL TEST", () -> debugPtc("reset"));
+        addEnhButton("CALIBRATE JUMPS", () -> debugPtc("calibrate"));
         addEnhButton("KILL MARIO (TEST)", this::debugKill);
         addEnhButton("EQUIP PORTAL GUN", this::debugGiveGun);
+        uncappedTestToggle = new TextView(this);
+        uncappedTestToggle.setText("UNCAPPED TEST SIM: " + (uncappedTestOn ? "ON" : "OFF"));
+        uncappedTestToggle.setTextSize(16);
+        uncappedTestToggle.setTextColor(uncappedTestOn ? 0xFF66FF99 : 0xFF888888);
+        uncappedTestToggle.setPadding(dp(4), dp(8), dp(4), dp(8));
+        uncappedTestToggle.setOnClickListener(v -> debugUncapped(uncappedTestOn ? 0 : 1));
+        controls.addView(uncappedTestToggle);
         TextView interp = new TextView(this);
         interpButton = interp;
         interp.setText(interpOn ? "INTERP ON" : "INTERP OFF");
@@ -1114,6 +1131,23 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     void debugLevel(int level) {
         nativeDebugLevel(level);
         Log.i(TAG, "LEVEL " + level + " requested");
+    }
+
+    /** Portal Test Chamber command: run/reset/calibrate/place/stop. */
+    void debugPtc(String action) {
+        nativePtcCommand(action == null ? "" : action);
+        Log.i(TAG, "PTC " + action);
+    }
+
+    /** Debug-only: run fixed 30 Hz sim ticks without display pacing. */
+    void debugUncapped(int on) {
+        uncappedTestOn = on != 0;
+        nativeSetUncappedTest(uncappedTestOn ? 1 : 0);
+        if (uncappedTestToggle != null) {
+            uncappedTestToggle.setText("UNCAPPED TEST SIM: " + (uncappedTestOn ? "ON" : "OFF"));
+            uncappedTestToggle.setTextColor(uncappedTestOn ? 0xFF66FF99 : 0xFF888888);
+        }
+        Log.i(TAG, "UNCAPPED_TEST=" + uncappedTestOn);
     }
 
     // ---- realtime shadow widgets (nativeSetShadow channel) ----
@@ -1750,6 +1784,12 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     static native int nativeGetMarioPos(int axis);
     static native int nativeGetPortalField(int which, int field);
     static native void nativeGivePortalGun();
+    static native void nativePtcCommand(String action);
+    static native String nativePtcStatus();
+    static native int nativePtcPhase();
+    static native int nativePtcStar();
+    static native void nativeSetUncappedTest(int on);
+    static native int nativeGetUncappedTest();
     static native void nativeOverlayStick2(int rx, int ry);
     static native void nativeOverlayAnalog(int on);
     static native void nativeHideInGameControls(int hide);
@@ -1998,10 +2038,37 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                     Log.i(TAG, "INTERP " + interpOn);
                 });
                 break;
+            case "UNCAP":
+                runOnUiThread(() -> debugUncapped(uncappedTestOn ? 0 : 1));
+                break;
+            case "PTC":
+                debugPtc("run");
+                break;
             case "3D": runOnUiThread(() -> setStereoMode(!stereoOn)); break;
             case "TEST": runOnUiThread(this::showStaticTestImage); break;
             default: Log.w(TAG, "unknown toggle " + name);
         }
+    }
+
+    /** Debug-only: switch the panel to a requested physical refresh rate. */
+    void debugDisplayHz(int hz) {
+        runOnUiThread(() -> {
+            Display d = getWindowManager().getDefaultDisplay();
+            Display.Mode best = null;
+            for (Display.Mode m : d.getSupportedModes()) {
+                if (best == null
+                        || Math.abs(m.getRefreshRate() - hz) < Math.abs(best.getRefreshRate() - hz)) {
+                    best = m;
+                }
+            }
+            if (best != null) {
+                WindowManager.LayoutParams lp = getWindow().getAttributes();
+                lp.preferredDisplayModeId = best.getModeId();
+                getWindow().setAttributes(lp);
+                Log.i(TAG, "DISPLAY_HZ requested=" + hz + " mode=" + best.getModeId()
+                        + " hz=" + best.getRefreshRate());
+            }
+        });
     }
 
     void debugSetFps(int mode) {
@@ -2088,6 +2155,8 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                     + " str=" + nativeGetShadow(3) + " bias=" + nativeGetShadow(4)
                     + " soft=" + nativeGetShadow(6) + " taps=" + nativeGetShadow(7)
                     + " range=" + nativeGetShadow(8) + " dbg=" + nativeGetShadow(11));
+            Log.i(TAG, nativePtcStatus());
+            Log.i(TAG, "UNCAPPED_TEST=" + nativeGetUncappedTest());
         });
     }
 

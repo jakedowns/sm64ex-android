@@ -29,11 +29,15 @@
 #include "audio/external.h"
 #include "game/area.h"
 
+/* Generated low-poly portal-gun mesh + display list (CC0 model). */
+#include "ptc_gun_model.inc"
+
 #define PORTAL_RX        45.0f     // ellipse half width (world units)
 #define PORTAL_RY        80.0f     // ellipse half height
 #define PORTAL_SEGMENTS  24
 #define PORTAL_RAY_DIST  4000.0f   // hitscan length
-#define PORTAL_EXIT_PUSH 40.0f     // spawn this far out of the exit portal
+#define PORTAL_EXIT_PUSH 130.0f    // clear the entry trigger after exiting
+#define PORTAL_ENTER_DIST 110.0f    // proximity needed to use a floor/ramp portal
 #define PORTAL_COOLDOWN  20        // ticks before the next teleport
 #define PORTAL_PICKUP_R  150.0f
 
@@ -54,6 +58,8 @@ static struct Portal s_portal[2];
 // Last placement result, for headless debugging: 0 none, 1 placed, 2 bad
 // surface, 3 could not fit the ellipse, 4 no gun.
 int g_portal_debug = 0;
+PortalViewState g_portal_view;
+static int s_portal_view_enabled = 0;
 static int s_hasGun = 0;
 static int s_gunSpawned = 0;
 static Vec3f s_gunPos = {0.0f, 0.0f, 0.0f};
@@ -63,6 +69,9 @@ static Vec3f s_prevCom;
 static int s_havePrevCom = 0;
 static int s_lastLevelArea = -1;
 static int s_ticksInArea = 0;
+static int s_lastTeleportSrc = -1;
+static int s_lastTeleportDst = -1;
+static int s_teleportCount = 0;
 
 /* ------------------------------------------------------------------ math */
 
@@ -181,24 +190,14 @@ static int portal_rim_ok(const Vec3f centre, const Vec3f n, const Vec3f tan, con
     return 1;
 }
 
-void portal_shoot(int which) {
-    Vec3f orig, dir;
+static void portal_shoot_ray(int which, Vec3f orig, Vec3f rayDir) {
     struct Surface *surf = NULL;
     Vec3f hit;
     Vec3f n, tan, bitan;
     Vec3f centre;
+    Vec3f dir;
 
-    if (which < 0 || which > 1 || gMarioState == NULL) {
-        return;
-    }
-    if (!s_hasGun) {
-        g_portal_debug = 4;
-        return;
-    }
-
-    vec3f_copy(orig, gLakituState.pos);
-    vec3f_copy(dir, gLakituState.focus);
-    vec3f_sub(dir, orig);
+    vec3f_copy(dir, rayDir);
     vnorm3(dir);
     dir[0] *= PORTAL_RAY_DIST;
     dir[1] *= PORTAL_RAY_DIST;
@@ -276,6 +275,48 @@ void portal_shoot(int which) {
     g_portal_debug = 1;
 }
 
+void portal_shoot(int which) {
+    Vec3f orig, dir;
+
+    if (which < 0 || which > 1 || gMarioState == NULL) {
+        return;
+    }
+    if (!s_hasGun) {
+        g_portal_debug = 4;
+        return;
+    }
+
+    vec3f_copy(orig, gLakituState.pos);
+    vec3f_copy(dir, gLakituState.focus);
+    vec3f_sub(dir, orig);
+    portal_shoot_ray(which, orig, dir);
+}
+
+int portal_shoot_at(int which, const Vec3f origin, const Vec3f target) {
+    Vec3f orig, dir;
+
+    if (which < 0 || which > 1 || gMarioState == NULL) {
+        return 0;
+    }
+    if (!s_hasGun) {
+        g_portal_debug = 4;
+        return 0;
+    }
+
+    orig[0] = origin[0];
+    orig[1] = origin[1];
+    orig[2] = origin[2];
+    dir[0] = target[0] - origin[0];
+    dir[1] = target[1] - origin[1];
+    dir[2] = target[2] - origin[2];
+    if (vdot3(dir, dir) < 0.001f) {
+        g_portal_debug = 2;
+        return 0;
+    }
+    portal_shoot_ray(which, orig, dir);
+    return s_portal[which].active;
+}
+
 /* ------------------------------------------------------------- simulation */
 
 static void portal_clear(void) {
@@ -283,6 +324,14 @@ static void portal_clear(void) {
     s_portal[1].active = 0;
     s_havePrevCom = 0;
     s_cooldown = 0;
+    s_lastTeleportSrc = -1;
+    s_lastTeleportDst = -1;
+}
+
+void portal_reset(void) {
+    portal_clear();
+    g_portal_debug = 0;
+    s_teleportCount = 0;
 }
 
 static void portal_rotate_vec(const struct Portal *from, const struct Portal *to,
@@ -311,16 +360,22 @@ static void portal_teleport(int srcIdx, const Vec3f at) {
     float x = vdot3(rel, src->tan);
     float y = vdot3(rel, src->bitan);
     float z = vdot3(rel, src->normal);
+    // Tangential offset is rotated 180 degrees (left/right swap).  The
+    // normal offset stays positive: entering in front of A must emerge in
+    // front of B, otherwise a trigger at 40-70 units would place Mario
+    // behind the destination wall.
     x = -x;
-    z = -z;
 
-    newCom[0] = dst->pos[0] + dst->tan[0] * x + dst->bitan[0] * y + dst->normal[0] * z;
-    newCom[1] = dst->pos[1] + dst->tan[1] * x + dst->bitan[1] * y + dst->normal[1] * z;
-    newCom[2] = dst->pos[2] + dst->tan[2] * x + dst->bitan[2] * y + dst->normal[2] * z;
+    // The normal offset is the entry trigger depth (up to PORTAL_ENTER_DIST).
+    // Carrying it into the exit position makes the emerge point depend on
+    // which tick the trigger fired, which is very noisy for fast falls.  Keep
+    // the tangential offset but place Mario right at the exit surface.
+    (void)z;
+
     // Push out of the exit portal so we do not immediately re-enter it.
-    newCom[0] += dst->normal[0] * PORTAL_EXIT_PUSH;
-    newCom[1] += dst->normal[1] * PORTAL_EXIT_PUSH;
-    newCom[2] += dst->normal[2] * PORTAL_EXIT_PUSH;
+    newCom[0] = dst->pos[0] + dst->tan[0] * x + dst->bitan[0] * y + dst->normal[0] * PORTAL_EXIT_PUSH;
+    newCom[1] = dst->pos[1] + dst->tan[1] * x + dst->bitan[1] * y + dst->normal[1] * PORTAL_EXIT_PUSH;
+    newCom[2] = dst->pos[2] + dst->tan[2] * x + dst->bitan[2] * y + dst->normal[2] * PORTAL_EXIT_PUSH;
 
     gMarioState->pos[0] = newCom[0];
     gMarioState->pos[1] = newCom[1] - height * 0.5f;
@@ -348,10 +403,28 @@ static void portal_teleport(int srcIdx, const Vec3f at) {
         gMarioState->marioObj->oMoveAngleYaw = gMarioState->faceAngle[1];
     }
 
+    // This fork rebuilds the horizontal air velocity from forwardVel every
+    // tick (update_air_without_turn), which would erase a portal launch.
+    // Store the rotated momentum in forwardVel and face the exit direction so
+    // the airborne step reproduces the same trajectory.
+    {
+        f32 hsp = sqrtf(newVel[0] * newVel[0] + newVel[2] * newVel[2]);
+        gMarioState->forwardVel = hsp;
+        if (hsp > 1.0f) {
+            // SM64 yaw is measured from +Z: direction (sins, coss), so the
+            // yaw for a world velocity is atan2s(vz, vx).
+            gMarioState->faceAngle[1] = atan2s(newVel[2], newVel[0]);
+            gMarioState->marioObj->oMoveAngleYaw = gMarioState->faceAngle[1];
+        }
+    }
+
     // Snap the camera to the new position.
     gCameraMovementFlags |= CAM_MOVE_INIT_CAMERA;
     s_cooldown = PORTAL_COOLDOWN;
     s_havePrevCom = 0;
+    s_lastTeleportSrc = srcIdx;
+    s_lastTeleportDst = 1 - srcIdx;
+    s_teleportCount++;
     play_sound(SOUND_MENU_CAMERA_ZOOM_IN, gDefaultSoundArgs);
 }
 
@@ -428,7 +501,7 @@ void portal_update(void) {
             for (int i = 0; i < 2; i++) {
                 struct Portal *p = &s_portal[i];
                 float d = vdot3(com, p->normal) - vdot3(p->pos, p->normal);
-                if (d > 0.0f && d < 70.0f && portal_point_inside(p, com)) {
+                if (d > 0.0f && d < PORTAL_ENTER_DIST && portal_point_inside(p, com)) {
                     portal_teleport(i, com);
                     break;
                 }
@@ -537,32 +610,185 @@ static void draw_gun(const Mat4 view) {
     gSP1Triangle(gDisplayListHead++, 1, 6, 2, 0);
 }
 
+static void draw_held_gun(const Mat4 view) {
+    struct MarioState *m = gMarioState;
+    Vec3f right, fwd, up, pos;
+    s16 yaw;
+
+    if (!s_hasGun || m == NULL || m->marioObj == NULL) {
+        return;
+    }
+
+    /* Keep the prop in Mario's right hand: follow the interpolated render
+     * position/angle so it does not jitter against the 60 Hz model. */
+    pos[0] = m->marioObj->header.gfx.pos[0];
+    pos[1] = m->marioObj->header.gfx.pos[1];
+    pos[2] = m->marioObj->header.gfx.pos[2];
+    yaw = m->marioObj->header.gfx.angle[1];
+
+    right[0] = coss(yaw);
+    right[1] = 0.0f;
+    right[2] = -sins(yaw);
+    fwd[0] = sins(yaw);
+    fwd[1] = 0.0f;
+    fwd[2] = coss(yaw);
+    up[0] = 0.0f;
+    up[1] = 1.0f;
+    up[2] = 0.0f;
+
+    pos[0] += right[0] * 26.0f + fwd[0] * 8.0f;
+    pos[1] += 92.0f;
+    pos[2] += right[2] * 26.0f + fwd[2] * 8.0f;
+
+    emit_model_matrix(pos, right, up, fwd, view);
+    gSPDisplayList(gDisplayListHead++, ptc_gun_dl);
+}
+
+void portal_view_toggle(void) {
+    s_portal_view_enabled = !s_portal_view_enabled;
+    if (!s_portal_view_enabled) {
+        g_portal_view.active = 0;
+    }
+}
+
+static void mat4_local_to_world(float out[4][4], const Vec3f pos, const Vec3f tan,
+                                const Vec3f bitan, const Vec3f n) {
+    out[0][0] = tan[0];   out[0][1] = tan[1];   out[0][2] = tan[2];   out[0][3] = 0.0f;
+    out[1][0] = bitan[0]; out[1][1] = bitan[1]; out[1][2] = bitan[2]; out[1][3] = 0.0f;
+    out[2][0] = n[0];     out[2][1] = n[1];     out[2][2] = n[2];     out[2][3] = 0.0f;
+    out[3][0] = pos[0];   out[3][1] = pos[1];   out[3][2] = pos[2];   out[3][3] = 1.0f;
+}
+
+static void mat4_world_to_local(float out[4][4], const Vec3f pos, const Vec3f tan,
+                                const Vec3f bitan, const Vec3f n) {
+    out[0][0] = tan[0];   out[0][1] = bitan[0]; out[0][2] = n[0];     out[0][3] = 0.0f;
+    out[1][0] = tan[1];   out[1][1] = bitan[1]; out[1][2] = n[1];     out[1][3] = 0.0f;
+    out[2][0] = tan[2];   out[2][1] = bitan[2]; out[2][2] = n[2];     out[2][3] = 0.0f;
+    out[3][0] = -vdot3(pos, tan);
+    out[3][1] = -vdot3(pos, bitan);
+    out[3][2] = -vdot3(pos, n);
+    out[3][3] = 1.0f;
+}
+
+/* Build the camera-space portal transform and the source fan geometry. */
+static void portal_view_update(const Mat4 view) {
+    struct Portal *a, *b, *src, *dst;
+    Vec3f toCam;
+    float d[2];
+    int i, best = -1;
+
+    g_portal_view.active = 0;
+    if (!s_portal_view_enabled || !s_portal[0].active || !s_portal[1].active) {
+        return;
+    }
+
+    /* Show the portal the camera is actually looking into. */
+    d[0] = d[1] = -1e9f;
+    for (i = 0; i < 2; i++) {
+        if (!s_portal[i].active) continue;
+        toCam[0] = gLakituState.pos[0] - s_portal[i].pos[0];
+        toCam[1] = gLakituState.pos[1] - s_portal[i].pos[1];
+        toCam[2] = gLakituState.pos[2] - s_portal[i].pos[2];
+        d[i] = vdot3(toCam, s_portal[i].normal);
+        if (d[i] > 0.0f && (best < 0 || d[i] > d[best])) {
+            best = i;
+        }
+    }
+    if (best < 0) {
+        return;
+    }
+
+    src = &s_portal[best];
+    dst = &s_portal[1 - best];
+    a = src;
+    b = dst;
+
+    {
+        float tsrc[4][4], tsrc_inv[4][4], tdst[4][4], r[4][4];
+        float vinv[4][4], m1[4][4], m[4][4], c[4][4];
+        int x, y;
+
+        mat4_local_to_world(tsrc, a->pos, a->tan, a->bitan, a->normal);
+        mat4_world_to_local(tsrc_inv, a->pos, a->tan, a->bitan, a->normal);
+        mat4_local_to_world(tdst, b->pos, b->tan, b->bitan, b->normal);
+        (void)tsrc;
+
+        memset(r, 0, sizeof(r));
+        r[0][0] = -1.0f;
+        r[1][1] = 1.0f;
+        r[2][2] = -1.0f;
+        r[3][3] = 1.0f;
+
+        /* view^-1 (rigid): R^T and -t*R^T. */
+        for (y = 0; y < 3; y++) {
+            for (x = 0; x < 3; x++) {
+                vinv[y][x] = view[x][y];
+            }
+            vinv[y][3] = 0.0f;
+        }
+        for (x = 0; x < 3; x++) {
+            vinv[3][x] = -(view[3][0] * view[x][0] + view[3][1] * view[x][1]
+                         + view[3][2] * view[x][2]);
+        }
+        vinv[3][3] = 1.0f;
+
+        /* p_dst = p_src * worldToLocal(src) * R * localToWorld(dst) */
+        mat4_mul_rm(m1, tsrc_inv, r);
+        mat4_mul_rm(m, m1, tdst);
+        /* C = view * M * view^-1 */
+        mat4_mul_rm(m1, view, m);
+        mat4_mul_rm(c, m1, vinv);
+
+        memcpy(g_portal_view.c_matrix, c, sizeof(c));
+    }
+
+    memcpy(g_portal_view.view, view, sizeof(Mat4));
+    g_portal_view.source = best;
+    g_portal_view.count = PORTAL_VIEW_SEGS;
+    vec3f_copy(g_portal_view.center, a->pos);
+    for (i = 0; i < PORTAL_VIEW_SEGS; i++) {
+        float ang = (float)i * (2.0f * 3.14159265f) / (float)PORTAL_VIEW_SEGS;
+        g_portal_view.rim[i][0] = a->pos[0] + a->tan[0] * cosf(ang) * a->rx
+                                           + a->bitan[0] * sinf(ang) * a->ry;
+        g_portal_view.rim[i][1] = a->pos[1] + a->tan[1] * cosf(ang) * a->rx
+                                           + a->bitan[1] * sinf(ang) * a->ry;
+        g_portal_view.rim[i][2] = a->pos[2] + a->tan[2] * cosf(ang) * a->rx
+                                           + a->bitan[2] * sinf(ang) * a->ry;
+    }
+    g_portal_view.active = 1;
+}
+
 void portal_render(void) {
     Mat4 view;
 
     if (gCurrentArea == NULL) {
         return;
     }
-    if (!s_portal[0].active && !s_portal[1].active && !s_gunSpawned) {
+    if (!s_portal[0].active && !s_portal[1].active && !s_gunSpawned && !s_hasGun) {
+        g_portal_view.active = 0;
         return;
     }
 
     mtxf_lookat(view, gLakituState.pos, gLakituState.focus, 0);
+    portal_view_update(view);
 
     gSPSetGeometryMode(gDisplayListHead++, G_ZBUFFER);
     gSPClearGeometryMode(gDisplayListHead++, G_LIGHTING);
     gDPSetCombineMode(gDisplayListHead++, G_CC_SHADE, G_CC_SHADE);
     gDPSetRenderMode(gDisplayListHead++, G_RM_AA_ZB_XLU_SURF, G_RM_AA_ZB_XLU_SURF2);
 
-    if (s_portal[0].active) {
+    /* The source portal is drawn by the renderer's textured overlay when the
+     * through-view is active; keep the flat fan as a fallback otherwise. */
+    if (s_portal[0].active && !(g_portal_view.active && g_portal_view.source == 0)) {
         draw_portal(&s_portal[0], 0x30, 0x60, 0xFF, view);   // blue
     }
-    if (s_portal[1].active) {
+    if (s_portal[1].active && !(g_portal_view.active && g_portal_view.source == 1)) {
         draw_portal(&s_portal[1], 0xFF, 0x80, 0x20, view);   // orange
     }
     if (s_gunSpawned) {
         draw_gun(view);
     }
+    draw_held_gun(view);
 
     gSPClearGeometryMode(gDisplayListHead++, G_ZBUFFER);
 }
@@ -595,4 +821,25 @@ int portal_gun_has(void) {
 
 int portal_count(void) {
     return (s_portal[0].active ? 1 : 0) + (s_portal[1].active ? 1 : 0);
+}
+
+int portal_get(int which, Vec3f pos, Vec3f normal) {
+    if (which < 0 || which > 1 || !s_portal[which].active) {
+        return 0;
+    }
+    vec3f_copy(pos, s_portal[which].pos);
+    vec3f_copy(normal, s_portal[which].normal);
+    return 1;
+}
+
+int portal_last_src(void) {
+    return s_lastTeleportSrc;
+}
+
+int portal_last_dst(void) {
+    return s_lastTeleportDst;
+}
+
+int portal_teleport_count(void) {
+    return s_teleportCount;
 }

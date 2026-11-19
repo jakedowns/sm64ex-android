@@ -30,6 +30,7 @@
 #include "sound_init.h"
 #include "engine/surface_collision.h"
 #include "level_table.h"
+#include "ptc.h"
 #include "thread6.h"
 #include "pc/configfile.h"
 #include "pc/cheats.h"
@@ -1450,6 +1451,9 @@ void update_mario_inputs(struct MarioState *m) {
     if (m->doubleJumpTimer > 0) {
         m->doubleJumpTimer--;
     }
+
+    // Portal Test Chamber scripted input (no effect unless a test is active).
+    ptc_mario_input_override(m);
 }
 
 /**

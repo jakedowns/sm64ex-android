@@ -1945,6 +1945,165 @@ static void gfx_opengl_start_frame(void) {
     glEnable(GL_SCISSOR_TEST);
 }
 
+/* ---------------- through-portal camera view ---------------- */
+#include "game/portal.h"
+extern float gfx_eye_shear[2];
+extern int gfx_get_portal_view_proj(float out[4][4]);
+
+static GLuint s_portal_fbo = 0, s_portal_tex = 0, s_portal_depth = 0;
+static int s_portal_w = 0, s_portal_h = 0;
+static GLuint s_portal_prog = 0;
+static GLint s_portal_apos = -1, s_portal_auv = -1, s_portal_utex = -1;
+
+static const char *s_portal_vs =
+    "attribute vec3 aPos;\n"
+    "attribute vec2 aUV;\n"
+    "varying vec2 vUV;\n"
+    "void main() {\n"
+    "  gl_Position = vec4(aPos, 1.0);\n"
+    "  vUV = aUV;\n"
+    "}\n";
+
+static const char *s_portal_fs =
+    "precision mediump float;\n"
+    "varying vec2 vUV;\n"
+    "uniform sampler2D uTex;\n"
+    "void main() {\n"
+    "  gl_FragColor = texture2D(uTex, vUV);\n"
+    "}\n";
+
+static int portal_ensure_resources(int w, int h) {
+    if (s_portal_prog == 0) {
+        GLuint vs = compile_shader(GL_VERTEX_SHADER, s_portal_vs);
+        GLuint fs = compile_shader(GL_FRAGMENT_SHADER, s_portal_fs);
+        s_portal_prog = glCreateProgram();
+        glAttachShader(s_portal_prog, vs);
+        glAttachShader(s_portal_prog, fs);
+        glLinkProgram(s_portal_prog);
+        GLint ok = 0;
+        glGetProgramiv(s_portal_prog, GL_LINK_STATUS, &ok);
+        __android_log_print(ANDROID_LOG_INFO, "SM64PORTAL", "portal shader link=%d", ok);
+        glDeleteShader(vs);
+        glDeleteShader(fs);
+        s_portal_apos = glGetAttribLocation(s_portal_prog, "aPos");
+        s_portal_auv = glGetAttribLocation(s_portal_prog, "aUV");
+        s_portal_utex = glGetUniformLocation(s_portal_prog, "uTex");
+    }
+    if (s_portal_fbo != 0 && w == s_portal_w && h == s_portal_h) {
+        return 1;
+    }
+    if (s_portal_fbo) glDeleteFramebuffers(1, &s_portal_fbo);
+    if (s_portal_tex) glDeleteTextures(1, &s_portal_tex);
+    if (s_portal_depth) glDeleteRenderbuffers(1, &s_portal_depth);
+    s_portal_fbo = s_portal_tex = s_portal_depth = 0;
+    s_portal_w = s_portal_h = 0;
+
+    glGenTextures(1, &s_portal_tex);
+    glBindTexture(GL_TEXTURE_2D, s_portal_tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    glGenFramebuffers(1, &s_portal_fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, s_portal_fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, s_portal_tex, 0);
+    glGenRenderbuffers(1, &s_portal_depth);
+    glBindRenderbuffer(GL_RENDERBUFFER, s_portal_depth);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT16, w, h);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, s_portal_depth);
+
+    GLenum st = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    __android_log_print(ANDROID_LOG_INFO, "SM64PORTAL", "fbo=%u tex=%u %dx%d status=0x%x",
+                        s_portal_fbo, s_portal_tex, w, h, st);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    if (st != GL_FRAMEBUFFER_COMPLETE) {
+        return 0;
+    }
+    s_portal_w = w;
+    s_portal_h = h;
+    return 1;
+}
+
+int gfx_opengl_portal_begin(int w, int h) {
+    if (w < 1 || h < 1 || !portal_ensure_resources(w, h)) {
+        return 0;
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, s_portal_fbo);
+    glDisable(GL_SCISSOR_TEST);
+    glDepthMask(GL_TRUE);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glViewport(0, 0, w, h);
+    return 1;
+}
+
+void gfx_opengl_portal_end(void) {
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+void gfx_opengl_portal_overlay(int eye) {
+    float vp[4][4];
+    float buf[((PORTAL_VIEW_SEGS + 2) * 5)];
+    int n = 0;
+
+    if (!g_portal_view.active || s_portal_tex == 0 || s_portal_prog == 0) {
+        return;
+    }
+    if (!gfx_get_portal_view_proj(vp)) {
+        return;
+    }
+
+    for (int i = -1; i < g_portal_view.count; i++) {
+        const float *p = (i < 0) ? g_portal_view.center : g_portal_view.rim[i];
+        float x = p[0] * vp[0][0] + p[1] * vp[1][0] + p[2] * vp[2][0] + vp[3][0];
+        float y = p[0] * vp[0][1] + p[1] * vp[1][1] + p[2] * vp[2][1] + vp[3][1];
+        float z = p[0] * vp[0][2] + p[1] * vp[1][2] + p[2] * vp[2][2] + vp[3][2];
+        float w = p[0] * vp[0][3] + p[1] * vp[1][3] + p[2] * vp[2][3] + vp[3][3];
+        float u, v, nx, ny, nz;
+        if (w > 1e-5f) {
+            nx = x / w;
+            ny = y / w;
+            nz = z / w;
+        } else {
+            nx = 0.0f; ny = 0.0f; nz = 1.0f;
+        }
+        u = nx * 0.5f + 0.5f;
+        v = ny * 0.5f + 0.5f;
+        nx += gfx_eye_shear[eye & 1];
+        buf[n++] = nx;
+        buf[n++] = ny;
+        buf[n++] = nz;
+        buf[n++] = u;
+        buf[n++] = v;
+    }
+    /* close the fan */
+    for (int k = 0; k < 5; k++) {
+        buf[n] = buf[5 + k];
+        n++;
+    }
+
+    glUseProgram(s_portal_prog);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, s_portal_tex);
+    glUniform1i(s_portal_utex, 0);
+    glDisable(GL_CULL_FACE);
+    glDisable(GL_BLEND);
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LEQUAL);
+    glDepthMask(GL_FALSE);
+    glVertexAttribPointer(s_portal_apos, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), buf);
+    glVertexAttribPointer(s_portal_auv, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), buf + 3);
+    glEnableVertexAttribArray(s_portal_apos);
+    glEnableVertexAttribArray(s_portal_auv);
+    glDrawArrays(GL_TRIANGLE_FAN, 0, PORTAL_VIEW_SEGS + 2);
+    glDisableVertexAttribArray(s_portal_apos);
+    glDisableVertexAttribArray(s_portal_auv);
+    glDepthMask(GL_TRUE);
+    glUseProgram(0);
+}
+
 static void gfx_opengl_shutdown(void) {
 }
 

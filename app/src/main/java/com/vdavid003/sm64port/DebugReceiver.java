@@ -87,6 +87,24 @@ public class DebugReceiver extends BroadcastReceiver {
                 Log.i(TAG, "CMD portal " + v);
                 break;
             }
+            case "ptc": {
+                String action = intent.getStringExtra("action");
+                a.debugPtc(action);
+                Log.i(TAG, "CMD ptc " + action);
+                break;
+            }
+            case "uncapped": {
+                int v = intent.getIntExtra("v", 0);
+                a.debugUncapped(v);
+                Log.i(TAG, "CMD uncapped " + v);
+                break;
+            }
+            case "hz": {
+                int v = intent.getIntExtra("v", 60);
+                a.debugDisplayHz(v);
+                Log.i(TAG, "CMD hz " + v);
+                break;
+            }
             case "givegun":
                 a.debugGiveGun();
                 Log.i(TAG, "CMD givegun");

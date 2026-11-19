@@ -75,8 +75,14 @@ void send_display_list(struct SPTask *spTask) {
     extern Gfx *gfx_current_dlist;
     extern float gfx_render_alpha;
     extern void gfx_patch_frame(float);
+    extern int gfx_test_uncapped;
 
     gfx_current_dlist = (Gfx *)spTask->task.t.data_ptr;
+    if (gfx_test_uncapped) {
+        // Test runner: keep simulating without presenting every tick.  The
+        // next normal frame (after the toggle is turned off) renders normally.
+        return;
+    }
     gfx_patch_frame(gfx_render_alpha);
     gfx_run(gfx_current_dlist);
 }
@@ -94,20 +100,23 @@ void produce_one_frame(void) {
     game_loop_one_iteration();
     thread6_rumble_loop(NULL);
 
-    int samples_left = audio_api->buffered();
-    u32 num_audio_samples = samples_left < audio_api->get_desired_buffered() ? 544 : 528;
-    //printf("Audio samples: %d %u\n", samples_left, num_audio_samples);
-    s16 audio_buffer[544 * 2 * 2];
-    for (int i = 0; i < 2; i++) {
-        /*if (audio_cnt-- == 0) {
-            audio_cnt = 2;
+    extern int gfx_test_uncapped;
+    if (!gfx_test_uncapped) {
+        int samples_left = audio_api->buffered();
+        u32 num_audio_samples = samples_left < audio_api->get_desired_buffered() ? 544 : 528;
+        //printf("Audio samples: %d %u\n", samples_left, num_audio_samples);
+        s16 audio_buffer[544 * 2 * 2];
+        for (int i = 0; i < 2; i++) {
+            /*if (audio_cnt-- == 0) {
+                audio_cnt = 2;
+            }
+            u32 num_audio_samples = audio_cnt < 2 ? 528 : 544;*/
+            create_next_audio_buffer(audio_buffer + i * (num_audio_samples * 2), num_audio_samples);
         }
-        u32 num_audio_samples = audio_cnt < 2 ? 528 : 544;*/
-        create_next_audio_buffer(audio_buffer + i * (num_audio_samples * 2), num_audio_samples);
-    }
-    //printf("Audio samples before submitting: %d\n", audio_api->buffered());
+        //printf("Audio samples before submitting: %d\n", audio_api->buffered());
 
-    audio_api->play((u8*)audio_buffer, 2 * num_audio_samples * 4);
+        audio_api->play((u8*)audio_buffer, 2 * num_audio_samples * 4);
+    }
 
     gfx_end_frame();
 }

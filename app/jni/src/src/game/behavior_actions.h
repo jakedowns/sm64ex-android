@@ -373,6 +373,8 @@ void bhv_normal_cap_loop(void);
 void bhv_vanish_cap_init(void);
 void bhv_collect_star_init(void);
 void bhv_collect_star_loop(void);
+void bhv_ptc_debug_star_init(void);
+void bhv_ptc_debug_star_loop(void);
 void bhv_star_spawn_init(void);
 void bhv_star_spawn_loop(void);
 void bhv_hidden_red_coin_star_init(void);

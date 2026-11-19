@@ -9,3 +9,7 @@ build/
 .gradle/
 local.properties
 .locks/
+
+# Local test output (screenshots, logs and the demonstration video)
+test-artifacts/
+__pycache__/

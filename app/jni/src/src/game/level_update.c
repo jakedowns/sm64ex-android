@@ -7,6 +7,7 @@
 #include "audio/external.h"
 #include "level_update.h"
 #include "portal.h"
+#include "ptc.h"
 #include "game_init.h"
 #include "level_update.h"
 #include "main.h"
@@ -996,6 +997,8 @@ void update_hud_values(void) {
 void basic_update(UNUSED s16 *arg) {
     area_update_objects();
     portal_update();
+    ptc_update();
+    ptc_hud_update();
     update_hud_values();
 
     if (gCurrentArea != NULL) {
@@ -1027,6 +1030,8 @@ s32 play_mode_normal(void) {
 
     area_update_objects();
     portal_update();
+    ptc_update();
+    ptc_hud_update();
     update_hud_values();
 
     if (gCurrentArea != NULL) {

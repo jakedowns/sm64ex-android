@@ -28,6 +28,15 @@
 #include "../configfile.h"
 #include "../fs/fs.h"
 
+#include "game/portal.h"
+
+/* Through-portal view: the portal pass is a second execution of the scene
+ * display list with a camera-space transform. */
+int gfx_portal_pass = 0;
+extern int gfx_opengl_portal_begin(int w, int h);
+extern void gfx_opengl_portal_end(void);
+extern void gfx_opengl_portal_overlay(int eye);
+
 #define SUPPORT_CHECK(x) assert(x)
 
 // SCALE_M_N: upscale/downscale M-bit integer to N-bit
@@ -311,6 +320,9 @@ static void gfx_apply_ui_depth(void) {
 }
 
 static void gfx_apply_stereo_shear(void) {
+    if (gfx_portal_pass) {
+        return; // portal FBO is a mono image
+    }
     if (!gfx_stereo_enabled) {
         return;
     }
@@ -898,6 +910,25 @@ static void gfx_matrix_mul(float res[4][4], const float a[4][4], const float b[4
     memcpy(res, tmp, sizeof(tmp));
 }
 
+/* Portal pass: clip = p * (C * modelview) * projection. */
+static void gfx_apply_portal_mp(void) {
+    float tmp[4][4];
+    if (!gfx_portal_pass) {
+        return;
+    }
+    gfx_matrix_mul(tmp, g_portal_view.c_matrix, rsp.MP_matrix);
+    memcpy(rsp.MP_matrix, tmp, sizeof(tmp));
+}
+
+/* Real camera view * current projection, for the portal overlay. */
+int gfx_get_portal_view_proj(float out[4][4]) {
+    if (!g_portal_view.active) {
+        return 0;
+    }
+    gfx_matrix_mul(out, g_portal_view.view, rsp.P_matrix);
+    return 1;
+}
+
 // Recompute the modelview -> light clip matrix used while the shadow map is
 // being rendered. Skips the game's projection (and the stereo shear) entirely.
 static void gfx_update_shadow_mp(void) {
@@ -1030,6 +1061,7 @@ static void gfx_sp_matrix(uint8_t parameters, const int32_t *addr) {
         rsp.lights_changed = 1;
     }
     gfx_matrix_mul(rsp.MP_matrix, rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1], rsp.P_matrix);
+    gfx_apply_portal_mp();
     gfx_apply_stereo_shear();
     gfx_update_shadow_mp();
 }
@@ -1040,6 +1072,7 @@ static void gfx_sp_pop_matrix(uint32_t count) {
             --rsp.modelview_matrix_stack_size;
             if (rsp.modelview_matrix_stack_size > 0) {
                 gfx_matrix_mul(rsp.MP_matrix, rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1], rsp.P_matrix);
+                gfx_apply_portal_mp();
                 gfx_apply_stereo_shear();
                 gfx_update_shadow_mp();
             }
@@ -2229,6 +2262,25 @@ void gfx_run(Gfx *commands) {
     }
 #endif
 
+    /* Through-portal view: render the scene once from the mirrored camera
+     * into a mono FBO before the eye passes.  The portal ellipse is drawn as
+     * a textured, depth-tested overlay per eye afterwards. */
+    if (g_portal_view.active) {
+        int pw = gfx_stereo_enabled ? gfx_stereo_canvas[2] : gfx_current_dimensions.width;
+        int ph = gfx_stereo_enabled ? gfx_stereo_canvas[3] : gfx_current_dimensions.height;
+        if (gfx_opengl_portal_begin(pw, ph)) {
+            gfx_stereo_eye = 0;
+            gfx_sp_reset();
+            gfx_portal_pass = 1;
+            gfx_run_dl_range(commands,
+                    (gGfxHasScene && gGfxUiStart != NULL) ? gGfxUiStart : NULL);
+            gfx_flush();
+            gfx_portal_pass = 0;
+            gfx_opengl_portal_end();
+            gfx_invalidate_state();
+        }
+    }
+
     if (gfx_stereo_enabled) {
 #ifdef __ANDROID__
         // Split the frame's list at the UI marker when UIPOST is on: the scene
@@ -2276,6 +2328,9 @@ void gfx_run(Gfx *commands) {
             gfx_run_dl_range(commands, split ? gGfxUiStart : NULL);
             gfx_flush();
 #ifdef __ANDROID__
+            if (g_portal_view.active) {
+                gfx_opengl_portal_overlay(eye);
+            }
             if (split) {
                 gfx_opengl_ui_begin(eye, gfx_stereo_eye_width, gfx_stereo_full_h,
                         gfx_stereo_canvas[0], gfx_stereo_canvas[1],
