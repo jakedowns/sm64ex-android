@@ -31,6 +31,13 @@
         android:name="android.hardware.type.pc"
         android:required="false" />
 
+    <!-- Debug log report needs to read the Lume/Leia service versions. -->
+    <queries>
+        <package android:name="com.leia.headtrackingservice" />
+        <package android:name="com.leialoft.display.config" />
+        <package android:name="com.leia.leiaplayer" />
+    </queries>
+
     <!-- Audio recording support -->
     <!-- if you want to capture audio, uncomment this. -->
     <!-- <uses-feature
@@ -60,6 +67,7 @@
          An example Java class can be found in README-android.md
     -->
     <application android:label="@string/app_name"
+        android:name=".Sm64Application"
         android:icon="@mipmap/ic_launcher"
         android:allowBackup="true"
         android:theme="@android:style/Theme.NoTitleBar.Fullscreen"
@@ -99,6 +107,13 @@
             <action android:name="com.vdavid003.sm64port.CMD" />
         </intent-filter>
     </receiver>
+
+        <!-- Serves exported debug logs to the ACTION_SEND share sheet. -->
+        <provider
+            android:name=".DebugLogProvider"
+            android:authorities="${applicationId}.debuglog"
+            android:exported="false"
+            android:grantUriPermissions="true" />
 </application>
 
 </manifest>
