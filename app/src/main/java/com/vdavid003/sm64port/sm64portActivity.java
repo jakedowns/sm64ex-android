@@ -5,8 +5,16 @@ import android.hardware.Sensor;
 import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
 import android.hardware.SensorManager;
+import android.content.Intent;
+import android.content.pm.PackageInfo;
 import android.graphics.SurfaceTexture;
+import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
+import android.os.SystemClock;
+import android.text.Html;
+import android.text.method.LinkMovementMethod;
+import android.util.DisplayMetrics;
 import android.util.Log;
 import android.view.Display;
 import android.view.Gravity;
@@ -19,6 +27,15 @@ import android.widget.LinearLayout;
 import android.widget.RelativeLayout;
 import android.widget.SeekBar;
 import android.widget.TextView;
+import android.widget.Toast;
+
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Locale;
 
 import com.leia.core.PlatformInitArgs;
 import com.leia.sdk.LeiaSDK;
@@ -41,7 +58,11 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     private static final String BUILD_NAME = "v1.0-alpha1";
     private static final String PREFS_NAME = "sm64port";
     private static final String PREF_OVERLAY_OPACITY = "overlay_opacity";
+    private static final int REQ_EXPORT_LOG = 0x5A64;
     public static volatile sm64portActivity instance;
+    private long leiaT0;
+    private TextView debugLogInfoView;
+    private boolean exportInProgress;
     /** Leia's convention: a 2-view SBS source is 2 x viewResolution
      *  (1920x1200 each), i.e. 3840x1200 total. The interlacer derives its
      *  source geometry from the SurfaceTexture's default buffer size, not
@@ -142,7 +163,9 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
           + "Ragdolls (death + hit), puppycam+, dynamic shadows, SSRTX.\n"
           + "Gamepad: rumble, RT = Z, drag-through on-screen buttons.\n"
           + "Debug: tabs (underline = selected, green = effect on), slider\n"
-          + "  drag mode, changelog, adb channel (dump/set/toggle/fx/portal).";
+          + "  drag mode, changelog, adb channel (dump/set/toggle/fx/portal).\n"
+          + "Debug log export (EXPORT tab): save/share Android + Leia boot logs.\n"
+          + "About tab: fork feature list and upstream repo credits.";
 
     /** Cycle render rate: 30 -> 60 -> 120 -> uncapped, and match panel refresh. */
     private void cycleFpsMode() {
@@ -229,6 +252,10 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         instance = this;
+        // Idempotent: normally installed by Sm64Application before this runs.
+        DebugLog.install(getApplicationContext());
+        leiaT0 = SystemClock.uptimeMillis();
+        weaverLog("onCreate after SDLActivity; " + DebugLog.oneLineSummary(this));
 
         // UI preferences (SharedPreferences persists across launches).
         try {
@@ -245,12 +272,15 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             initLeia();
         } catch (Throwable t) {
             // Never brick the game: fall back to SDL's normal flat output.
-            Log.e(TAG, "Leia init failed, staying flat", t);
+            weaverError("Leia init FAILED, staying flat (possible black screen cause)", t);
             SDLActivity.failOverride();
         }
     }
 
     private void initLeia() throws Exception {
+        weaverLog("initLeia begin");
+        logWeaverEnvironment();
+
         LeiaSDK.InitArgs args = new LeiaSDK.InitArgs();
         if (args.platform == null) {
             args.platform = new PlatformInitArgs();
@@ -261,57 +291,86 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         // Leia's default logging floods logcat and rotates out our markers.
         try {
             args.faceTrackingServerLogLevel = com.leia.core.LogLevel.Error;
-        } catch (Throwable ignored) {}
+        } catch (Throwable ignored) {
+        }
+        weaverLog("InitArgs ready: enableFaceTracking=true permissionCheck=false logLevel=Error");
+
+        weaverLog("LeiaSDK.createSDK() begin");
         sdk = LeiaSDK.createSDK(args);
+        weaverLog("LeiaSDK.createSDK() returned; initialized=" + sdk.isInitialized()
+                + " faceTrackingInService=" + LeiaSDK.isFaceTrackingInService());
         sdk.enableBacklight(true);
-        Log.i(TAG, "LeiaSDK ready; initialized=" + sdk.isInitialized());
+        try {
+            weaverLog("enableBacklight(true) -> " + sdk.getBacklight());
+        } catch (Throwable t) {
+            weaverLog("enableBacklight(true) done (getBacklight failed: " + t + ")");
+        }
         startCameraTracking();
+        weaverLog("startCameraTracking done");
 
         // Make SDL wait for our surface rather than grabbing its own.
         SDLActivity.mWaitForOverride = true;
+        weaverLog("SDLActivity.mWaitForOverride=true");
 
         asset = new InputViewsAsset();
         // Explicit size: without it the interlacer assumes a 1x1 video and
         // stretches a single texel across the panel. 2 x (1920x1200) = SBS.
+        weaverLog("InputViewsAsset.CreateEmptySurfaceForVideo(" + SBS_W + "x" + SBS_H + ") begin");
         asset.CreateEmptySurfaceForVideo(3840, 1200, new SurfaceTextureReadyCallback() {
             @Override
             public void onSurfaceTextureReady(SurfaceTexture texture) {
+                weaverLog("SurfaceTextureReady callback: thread=" + Thread.currentThread().getName()
+                        + " texture=" + texture);
+                if (texture == null) {
+                    weaverLog("SurfaceTextureReady got NULL texture; cannot weave");
+                    return;
+                }
                 // The producer buffer size must match what the interlacer is
                 // told the source is, otherwise it samples a magnified crop.
                 texture.setDefaultBufferSize(SBS_W, SBS_H);
-                Log.i(TAG, "Leia SurfaceTexture ready, default buffer " + SBS_W + "x" + SBS_H);
+                weaverLog("SurfaceTexture default buffer set to " + SBS_W + "x" + SBS_H);
                 // The first woven frame sometimes comes up black until the view
                 // is reconfigured; nudge it once the surface exists.
                 // The first woven frame comes up black until the view is
                 // re-attached; mimic the FLAT toggle the user found works.
                 leiaView.postDelayed(new Runnable() {
                     @Override public void run() {
+                        weaverLog("reattach nudge: hiding leiaView");
                         leiaView.setVisibility(View.GONE);
                         leiaView.postDelayed(new Runnable() {
                             @Override public void run() {
                                 leiaView.setVisibility(View.VISIBLE);
                                 reapplySourceSize();
-                                Log.i(TAG, "interlacer reattach nudge applied");
+                                weaverLog("reattach nudge: visible + reapplySourceSize done");
                             }
                         }, 400);
                     }
                 }, 1500);
-                SDLActivity.setOverrideSurface(new Surface(texture));
+                try {
+                    SDLActivity.setOverrideSurface(new Surface(texture));
+                    weaverLog("SDL override surface set from Leia SurfaceTexture");
+                } catch (Throwable t) {
+                    weaverError("setOverrideSurface failed", t);
+                }
             }
         });
-        Log.i(TAG, "asset created");
+        weaverLog("asset created; surface request queued");
 
         leiaView = new InterlacedSurfaceView(this);
         leiaView.setClickable(false);
         leiaView.setFocusable(false);
+        weaverLog("InterlacedSurfaceView created");
 
         // Attach the view before binding the asset: the interlacer only creates
         // the SurfaceTexture once the view is in a window.
         ViewGroup layout = mLayout;
+        weaverLog("mLayout=" + layout);
         if (layout != null) {
             layout.addView(leiaView, new RelativeLayout.LayoutParams(
                     RelativeLayout.LayoutParams.MATCH_PARENT,
                     RelativeLayout.LayoutParams.MATCH_PARENT));
+            weaverLog("leiaView attached; parent now " + layout.getWidth() + "x"
+                    + layout.getHeight());
 
             // Controls on their own layer, above the interlaced view but below
             // the debug panel. Screen-space: never per-eye, never letterboxed.
@@ -319,6 +378,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             layout.addView(touchOverlay, new RelativeLayout.LayoutParams(
                     RelativeLayout.LayoutParams.MATCH_PARENT,
                     RelativeLayout.LayoutParams.MATCH_PARENT));
+            weaverLog("TouchOverlay attached");
             try {
                 nativeHideInGameControls(1);
                 Log.i(TAG, "overlay controls active; in-game sprites hidden");
@@ -331,6 +391,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                     RelativeLayout.LayoutParams.WRAP_CONTENT);
             panelParams.addRule(RelativeLayout.ALIGN_PARENT_BOTTOM);
             layout.addView(buildTuningPanel(), panelParams);
+            weaverLog("debug tuning panel attached");
             // Apply the persisted opacity after both the overlay and its slider
             // exist (SeekBar.setProgress happens before the listener is set).
             applyOverlayAlpha(overlayAlphaPct);
@@ -342,31 +403,102 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             } catch (Throwable t) {
                 Log.w(TAG, "analog default failed", t);
             }
+        } else {
+            weaverError("mLayout is null; Leia view was not attached", null);
         }
         leiaView.setViewAsset(asset);
-        Log.i(TAG, "setViewAsset done");
+        weaverLog("setViewAsset(asset) done");
         // Size the surface to the view once laid out (mpv does this on layout).
         leiaView.addOnLayoutChangeListener(new View.OnLayoutChangeListener() {
             @Override
             public void onLayoutChange(View v, int l, int t, int r, int b,
                                        int ol, int ot, int orr, int ob) {
+                weaverLog("leiaView layout " + ol + "," + ot + "," + orr + "," + ob
+                        + " -> " + l + "," + t + "," + r + "," + b);
                 resizeLeiaSurface(v.getWidth(), v.getHeight());
             }
         });
+        weaverLog("layout change listener installed");
         // The view may not be laid out yet at this point; retry until it has
         // a real size, then create the surface at that exact geometry.
         leiaView.postDelayed(new Runnable() {
             @Override
             public void run() {
                 if (leiaView.getWidth() > 0) {
+                    weaverLog("initial layout ready: " + leiaView.getWidth() + "x"
+                            + leiaView.getHeight() + "; sizing Leia surface");
                     resizeLeiaSurface(leiaView.getWidth(), leiaView.getHeight());
                 } else {
+                    weaverLog("initial layout not ready; retrying in 300ms");
                     leiaView.postDelayed(this, 300);
                 }
             }
         }, 200);
 
         leiaView.setSingleViewMode(false);
+        weaverLog("setSingleViewMode(false); initLeia complete");
+    }
+
+    private void weaverLog(String message) {
+        long elapsed = leiaT0 == 0 ? 0 : (SystemClock.uptimeMillis() - leiaT0);
+        DebugLog.note("WEAVER +" + elapsed + "ms " + message);
+    }
+
+    private void weaverError(String message, Throwable t) {
+        long elapsed = leiaT0 == 0 ? 0 : (SystemClock.uptimeMillis() - leiaT0);
+        Log.e(TAG, "WEAVER +" + elapsed + "ms " + message, t);
+    }
+
+    /** Android/device/firmware versions at the moment the weaver starts. */
+    private void logWeaverEnvironment() {
+        try {
+            weaverLog("android release=" + Build.VERSION.RELEASE
+                    + " sdk=" + Build.VERSION.SDK_INT
+                    + " securityPatch=" + Build.VERSION.SECURITY_PATCH);
+            weaverLog("lume firmware display=" + Build.DISPLAY
+                    + " id=" + Build.ID
+                    + " incremental=" + Build.VERSION.INCREMENTAL);
+            weaverLog("device manufacturer=" + Build.MANUFACTURER
+                    + " model=" + Build.MODEL
+                    + " device=" + Build.DEVICE
+                    + " product=" + Build.PRODUCT
+                    + " hardware=" + Build.HARDWARE);
+            StringBuilder abis = new StringBuilder();
+            for (String abi : Build.SUPPORTED_ABIS) {
+                if (abis.length() > 0) abis.append(',');
+                abis.append(abi);
+            }
+            weaverLog("supportedAbis=" + abis);
+        } catch (Throwable t) {
+            weaverError("environment log failed", t);
+        }
+        try {
+            PackageInfo pi = getPackageManager().getPackageInfo(getPackageName(), 0);
+            weaverLog("app " + getPackageName() + " version=" + pi.versionName
+                    + " code=" + pi.getLongVersionCode());
+        } catch (Throwable t) {
+            weaverError("app version log failed", t);
+        }
+        try {
+            Display d = getWindowManager().getDefaultDisplay();
+            DisplayMetrics dm = new DisplayMetrics();
+            d.getRealMetrics(dm);
+            weaverLog("display real=" + dm.widthPixels + "x" + dm.heightPixels
+                    + " density=" + dm.densityDpi + "dpi refresh=" + d.getRefreshRate()
+                    + "Hz mode=" + (d.getMode() == null ? "?" : d.getMode().getModeId()));
+            Display.Mode[] modes = d.getSupportedModes();
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < modes.length; i++) {
+                if (i > 0) sb.append(", ");
+                sb.append(modes[i].getModeId()).append('=')
+                        .append(Math.round(modes[i].getRefreshRate())).append("Hz/")
+                        .append(modes[i].getPhysicalWidth()).append('x')
+                        .append(modes[i].getPhysicalHeight());
+            }
+            weaverLog("display modes: " + sb);
+        } catch (Throwable t) {
+            weaverError("display log failed", t);
+        }
     }
 
     /** Debug sliders: they push values straight into the native stereo renderer. */
@@ -590,7 +722,9 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addTabButton(tabBar, "CAMERA");
         addTabButton(tabBar, "ENH");
         addTabButton(tabBar, "SHADOW");
-        addTabButton(tabBar, "LOG");
+        addTabButton(tabBar, "CHANGELOG");
+        addTabButton(tabBar, "EXPORT");
+        addTabButton(tabBar, "ABOUT");
         panel.addView(tabBar);
 
         tabContent = new LinearLayout(this);
@@ -1009,6 +1143,208 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                 + "------------------------------------------\n"
                 + CHANGELOG);
         controls.addView(log);
+
+        // --- Debug log export (user bug reports) ---
+        beginTab();
+        TextView exportHint = new TextView(this);
+        exportHint.setTextSize(13);
+        exportHint.setTextColor(0xFFCCEECC);
+        exportHint.setPadding(dp(4), dp(4), dp(4), dp(8));
+        exportHint.setText("Capture starts with the app process: Android/device info,"
+                + " Leia CNSDK + firmware versions, and the Leia weaver boot stages.\n\n"
+                + "EXPORT opens the system save-file picker, then shows the share sheet"
+                + " so the log can be sent straight back.");
+        controls.addView(exportHint);
+        addEnhButton("EXPORT LOG (SAVE + SHARE)", this::exportLogToPicker);
+        addEnhButton("SHARE LOG", this::shareDebugLog);
+        addEnhButton("REFRESH INFO", this::refreshDebugLogInfo);
+        debugLogInfoView = new TextView(this);
+        debugLogInfoView.setTextSize(11);
+        debugLogInfoView.setTextColor(0xFFAACCFF);
+        debugLogInfoView.setTypeface(android.graphics.Typeface.MONOSPACE);
+        debugLogInfoView.setPadding(dp(4), dp(8), dp(4), dp(4));
+        controls.addView(debugLogInfoView);
+        refreshDebugLogInfo();
+
+        // --- About / fork credits ---
+        beginTab();
+        TextView about = new TextView(this);
+        about.setTextSize(12);
+        about.setTextColor(0xFFDDEEFF);
+        about.setLinkTextColor(0xFF66CCFF);
+        about.setPadding(dp(4), dp(4), dp(4), dp(10));
+        about.setMovementMethod(LinkMovementMethod.getInstance());
+        about.setText(Html.fromHtml(aboutHtml(), Html.FROM_HTML_MODE_LEGACY));
+        controls.addView(about);
+
+        TextView aboutEnv = new TextView(this);
+        aboutEnv.setTextSize(10);
+        aboutEnv.setTextColor(0xFFAACCFF);
+        aboutEnv.setPadding(dp(4), dp(10), dp(4), dp(4));
+        aboutEnv.setText("This device right now:\n" + DebugLog.oneLineSummary(this)
+                + "\n\nFull Android, device, Lume firmware, Leia service and CNSDK"
+                + " details are written to the debug log on the EXPORT tab.");
+        controls.addView(aboutEnv);
+    }
+
+    private String aboutHtml() {
+        String stamp = "?";
+        try {
+            stamp = com.vdavid003.sm64port.BuildConfig.BUILD_STAMP;
+        } catch (Throwable ignored) {
+        }
+        return "<b>sm64ex-android &mdash; Lume Pad 2 fork</b><br>"
+                + "version " + BUILD_NAME + " &middot; built " + stamp + "<br><br>"
+                + "<b>Features added by this fork</b><br>"
+                + "&bull; Leia Lume Pad 2 glasses-free 3D output: SDL renders a 2x1 SBS"
+                + " frame into a Leia surface, the CNSDK interlacer/weaver shows it on the"
+                + " lenticular panel.<br>"
+                + "&bull; Stereo tuning (IPD, zero parallax, depth, toe, FOV, aspect) and"
+                + " per-eye framebuffers.<br>"
+                + "&bull; 120 Hz interpolated rendering while simulation stays at 30 Hz.<br>"
+                + "&bull; Screen-space MXAO, cinematic DOF, SSGI and SSRTX reflections, plus"
+                + " a realtime dynamic shadow map, with per-effect debug tabs.<br>"
+                + "&bull; Leia head-tracked parallax + gyro camera canting.<br>"
+                + "&bull; Touch overlay, controller rumble, portal-gun prototype, level"
+                + " select, cheats menu, stay-in-level after stars, and debug tooling"
+                + " (tabs + adb command channel).<br>"
+                + "&bull; On-device debug log export (this tab) for bug reports.<br><br>"
+                + "<b>Credits / upstream repositories</b><br>"
+                + "&bull; Base Android port: <a href=\"https://github.com/MegaBitmap/sm64ex-android\">"
+                + "MegaBitmap/sm64ex-android</a><br>"
+                + "&bull; Original PC port: <a href=\"https://github.com/sm64pc/sm64ex\">"
+                + "sm64pc/sm64ex</a> and the Super Mario 64 decompilation project.<br>"
+                + "&bull; Android/SDL lineage: <a href=\"https://github.com/VDavid003/sm64-port-android\">"
+                + "VDavid003/sm64-port-android</a> and "
+                + "<a href=\"https://github.com/libsdl-org/SDL\">libsdl-org/SDL</a>.<br>"
+                + "&bull; Death/hit ragdolls and Puppycam+ improvements ported from "
+                + "<a href=\"https://github.com/Epic0522/Super-Mario-64-3ds-port---Ultimate\">"
+                + "Epic0522/Super-Mario-64-3ds-port---Ultimate</a>.<br>"
+                + "&bull; Leia CNSDK, lenticular display and Lume firmware: "
+                + "<a href=\"https://github.com/LeiaInc\">Leia Inc.</a> "
+                + "(<a href=\"https://github.com/LeiaInc/CNSDKGettingStartedGLAndroid\">"
+                + "CNSDK Android sample</a>).<br>"
+                + "&bull; SSRTX is inspired by ReShade's SSR/SSRT shaders: "
+                + "<a href=\"https://github.com/crosire/reshade\">crosire/reshade</a>.<br>"
+                + "&bull; This fork: <a href=\"https://github.com/jakedowns/sm64ex-android\">"
+                + "jakedowns/sm64ex-android</a>.<br><br>"
+                + "Everything else (Lume display path, stereo/HFR, screen-space FX,"
+                + " shadows, portal chamber and debug tooling) is original work in this"
+                + " fork.";
+    }
+
+    private void refreshDebugLogInfo() {
+        if (debugLogInfoView == null) return;
+        File f = DebugLog.getLogFile(this);
+        StringBuilder sb = new StringBuilder();
+        sb.append("LOG FILE\n");
+        sb.append(f == null ? "(not available)" : f.getAbsolutePath()).append('\n');
+        if (f != null && f.isFile()) {
+            sb.append(String.format(Locale.US, "size: %.1f KB\n", f.length() / 1024.0));
+        } else {
+            sb.append("size: (not written yet)\n");
+        }
+        sb.append("\nThis report includes:\n");
+        sb.append("- app/build/Android/device details\n");
+        sb.append("- Lume build + Leia service versions\n");
+        sb.append("- Leia CNSDK version\n");
+        sb.append("- display modes and refresh rates\n");
+        sb.append("- Leia weaver/CNSDK boot stage markers\n");
+        sb.append("- recent logcat (main + crash buffers)");
+        debugLogInfoView.setText(sb.toString());
+    }
+
+    private void exportLogToPicker() {
+        if (exportInProgress) return;
+        try {
+            String name = "sm64-debug-"
+                    + new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(new Date())
+                    + ".txt";
+            Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+            intent.addCategory(Intent.CATEGORY_OPENABLE);
+            intent.setType("text/plain");
+            intent.putExtra(Intent.EXTRA_TITLE, name);
+            startActivityForResult(intent, REQ_EXPORT_LOG);
+        } catch (Throwable t) {
+            Log.e(TAG, "export log picker failed", t);
+            Toast.makeText(this, "Save picker unavailable: " + t, Toast.LENGTH_LONG).show();
+            shareDebugLog();
+        }
+    }
+
+    private void shareDebugLog() {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    final File report = DebugLog.buildExportFile(sm64portActivity.this);
+                    runOnUiThread(() -> {
+                        try {
+                            startActivity(DebugLog.buildShareIntent(sm64portActivity.this, report));
+                        } catch (Throwable t) {
+                            Log.e(TAG, "share log failed", t);
+                            Toast.makeText(sm64portActivity.this,
+                                    "Share failed: " + t, Toast.LENGTH_LONG).show();
+                        }
+                    });
+                } catch (Throwable t) {
+                    Log.e(TAG, "build export failed", t);
+                    runOnUiThread(() -> Toast.makeText(sm64portActivity.this,
+                            "Log export failed: " + t, Toast.LENGTH_LONG).show());
+                }
+            }
+        }, "sm64-log-export").start();
+    }
+
+    private void exportLogToUri(Uri dest) {
+        if (dest == null || exportInProgress) return;
+        exportInProgress = true;
+        Toast.makeText(this, "Preparing debug log...", Toast.LENGTH_SHORT).show();
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    final File report = DebugLog.buildExportFile(sm64portActivity.this);
+                    try (InputStream in = new FileInputStream(report);
+                         OutputStream out = getContentResolver().openOutputStream(dest, "wt")) {
+                        if (out == null) throw new java.io.IOException("no output stream");
+                        byte[] buf = new byte[16 * 1024];
+                        int n;
+                        while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+                        out.flush();
+                    }
+                    runOnUiThread(() -> {
+                        exportInProgress = false;
+                        refreshDebugLogInfo();
+                        Toast.makeText(sm64portActivity.this,
+                                "Debug log saved. Opening share sheet...", Toast.LENGTH_LONG).show();
+                        try {
+                            startActivity(DebugLog.buildShareIntent(sm64portActivity.this, report));
+                        } catch (Throwable t) {
+                            Log.e(TAG, "share after save failed", t);
+                        }
+                    });
+                } catch (Throwable t) {
+                    Log.e(TAG, "save export failed", t);
+                    runOnUiThread(() -> {
+                        exportInProgress = false;
+                        Toast.makeText(sm64portActivity.this,
+                                "Saving log failed: " + t, Toast.LENGTH_LONG).show();
+                    });
+                }
+            }
+        }, "sm64-log-save").start();
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        if (requestCode == REQ_EXPORT_LOG) {
+            if (resultCode == RESULT_OK && data != null && data.getData() != null) {
+                exportLogToUri(data.getData());
+            }
+            return;
+        }
+        super.onActivityResult(requestCode, resultCode, data);
     }
 
     // ---- camera-tracking widgets (stereo-int channel, keys 41..44) ----
@@ -1616,11 +1952,11 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
 
     private void resizeLeiaSurface(int w, int h) {
         if (w <= 0 || h <= 0 || asset == null) {
-            Log.i(TAG, "resize skipped w=" + w + " h=" + h + " asset=" + (asset != null));
+            weaverLog("resize skipped w=" + w + " h=" + h + " asset=" + (asset != null));
             return;
         }
         if (!surfaceValid) {
-            Log.i(TAG, "CreateEmptySurfaceForVideo " + w + "x" + h);
+            weaverLog("CreateEmptySurfaceForVideo " + w + "x" + h + " (surfaceValid=false)");
             try {
                 // Video asset = the binding that CONSUMES a SurfaceTexture (the
                 // picture asset samples its own texture id instead, which needs
@@ -1628,28 +1964,33 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                 asset.CreateEmptySurfaceForVideo(w, h, new SurfaceTextureReadyCallback() {
                     @Override
                     public void onSurfaceTextureReady(SurfaceTexture texture) {
+                        weaverLog("resize surface ready " + w + "x" + h + " texture=" + texture);
+                        if (texture == null) {
+                            weaverLog("resize surface ready got NULL texture");
+                            return;
+                        }
                         texture.setDefaultBufferSize(w, h);
-                        Log.i(TAG, "VIDEO_SURFACE_CREATED " + w + "x" + h + " " + texture);
                         SDLActivity.setOverrideSurface(new Surface(texture));
                         // mpv's Enable3D(): backlight and tracking together,
                         // once the video surface exists.
                         try {
                             sdk.enableBacklight(true);
                             sdk.enableFaceTracking(true);
-                            Log.i(TAG, "ENABLE3D bl=" + sdk.getBacklight()
-                                    + " ft=" + sdk.isFaceTrackingEnabled());
+                            weaverLog("ENABLE3D backlight=" + sdk.getBacklight()
+                                    + " faceTracking=" + sdk.isFaceTrackingEnabled());
                         } catch (Throwable t) {
-                            Log.e(TAG, "enable3d", t);
+                            weaverError("enable3d failed", t);
                         }
-                        Log.i(TAG, "SDL_OVERRIDE_SET");
+                        weaverLog("SDL_OVERRIDE_SET (resize)");
                     }
                 });
                 surfaceValid = true;
             } catch (Throwable t) {
-                Log.e(TAG, "CreateEmptySurfaceForPicture failed", t);
+                weaverError("CreateEmptySurfaceForVideo (resize) failed", t);
             }
         } else if (leiaTexture != null) {
             leiaTexture.setDefaultBufferSize(w, h);
+            weaverLog("resize surface buffer " + w + "x" + h + " (existing texture)");
         }
     }
 
@@ -1815,6 +2156,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
 
     @Override
     protected void onPause() {
+        DebugLog.flush();
         if (leiaView != null) leiaView.onPause();
         if (sdk != null) {
             sdk.onPause();
@@ -2162,6 +2504,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
 
     @Override
     protected void onDestroy() {
+        DebugLog.flush();
         if (instance == this) instance = null;
         // asset lifecycle handled by the SDK (no close() in this AAR)
         LeiaSDK.shutdownSDK();
