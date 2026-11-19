@@ -39,6 +39,12 @@ public class TouchOverlay extends View {
     private boolean stickActive;
     private int stickPointer = -1;
 
+    // Two-finger camera gestures: pinch = FOV, drag Y = cam distance, drag X = cam height.
+    private boolean camGesture;
+    private int camPtr1 = -1, camPtr2 = -1;
+    private float gSpan0, gCx0, gCy0;
+    private int gFov0, gDist0, gHeight0;
+
     private int buttons;
     private final int[] btnIds = {BTN_A, BTN_B, BTN_Z, BTN_R, BTN_START, BTN_L};
     private final String[] btnLabels = {"A", "B", "Z", "R", "S", "L"};
@@ -259,6 +265,10 @@ public class TouchOverlay extends View {
         switch (action) {
             case MotionEvent.ACTION_DOWN:
             case MotionEvent.ACTION_POINTER_DOWN: {
+                if (action == MotionEvent.ACTION_POINTER_DOWN && e.getPointerCount() == 2
+                        && !camGesture && startCamGesture(e)) {
+                    return true;
+                }
                 int idx = e.getActionIndex();
                 int id = e.getPointerId(idx);
                 float px = e.getX(idx), py = e.getY(idx);
@@ -304,6 +314,9 @@ public class TouchOverlay extends View {
                 return true;
             }
             case MotionEvent.ACTION_MOVE: {
+                if (camGesture && updateCamGesture(e)) {
+                    return true;
+                }
                 for (int i = 0; i < e.getPointerCount(); i++) {
                     int id = e.getPointerId(i);
                     if (id == stickPointer) {
@@ -341,6 +354,21 @@ public class TouchOverlay extends View {
             case MotionEvent.ACTION_UP:
             case MotionEvent.ACTION_POINTER_UP:
             case MotionEvent.ACTION_CANCEL: {
+                if (camGesture) {
+                    if (action == MotionEvent.ACTION_CANCEL || action == MotionEvent.ACTION_UP) {
+                        camGesture = false;
+                    } else {
+                        int upId = e.getPointerId(e.getActionIndex());
+                        if (upId == camPtr1 || upId == camPtr2) {
+                            camGesture = false;
+                        }
+                    }
+                    if (!camGesture) {
+                        camPtr1 = camPtr2 = -1;
+                        invalidate();
+                        return true;
+                    }
+                }
                 int idx = e.getActionIndex();
                 int id = e.getPointerId(idx);
                 if (id == stickPointer) {
@@ -551,6 +579,70 @@ public class TouchOverlay extends View {
             paint.setColor(0xFFFFFFFF);
             c.drawText(hint, hx - tw * 0.5f, hy, paint);
         }
+    }
+
+    private boolean overControl(float x, float y) {
+        if (hitButton(x, y) >= 0 || hitCButton(x, y) >= 0 || hitCamButton(x, y) >= 0) {
+            return true;
+        }
+        if (hitModeToggle(x, y)) {
+            return true;
+        }
+        return portalGunHeld() && hitPortalButton(x, y) >= 0;
+    }
+
+    private boolean startCamGesture(MotionEvent e) {
+        float x0 = e.getX(0), y0 = e.getY(0);
+        float x1 = e.getX(1), y1 = e.getY(1);
+        if (overControl(x0, y0) || overControl(x1, y1)) {
+            return false;
+        }
+        sm64portActivity a = sm64portActivity.instance;
+        camGesture = true;
+        camPtr1 = e.getPointerId(0);
+        camPtr2 = e.getPointerId(1);
+        gSpan0 = (float) Math.hypot(x1 - x0, y1 - y0);
+        if (gSpan0 < 40f) gSpan0 = 40f;
+        gCx0 = (x0 + x1) * 0.5f;
+        gCy0 = (y0 + y1) * 0.5f;
+        gFov0 = a != null ? a.getCamValue(20) : 100;
+        gDist0 = a != null ? a.getCamValue(46) : 700;
+        gHeight0 = a != null ? a.getCamValue(47) : 110;
+        // A second finger means the first one is no longer driving a stick.
+        stickActive = false;
+        stickPointer = -1;
+        rstickActive = false;
+        rstickPointer = -1;
+        pushInput();
+        invalidate();
+        return true;
+    }
+
+    private boolean updateCamGesture(MotionEvent e) {
+        int i1 = e.findPointerIndex(camPtr1);
+        int i2 = e.findPointerIndex(camPtr2);
+        if (i1 < 0 || i2 < 0) {
+            return false;
+        }
+        float x0 = e.getX(i1), y0 = e.getY(i1);
+        float x1 = e.getX(i2), y1 = e.getY(i2);
+        float span = (float) Math.hypot(x1 - x0, y1 - y0);
+        if (span < 20f) span = 20f;
+        float cx = (x0 + x1) * 0.5f;
+        float cy = (y0 + y1) * 0.5f;
+        int fov = Math.round(gFov0 * gSpan0 / span);
+        fov = Math.max(1, Math.min(400, fov));
+        int dist = gDist0 - Math.round((cy - gCy0) * 1.5f);
+        dist = Math.max(1, Math.min(1500, dist));
+        int height = gHeight0 + Math.round((cx - gCx0) * 0.5f);
+        height = Math.max(0, Math.min(400, height));
+        sm64portActivity a = sm64portActivity.instance;
+        if (a != null) {
+            a.setCamValue(20, fov);
+            a.setCamValue(46, dist);
+            a.setCamValue(47, height);
+        }
+        return true;
     }
 
     private boolean fpvActive() {

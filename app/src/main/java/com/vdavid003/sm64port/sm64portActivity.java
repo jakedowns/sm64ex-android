@@ -81,6 +81,9 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     private LinearLayout controls;
     private SurfaceTexture leiaTexture;
     private final SeekBar[] bars = new SeekBar[24];
+    /* Any slider key -> its SeekBar/min, for gesture control (cam keys > 23). */
+    private final java.util.Map<Integer, SeekBar> keyBars = new java.util.HashMap<>();
+    private final java.util.Map<Integer, Integer> keyMins = new java.util.HashMap<>();
     private final SeekBar[] outBars = new SeekBar[6];
     private final int[] outDefs = new int[6];
     private final int[] outVal = new int[6];
@@ -206,6 +209,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
           + "Free camera (X toggle, Y recentre, ANA stick), Ctl opacity.\n"
           + "Stay in level after stars; debug level select; cheats menu.\n"
           + "Ragdolls (death + hit), puppycam+, dynamic shadows, SSRTX.\n"
+          + "Touch: two-finger pinch = FOV, drag Y = cam distance, drag X = cam height.\n"
           + "Gamepad: LB/RB portals, RT = Z, drag-through on-screen buttons.\n"
           + "Debug: tabs (underline = selected, green = effect on), slider\n"
           + "  drag mode, changelog, adb channel (dump/set/toggle/fx/portal).\n"
@@ -1193,7 +1197,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
 
         addCamSlider("Cam distance", 1, 1500, 700, " u", 46);
         addCamSlider("FOV %", 1, 400, 100, " %", 20);
-        addCamSlider("3D height", 50, 150, 100, " %", 50);
+        addCamSlider("3D height", 50, 150, 50, " %", 50);
         addCamSlider("3D width", 50, 150, 100, " %", 51);
         addCamSlider("Cam height", 0, 400, 110, " u", 47);
         addCamSlider("Cam recentre", 0, 200, 50, " %", 48);
@@ -1665,8 +1669,37 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             @Override public void onStopTrackingTouch(SeekBar sb) {}
         });
         addToGrid(label, bar);
+        keyBars.put(key, bar);
+        keyMins.put(key, min);
         stereoValues.put(key, initial);
         nativeSetStereoInt(key, initial);
+    }
+
+    /** Current slider value (used by the two-finger camera gestures). */
+    int getCamValue(int key) {
+        Integer v = stereoValues.get(key);
+        if (v != null) return v;
+        switch (key) {
+            case 20: return 100;   // FOV %
+            case 46: return 700;   // cam distance
+            case 47: return 110;   // cam height
+            default: return 0;
+        }
+    }
+
+    /** Drive a slider from a gesture; label and native value update via its listener. */
+    void setCamValue(int key, int value) {
+        SeekBar bar = keyBars.get(key);
+        Integer min = keyMins.get(key);
+        if (bar != null && min != null) {
+            int p = value - min;
+            if (p < 0) p = 0;
+            if (p > bar.getMax()) p = bar.getMax();
+            bar.setProgress(p);
+        } else {
+            stereoValues.put(key, value);
+            nativeSetStereoInt(key, value);
+        }
     }
 
     private TextView makeCamToggle(String name, final int key, boolean initial) {
@@ -2173,6 +2206,8 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             @Override public void onStopTrackingTouch(SeekBar seekBar) {}
         });
         if (which >= 0 && which < bars.length) bars[which] = bar;
+        keyBars.put(which, bar);
+        keyMins.put(which, min);
         if (which == 17) {
             toeSlider = bar;
             toeLabel = label;

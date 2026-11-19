@@ -254,7 +254,7 @@ int gfx_stereo_perf = 0;   // 1 = render each eye at half resolution
 int gfx_stereo_fit = 2;    // 0 = fill eye, 1 = 4:3 fit, 2 = 16:9 fit (best)
 int gfx_stereo_aspect_pct = 0;
 /* Debug calibration for panel/weave pixel aspect: scales 3D Y only. */
-float gfx_geo_y_scale = 1.0f;
+float gfx_geo_y_scale = 0.5f;   // calibrated for the Leia panel/weave
 float gfx_geo_x_scale = 1.0f;
 int gfx_stereo_fov_pct = 100;   // camera FOV scale
 int gfx_stereo_2d = 0;          // 2D mode: keep the stereo path, zero the parallax  // 0 = auto; else aspect*100 for the eye canvas
@@ -1113,6 +1113,11 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx *verti
             if (!rsp.proj_is_perspective) {
                 /* 2D/UI ortho only: the 3D perspective already has the aspect. */
                 x = gfx_adjust_x_for_aspect_ratio(x);
+                /* The skybox/2D scene ortho gets the panel correction too;
+                 * the UI pass stays at native 1:1. */
+                if (!gfx_ui_pass && gfx_geo_y_scale != 1.0f) {
+                    y *= gfx_geo_y_scale;
+                }
             } else {
                 /* Panel/weave calibration: 3D only, UI stays 1:1. */
                 if (gfx_geo_x_scale != 1.0f) x *= gfx_geo_x_scale;
