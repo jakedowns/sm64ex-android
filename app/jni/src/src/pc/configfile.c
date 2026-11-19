@@ -95,7 +95,7 @@ bool         configStayInLevel   = true;
 unsigned int death_ragdoll_enabled     = 1; // death ragdoll physics
 unsigned int hit_ragdoll_enabled       = 1; // recoverable knockback ragdoll
 unsigned int configPuppycamEnhanced    = 1; // puppycam wall margin + Mario xlu fade
-unsigned int configDynamicShadows      = 1; // realtime shadow map
+unsigned int configDynamicShadows      = 0; // realtime shadow map (opt-in)
 #ifdef DISCORDRPC
 bool         configDiscordRPC    = true;
 #endif

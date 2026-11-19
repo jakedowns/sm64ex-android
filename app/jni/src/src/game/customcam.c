@@ -18,9 +18,15 @@
 
 int gfx_cam_mode = 0;
 
+// Live tunables (CAMERA tab sliders -> nativeSetStereoInt keys 46..49).
+float gfx_cam_dist = 700.0f;         // orbit radius, world units
+float gfx_cam_height = 110.0f;       // look-at height above Mario's feet
+float gfx_cam_recentre_pct = 50.0f;  // recentre speed while running
+float gfx_cam_sens_pct = 100.0f;     // right-stick orbit sensitivity
+
 static s16 s_yaw;
 static s16 s_pitch = 0x1800;
-static f32 s_dist = 700.0f;
+static f32 s_dist() { return gfx_cam_dist; }
 static Vec3f s_pos;
 static int s_init = 0;
 
@@ -78,7 +84,7 @@ void custom_camera_update(struct Camera *c) {
     }
 
     target[0] = gMarioState->pos[0];
-    target[1] = gMarioState->pos[1] + 110.0f;
+    target[1] = gMarioState->pos[1] + gfx_cam_height;
     target[2] = gMarioState->pos[2];
 
     if (!s_init) {
@@ -97,16 +103,24 @@ void custom_camera_update(struct Camera *c) {
         inX = gPlayer2Controller->stickX;
         inY = gPlayer2Controller->stickY;
     }
-    if (inX > 12 || inX < -12) {
-        s_yaw -= inX * 26;
+    {
+        f32 sens = gfx_cam_sens_pct / 100.0f;
+        if (inX > 12 || inX < -12) {
+            s_yaw -= (s16)((f32) inX * 26.0f * sens);
+        }
+        if (inY > 12 || inY < -12) {
+            s_pitch = (s16) clamps((f32) s_pitch + (f32) inY * 10.0f * sens,
+                                   0x0400, 0x3400);
+        }
     }
     if (inY > 12 || inY < -12) {
-        s_pitch = (s16) clamps((f32) s_pitch + (f32) inY * 10.0f, 0x0400, 0x3400);
+        // stick is being used: no auto recentre
     } else {
         // Gently recentre behind Mario while he is running.
         if (gMarioState->forwardVel > 8.0f) {
             s16 behind = (s16)(gMarioState->faceAngle[1] + 0x8000);
-            s_yaw = approach_s16_cam(s_yaw, behind, 0x0100);
+            s16 inc = (s16)(512.0f * (gfx_cam_recentre_pct / 100.0f));
+            s_yaw = approach_s16_cam(s_yaw, behind, inc);
         }
     }
 
@@ -114,9 +128,9 @@ void custom_camera_update(struct Camera *c) {
     dir[0] = -sins(s_yaw) * coss(s_pitch);
     dir[2] = -coss(s_yaw) * coss(s_pitch);
     dir[1] = sins(s_pitch);
-    desired[0] = target[0] + dir[0] * s_dist;
-    desired[1] = target[1] + dir[1] * s_dist;
-    desired[2] = target[2] + dir[2] * s_dist;
+    desired[0] = target[0] + dir[0] * s_dist();
+    desired[1] = target[1] + dir[1] * s_dist();
+    desired[2] = target[2] + dir[2] * s_dist();
 
     // Pull in when a wall/floor is between Mario and the camera.
     rayHit[0] = desired[0] - target[0];
@@ -131,9 +145,9 @@ void custom_camera_update(struct Camera *c) {
         if (d < 90.0f) {
             d = 90.0f;
         }
-        s_pos[0] = target[0] + (desired[0] - target[0]) * (d / s_dist);
-        s_pos[1] = target[1] + (desired[1] - target[1]) * (d / s_dist);
-        s_pos[2] = target[2] + (desired[2] - target[2]) * (d / s_dist);
+        s_pos[0] = target[0] + (desired[0] - target[0]) * (d / s_dist());
+        s_pos[1] = target[1] + (desired[1] - target[1]) * (d / s_dist());
+        s_pos[2] = target[2] + (desired[2] - target[2]) * (d / s_dist());
     } else {
         s_pos[0] += (desired[0] - s_pos[0]) * 0.35f;
         s_pos[1] += (desired[1] - s_pos[1]) * 0.35f;

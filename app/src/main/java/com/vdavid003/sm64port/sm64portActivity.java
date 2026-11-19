@@ -891,6 +891,11 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         controls.addView(camModeButton);
         nativeSetCamMode2(camMode2);
 
+        addCamSlider("Cam distance", 300, 1500, 700, " u", 46);
+        addCamSlider("Cam height", 0, 400, 110, " u", 47);
+        addCamSlider("Cam recentre", 0, 200, 50, " %", 48);
+        addCamSlider("Cam sensitivity", 10, 300, 100, " %", 49);
+
         camHeadToggle = addCamToggle("HEAD TRACK", 41, hdtOn);
         camGyroToggle = addCamToggle("GYRO CAM", 42, gyroOn);
         addCamSlider("HDT strength", 0, 200, hdtStrength, " %", 43);
