@@ -2985,6 +2985,10 @@ void update_lakitu(struct Camera *c) {
                                  &gLakituState.oldPitch, &gLakituState.oldYaw);
 
         gLakituState.roll = 0;
+        {
+            extern s16 movekit_camera_roll(void);
+            gLakituState.roll += movekit_camera_roll();
+        }
 
         // Apply camera shakes
         shake_camera_pitch(gLakituState.pos, gLakituState.focus);

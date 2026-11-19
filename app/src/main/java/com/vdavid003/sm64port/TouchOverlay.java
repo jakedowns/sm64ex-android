@@ -511,6 +511,27 @@ public class TouchOverlay extends View {
 
         }
 
+        // Jetpack fuel gauge: bottom-left, outside the opacity layer.
+        {
+            int mv = 0;
+            try {
+                mv = sm64portActivity.nativeGetMovekitState();
+            } catch (Throwable ignored) {
+            }
+            if ((mv & 4) != 0) {
+                int fuel = sm64portActivity.nativeGetJetpackFuel();
+                float x0 = 40f, y0 = getHeight() * 0.42f, w = 26f, hgt = 260f;
+                paint.setStyle(Paint.Style.STROKE);
+                paint.setStrokeWidth(3f);
+                paint.setColor(0xCCFFFFFF);
+                c.drawRect(x0, y0, x0 + w, y0 + hgt, paint);
+                paint.setStyle(Paint.Style.FILL);
+                float fh = hgt * Math.max(0, Math.min(100, fuel)) / 100f;
+                paint.setColor(fuel > 25 ? 0xCC66FF99 : 0xCCFF6666);
+                c.drawRect(x0 + 3, y0 + hgt - fh + 3, x0 + w - 3, y0 + hgt - 3, paint);
+            }
+        }
+
         c.restoreToCount(layer);
 
         // Aiming reticle stays at full opacity even when the controls are faded.

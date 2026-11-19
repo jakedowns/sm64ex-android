@@ -351,6 +351,20 @@ Java_com_vdavid003_sm64port_sm64portActivity_nativeGetCamMode2(JNIEnv *env, jcla
 }
 
 JNIEXPORT jint JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeGetMovekitState(JNIEnv *env, jclass clazz) {
+    (void) env; (void) clazz;
+    extern int movekit_state(void);
+    return movekit_state();
+}
+
+JNIEXPORT jint JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeGetJetpackFuel(JNIEnv *env, jclass clazz) {
+    (void) env; (void) clazz;
+    extern int movekit_fuel_pct(void);
+    return movekit_fuel_pct();
+}
+
+JNIEXPORT jint JNICALL
 Java_com_vdavid003_sm64port_sm64portActivity_nativeGetCamMode(JNIEnv *env, jclass clazz) {
     (void) env; (void) clazz;
 #ifdef BETTERCAMERA
@@ -416,6 +430,9 @@ Java_com_vdavid003_sm64port_sm64portActivity_nativeSetEnh(JNIEnv *env, jobject t
         case 0: death_ragdoll_enabled = value ? 1 : 0; break;
         case 1: hit_ragdoll_enabled = value ? 1 : 0; break;
         case 2: configPuppycamEnhanced = value ? 1 : 0; break;
+        case 3: { extern void movekit_set_flag(int, int); movekit_set_flag(0, value); break; }
+        case 4: { extern void movekit_set_flag(int, int); movekit_set_flag(1, value); break; }
+        case 5: { extern void movekit_set_flag(int, int); movekit_set_flag(2, value); break; }
     }
 }
 
