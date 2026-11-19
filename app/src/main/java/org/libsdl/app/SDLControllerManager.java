@@ -546,6 +546,8 @@ class SDLHapticHandler {
             if (haptic == null) {
                 InputDevice device = InputDevice.getDevice(deviceIds[i]);
                 Vibrator vib = device.getVibrator();
+                Log.d("SM64RUMBLE", "input " + deviceIds[i] + " " + device.getName()
+                        + " vib=" + (vib != null) + " has=" + (vib != null && vib.hasVibrator()));
                 if (vib != null) {
                     if (vib.hasVibrator()) {
                         haptic = new SDLHaptic();
@@ -563,6 +565,7 @@ class SDLHapticHandler {
         Vibrator vib = (Vibrator) SDL.getContext().getSystemService(Context.VIBRATOR_SERVICE);
         if (vib != null) {
             hasVibratorService = vib.hasVibrator();
+            Log.d("SM64RUMBLE", "tablet vibrator service has=" + hasVibratorService);
 
             if (hasVibratorService) {
                 SDLHaptic haptic = getHaptic(deviceId_VIBRATOR_SERVICE);

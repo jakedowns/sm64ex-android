@@ -683,6 +683,10 @@ extern void move_mario_head_c_up(struct Camera *); // static (ASM)
 extern void transition_next_state(UNUSED struct Camera *c, s16 frames);
 extern void set_camera_mode(struct Camera *, s16, s16);
 extern void update_camera(struct Camera *);
+/* Smooth the post-portal camera handoff instead of snapping behind Mario. */
+extern void camera_portal_blend_begin(void);
+extern void camera_exit_first_person(void);
+extern void camera_portal_blend_toggle(void);
 extern void reset_camera(struct Camera *);
 extern void init_camera(struct Camera *);
 extern void select_mario_cam_mode(void);

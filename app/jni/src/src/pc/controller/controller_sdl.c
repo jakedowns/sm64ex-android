@@ -19,6 +19,8 @@
 #include "../fs/fs.h"
 
 #include "game/level_update.h"
+#include "game/portal.h"
+#include "game/camera.h"
 
 // mouse buttons are also in the controller namespace (why), just offset 0x100
 #define VK_OFS_SDL_MOUSE 0x0100
@@ -95,12 +97,18 @@ static void controller_sdl_bind(void) {
 }
 
 static void controller_sdl_init(void) {
-    if (SDL_Init(SDL_INIT_GAMECONTROLLER | SDL_INIT_EVENTS) != 0) {
+    /* Prefer SDL's HIDAPI driver for Xbox pads: the Android joystick backend
+     * reports rumble unsupported, while HIDAPI can send output reports. */
+    SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI, "1");
+    SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_XBOX, "1");
+    SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_XBOX_ONE, "1");
+    if (SDL_Init(SDL_INIT_GAMECONTROLLER | SDL_INIT_EVENTS | SDL_INIT_JOYSTICK) != 0) {
         fprintf(stderr, "SDL init error: %s\n", SDL_GetError());
         return;
     }
 
     haptics_enabled = (SDL_InitSubSystem(SDL_INIT_HAPTIC) == 0);
+    SDL_Log("rumble: haptics=%d err=%s joysticks=%d", haptics_enabled, SDL_GetError(), SDL_NumJoysticks());
 
     // try loading an external gamecontroller mapping file
     uint64_t gcsize = 0;
@@ -126,23 +134,29 @@ static void controller_sdl_init(void) {
     init_ok = true;
 }
 
-static SDL_Haptic *controller_sdl_init_haptics(const int joy) {
-    if (!haptics_enabled) return NULL;
+static SDL_Haptic *controller_sdl_init_haptics(SDL_GameController *ctrl) {
+    SDL_Joystick *joy;
+    SDL_Haptic *hap;
 
-    SDL_Haptic *hap = SDL_HapticOpen(joy);
-    if (!hap) return NULL;
+    if (!haptics_enabled || ctrl == NULL) return NULL;
 
-    if (SDL_HapticRumbleSupported(hap) != SDL_TRUE) {
+    /* Open the haptic that belongs to this controller's InputDevice.  Opening
+     * by index (SDL_HapticOpen(joy)) picked the first haptic in the list, which
+     * on Android is often the tablet's own vibrator. */
+    joy = SDL_GameControllerGetJoystick(ctrl);
+    if (!joy) return NULL;
+    hap = SDL_HapticOpenFromJoystick(joy);
+    if (!hap) {
+        SDL_Log("rumble: no matching haptic for %s: %s", SDL_JoystickName(joy), SDL_GetError());
+        return NULL;
+    }
+
+    if (SDL_HapticRumbleSupported(hap) != SDL_TRUE || SDL_HapticRumbleInit(hap) != 0) {
         SDL_HapticClose(hap);
         return NULL;
     }
 
-    if (SDL_HapticRumbleInit(hap) != 0) {
-        SDL_HapticClose(hap);
-        return NULL;
-    }
-
-    printf("controller %s has haptics support, rumble enabled\n", SDL_JoystickNameForIndex(joy));
+    SDL_Log("rumble: %s haptics opened (index %d)", SDL_JoystickName(joy), SDL_HapticIndex(hap));
     return hap;
 }
 
@@ -182,7 +196,15 @@ static void controller_sdl_read(OSContPad *pad) {
             if (SDL_IsGameController(i)) {
                 sdl_cntrl = SDL_GameControllerOpen(i);
                 if (sdl_cntrl != NULL) {
-                    sdl_haptic = controller_sdl_init_haptics(i);
+                    SDL_Log("rumble: opened controller %s hasRumble=%d",
+                            SDL_GameControllerName(sdl_cntrl),
+                            SDL_GameControllerHasRumble(sdl_cntrl));
+                    {
+                        char *map = SDL_GameControllerMapping(sdl_cntrl);
+                        SDL_Log("controller mapping: %s", map ? map : "(none)");
+                        SDL_free(map);
+                    }
+                    sdl_haptic = controller_sdl_init_haptics(sdl_cntrl);
                     break;
                 }
             }
@@ -193,6 +215,44 @@ static void controller_sdl_read(OSContPad *pad) {
     }
 	
 	bool inputChanged = false;
+    /* L1/R1 (shoulder buttons) are the portal P1/P2 triggers. */
+    {
+        static int p1Prev = 0, p2Prev = 0;
+        static int rawPrev[24];
+        int p1 = SDL_GameControllerGetButton(sdl_cntrl, SDL_CONTROLLER_BUTTON_LEFTSHOULDER);
+        int p2 = SDL_GameControllerGetButton(sdl_cntrl, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER);
+        SDL_Joystick *joy = SDL_GameControllerGetJoystick(sdl_cntrl);
+        if (p1 != p1Prev || p2 != p2Prev) {
+            SDL_Log("portal shoulders: L=%d R=%d", p1, p2);
+        }
+        /* Raw-button trace: identifies which physical button the pad emits
+         * when a bumper press is not seen by the GameController mapping. */
+        if (joy != NULL) {
+            int n = SDL_JoystickNumButtons(joy);
+            for (int i = 0; i < n && i < 24; i++) {
+                int b = SDL_JoystickGetButton(joy, i);
+                if (b != rawPrev[i]) {
+                    SDL_Log("raw button %d -> %d", i, b);
+                    rawPrev[i] = b;
+                }
+            }
+        }
+        if (p1 && !p1Prev) portal_shoot(0);
+        if (p2 && !p2Prev) portal_shoot(1);
+        p1Prev = p1;
+        p2Prev = p2;
+    }
+
+    /* Select / Back leaves first-person (the C-up path does the same). */
+    {
+        static int backPrev = 0;
+        int back = SDL_GameControllerGetButton(sdl_cntrl, SDL_CONTROLLER_BUTTON_BACK);
+        if (back && !backPrev) {
+            camera_exit_first_person();
+        }
+        backPrev = back;
+    }
+
     for (u32 i = 0; i < SDL_CONTROLLER_BUTTON_MAX; ++i) {
         const bool new = SDL_GameControllerGetButton(sdl_cntrl, i);
         const bool pressed = !joy_buttons[i] && new;
@@ -280,6 +340,7 @@ static void controller_sdl_rumble_play(f32 strength, f32 length) {
     u16 amt = (u16)(strength * 0xFFFF);
     // Bluetooth pads on Android are normally driven through the joystick rumble
     // API; SDL_Haptic is often unsupported there, so use both when available.
+    SDL_Log("rumble: play str=%.2f ctrl=%p haptic=%p", strength, (void *)sdl_cntrl, (void *)sdl_haptic);
     if (sdl_cntrl)
         SDL_GameControllerRumble(sdl_cntrl, amt, amt, ms);
     if (sdl_haptic)

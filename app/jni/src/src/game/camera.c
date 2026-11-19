@@ -8,6 +8,7 @@
 #include "dialog_ids.h"
 #include "audio/external.h"
 #include "mario_misc.h"
+#include "mario.h"
 #include "game_init.h"
 #include "hud.h"
 #include "engine/math_util.h"
@@ -33,6 +34,10 @@
 // Camera mode selection + custom orbit camera (customcam.c).
 extern int gfx_cam_mode;
 extern void custom_camera_update(struct Camera *c);
+extern void custom_camera_apply_mode(int mode);
+extern void first_person_camera_update(struct Camera *c);
+extern float gfx_cam_height;
+extern float gfx_cam_dist;
 
 /* Overlay buttons for the free camera (set by controller_touchscreen.c). */
 extern u8 camera_mode_button_pressed;
@@ -2402,7 +2407,12 @@ void mode_default_camera(struct Camera *c) {
  * The mode used by close and free roam
  */
 void mode_lakitu_camera(struct Camera *c) {
-    gCameraZoomDist = 800.f;
+    /* The CAMERA-tab distance slider is an offset around its 700u neutral
+     * value, so the vanilla distance stays 800u until the slider is moved. */
+    gCameraZoomDist = 800.f + (gfx_cam_dist - 700.f);
+    if (gCameraZoomDist < 50.f) {
+        gCameraZoomDist = 50.f;
+    }
     mode_default_camera(c);
 }
 
@@ -2410,7 +2420,10 @@ void mode_lakitu_camera(struct Camera *c) {
  * When no other mode is active and the current R button mode is mario
  */
 void mode_mario_camera(struct Camera *c) {
-    gCameraZoomDist = 350.f;
+    gCameraZoomDist = 350.f + (gfx_cam_dist - 700.f);
+    if (gCameraZoomDist < 50.f) {
+        gCameraZoomDist = 50.f;
+    }
     mode_default_camera(c);
 }
 
@@ -3026,6 +3039,85 @@ void update_lakitu(struct Camera *c) {
 }
 
 
+/* ------------------------------------------------ portal camera handoff */
+
+/* A teleport snaps the camera behind Mario (CAM_MOVE_INIT_CAMERA).  Instead of
+ * cutting, save the pre-teleport camera and ease the rendered position/focus
+ * to the new goal over ~0.8 s.  The camera engine keeps running normally under
+ * the blend, so collision/zoom behaviour is preserved. */
+typedef struct {
+    int active;
+    int frame;
+    int duration;
+    Vec3f fromPos;
+    Vec3f fromFocus;
+    Vec3f toPos;
+    Vec3f toFocus;
+} PortalCamBlend;
+
+static PortalCamBlend sPortalCamBlend;
+static int sPortalCamBlendEnabled = 1;
+
+/* Leave first-person mode from anywhere (C-up or the Select/Back button). */
+void camera_exit_first_person(void) {
+    if (gfx_cam_mode != 4) {
+        return;
+    }
+    gCameraMovementFlags &= ~(CAM_MOVE_C_UP_MODE | CAM_MOVE_STARTED_EXITING_C_UP);
+    custom_camera_apply_mode(0);
+    gCameraMovementFlags |= CAM_MOVE_INIT_CAMERA;
+    play_sound_cbutton_up();
+}
+
+void camera_portal_blend_begin(void) {
+    if (!sPortalCamBlendEnabled || gfx_cam_mode == 4 || gCamera == NULL || gCamera->cutscene != 0) {
+        sPortalCamBlend.active = 0;
+        return;
+    }
+    sPortalCamBlend.active = 1;
+    sPortalCamBlend.frame = 0;
+    sPortalCamBlend.duration = 24;  /* 0.8 s at the 30 Hz simulation rate */
+    vec3f_copy(sPortalCamBlend.fromPos, gLakituState.pos);
+    vec3f_copy(sPortalCamBlend.fromFocus, gLakituState.focus);
+}
+
+void camera_portal_blend_toggle(void) {
+    sPortalCamBlendEnabled = !sPortalCamBlendEnabled;
+    if (!sPortalCamBlendEnabled) {
+        sPortalCamBlend.active = 0;
+    }
+}
+
+static void camera_portal_blend_step(void) {
+    f32 u, e;
+
+    if (!sPortalCamBlend.active) {
+        return;
+    }
+    if (sPortalCamBlend.frame == 0) {
+        vec3f_copy(sPortalCamBlend.toPos, gLakituState.pos);
+        vec3f_copy(sPortalCamBlend.toFocus, gLakituState.focus);
+    }
+
+    sPortalCamBlend.frame++;
+    u = (f32) sPortalCamBlend.frame / (f32) sPortalCamBlend.duration;
+    if (u >= 1.0f) {
+        sPortalCamBlend.active = 0;
+        return;
+    }
+    e = u * u * (3.0f - 2.0f * u);  /* smoothstep */
+
+    for (int i = 0; i < 3; i++) {
+        gLakituState.pos[i] = sPortalCamBlend.fromPos[i]
+                            + (sPortalCamBlend.toPos[i] - sPortalCamBlend.fromPos[i]) * e;
+        gLakituState.focus[i] = sPortalCamBlend.fromFocus[i]
+                              + (sPortalCamBlend.toFocus[i] - sPortalCamBlend.fromFocus[i]) * e;
+    }
+    vec3f_get_dist_and_angle(gLakituState.pos, gLakituState.focus,
+                             &gLakituState.focusDistance,
+                             &gLakituState.oldPitch, &gLakituState.oldYaw);
+}
+
 /**
  * The main camera update function.
  * Gets controller input, checks for cutscenes, handles mode changes, and moves the camera
@@ -3035,6 +3127,28 @@ void update_camera(struct Camera *c) {
 
     gCamera = c;
     update_camera_hud_status(c);
+
+    /* C-up: first press enters the vanilla look camera; while that look
+     * camera is active, a second C-up press switches to the first-person
+     * debug camera.  C-up again leaves first person. */
+    if ((gPlayer1Controller->buttonPressed & U_CBUTTONS) && c->cutscene == 0) {
+        if (gfx_cam_mode == 4) {
+            gPlayer1Controller->buttonPressed &= ~U_CBUTTONS;
+            camera_exit_first_person();
+        } else if (gCameraMovementFlags & CAM_MOVE_C_UP_MODE) {
+            gPlayer1Controller->buttonPressed &= ~U_CBUTTONS;
+            gCameraMovementFlags &= ~(CAM_MOVE_C_UP_MODE | CAM_MOVE_STARTED_EXITING_C_UP);
+            set_camera_mode(c, CAMERA_MODE_CLOSE, 1);
+            custom_camera_apply_mode(4);
+            /* Leave the Mario-look action immediately: otherwise the left
+             * stick keeps turning his head instead of running. */
+            if (gMarioState != NULL && gMarioState->action == ACT_FIRST_PERSON) {
+                set_mario_action(gMarioState, ACT_IDLE, 0);
+            }
+            play_sound_cbutton_up();
+        }
+    }
+
     if (c->cutscene == 0) {
         // Only process R_TRIG if 'fixed' is not selected in the menu
         if (cam_select_alt_mode(0) == CAM_SELECTION_MARIO
@@ -3301,6 +3415,20 @@ void update_camera(struct Camera *c) {
     }
 
     update_lakitu(c);
+    if (gfx_cam_mode == 0 || gfx_cam_mode == 1) {
+        /* Vanilla / bettercam: the distance offset is applied inside
+         * mode_lakitu_camera()/mode_mario_camera() (they overwrite the zoom
+         * distance every frame); only the height offset is added here. */
+        float hoff = gfx_cam_height - 110.0f;
+        if (hoff < -90.0f) hoff = -90.0f;
+        if (hoff > 300.0f) hoff = 300.0f;
+        gLakituState.pos[1] += hoff;
+    }
+    if (gfx_cam_mode == 4 && c->cutscene == 0) {
+        first_person_camera_update(c);
+    } else {
+        camera_portal_blend_step();
+    }
 
     gLakituState.lastFrameAction = sMarioCamState->action;
 }
@@ -4930,18 +5058,22 @@ void play_camera_buzz_if_c_sideways(void) {
 }
 
 void play_sound_cbutton_up(void) {
+    if (gfx_cam_mode == 4) return;   // FPV: no standard camera SFX
     play_sound(SOUND_MENU_CAMERA_ZOOM_IN, gDefaultSoundArgs);
 }
 
 void play_sound_cbutton_down(void) {
+    if (gfx_cam_mode == 4) return;
     play_sound(SOUND_MENU_CAMERA_ZOOM_OUT, gDefaultSoundArgs);
 }
 
 void play_sound_cbutton_side(void) {
+    if (gfx_cam_mode == 4) return;
     play_sound(SOUND_MENU_CAMERA_TURN, gDefaultSoundArgs);
 }
 
 void play_sound_button_change_blocked(void) {
+    if (gfx_cam_mode == 4) return;
     play_sound(SOUND_MENU_CAMERA_BUZZ, gDefaultSoundArgs);
 }
 

@@ -30,11 +30,132 @@
 #include "game/object_helpers.h"
 #include "game/object_list_processor.h"
 #include "game/portal.h"
+#include "pc/controller/controller_api.h"
 #include "game/print.h"
 #include "game/save_file.h"
 #include "game/interaction.h"
 #include "engine/math_util.h"
 #include "engine/surface_collision.h"
+#include "levels/ptc/header.h"
+
+/* Per-object occluder fade.  Bit N = fade object N (0..7 platforms, 8 ramp,
+ * 9..12 room walls), set by ptc_occlusion_update(). */
+u32 g_ptc_fade_mask = 0;
+
+static const Gfx *const s_ptc_solid_dl[9] = {
+    ptc_dl_p1, ptc_dl_p2, ptc_dl_p3, ptc_dl_p4,
+    ptc_dl_p5, ptc_dl_p6, ptc_dl_p7, ptc_dl_p9, ptc_dl_ramp,
+};
+static const Gfx *const s_ptc_solid_fade[9] = {
+    ptc_dl_p1_fade, ptc_dl_p2_fade, ptc_dl_p3_fade, ptc_dl_p4_fade,
+    ptc_dl_p5_fade, ptc_dl_p6_fade, ptc_dl_p7_fade, ptc_dl_p9_fade,
+    ptc_dl_ramp_fade,
+};
+static const Gfx *const s_ptc_wall_dl[4] = {
+    ptc_dl_wall_0, ptc_dl_wall_1, ptc_dl_wall_2, ptc_dl_wall_3,
+};
+static const Gfx *const s_ptc_wall_fade[4] = {
+    ptc_dl_wall_0_fade, ptc_dl_wall_1_fade,
+    ptc_dl_wall_2_fade, ptc_dl_wall_3_fade,
+};
+
+/* GEO_ASM entry point: pick the opaque or translucent variant for the object
+ * identified by the node parameter. */
+Gfx *ptc_geo_obj(s32 callContext, struct GraphNode *node, UNUSED void *context) {
+    struct GraphNodeGenerated *gen = (struct GraphNodeGenerated *) node;
+    int id = (int) gen->parameter;
+
+    (void) callContext; (void) context;
+    if (id >= 0 && id < 9) {
+        return (Gfx *)((g_ptc_fade_mask & (1u << id))
+                ? s_ptc_solid_fade[id] : s_ptc_solid_dl[id]);
+    }
+    id -= 9;
+    if (id >= 0 && id < 4) {
+        return (Gfx *)((g_ptc_fade_mask & (1u << (9 + id)))
+                ? s_ptc_wall_fade[id] : s_ptc_wall_dl[id]);
+    }
+    return (Gfx *) ptc_dl_room;
+}
+
+/* Slab test for the camera -> Mario segment. */
+static int ptc_ray_box(const Vec3f o, const Vec3f d,
+                       f32 x0, f32 y0, f32 z0, f32 x1, f32 y1, f32 z1) {
+    f32 tmin = 0.0f, tmax = 1.0f;
+    const f32 lo[3] = { x0, y0, z0 };
+    const f32 hi[3] = { x1, y1, z1 };
+    for (int i = 0; i < 3; i++) {
+        if (fabsf(d[i]) < 0.0001f) {
+            if (o[i] < lo[i] || o[i] > hi[i]) return 0;
+        } else {
+            f32 t1 = (lo[i] - o[i]) / d[i];
+            f32 t2 = (hi[i] - o[i]) / d[i];
+            if (t1 > t2) { f32 t = t1; t1 = t2; t2 = t; }
+            if (t1 > tmin) tmin = t1;
+            if (t2 < tmax) tmax = t2;
+            if (tmin > tmax) return 0;
+        }
+    }
+    return tmin < 0.999f && tmax > 0.001f;
+}
+
+static int ptc_ray_plane(const Vec3f o, const Vec3f d, int axis, f32 plane,
+                         f32 a0, f32 a1, f32 b0, f32 b1) {
+    f32 t, u, v;
+    if (fabsf(d[axis]) < 0.0001f) return 0;
+    t = (plane - o[axis]) / d[axis];
+    if (t <= 0.001f || t >= 0.999f) return 0;
+    u = o[(axis + 1) % 3] + d[(axis + 1) % 3] * t;
+    v = o[(axis + 2) % 3] + d[(axis + 2) % 3] * t;
+    return u >= a0 && u <= a1 && v >= b0 && v <= b1;
+}
+
+/* Fade only the PTC objects that actually cross the camera-to-Mario ray. */
+static void ptc_occlusion_update(void) {
+    static const f32 boxes[][6] = {
+        { -1050, 0, -650, -750, 180, -350 },   /* 0 P1 */
+        {   750, 0, -650, 1050, 360, -350 },   /* 1 P2 */
+        { -1050, 0,  150, -750, 560,  450 },   /* 2 P3 */
+        {   750, 0,  150, 1050, 680,  450 },   /* 3 P4 */
+        {  -600, 0,  600,  600, 800, 1200 },   /* 4 P5 */
+        {  -750, -120, -400, -450, 260, -300 },/* 5 P6 */
+        {  -300, 0, -1500, 300, 1100, -1100 }, /* 6 P7 */
+        {  -300, 0,  150, 300, 950,  560 },    /* 7 P9 */
+        {  -250, 500, -850, 250, 800, -550 },  /* 8 ramp */
+    };
+    Vec3f o, d, target;
+
+    g_ptc_fade_mask = 0;
+    if (gCurrLevelNum != 38 || gCurrAreaIndex != 1 || gMarioState == NULL) {
+        return;
+    }
+    vec3f_copy(o, gLakituState.pos);
+    vec3f_copy(target, gMarioState->pos);
+    target[1] += 80.0f;
+    d[0] = target[0] - o[0];
+    d[1] = target[1] - o[1];
+    d[2] = target[2] - o[2];
+
+    for (unsigned i = 0; i < sizeof(boxes) / sizeof(boxes[0]); i++) {
+        if (ptc_ray_box(o, d, boxes[i][0], boxes[i][1], boxes[i][2],
+                        boxes[i][3], boxes[i][4], boxes[i][5])) {
+            g_ptc_fade_mask |= 1u << i;
+        }
+    }
+    /* Walls: 9 front (z-), 10 back (z+), 11 left (x-), 12 right (x+). */
+    if (ptc_ray_plane(o, d, 2, -2600.0f, -1200.0f, 1200.0f, 0.0f, 1400.0f)) {
+        g_ptc_fade_mask |= 1u << 9;
+    }
+    if (ptc_ray_plane(o, d, 2, 1200.0f, -1200.0f, 1200.0f, 0.0f, 1400.0f)) {
+        g_ptc_fade_mask |= 1u << 10;
+    }
+    if (ptc_ray_plane(o, d, 0, -1200.0f, 0.0f, 1400.0f, -2600.0f, 1200.0f)) {
+        g_ptc_fade_mask |= 1u << 11;
+    }
+    if (ptc_ray_plane(o, d, 0, 1200.0f, 0.0f, 1400.0f, -2600.0f, 1200.0f)) {
+        g_ptc_fade_mask |= 1u << 12;
+    }
+}
 
 #define PTC_SETUP_TICKS       60      /* visible pause after portal placement */
 #define PTC_WALK_TIMEOUT      300
@@ -57,7 +178,8 @@ static int s_teleportSrc = -1;
 static int s_teleportDst = -1;
 static int s_onPlatform;
 static int s_starCollected[2];
-static int s_testMode;          // 0 = standard traversal, 1 = momentum launch
+static int s_testMode;
+static int s_wallTest;          // bitmask from the last walltest command
 static int s_momDropped;
 static f32 s_momPrevSpeed;
 static f32 s_momEntrySpeed;
@@ -628,6 +750,8 @@ static void ptc_finish_ok(void) {
 void ptc_update(void) {
     struct MarioState *m = gMarioState;
 
+    ptc_occlusion_update();
+
     if (s_pendingCommandReady) {
         s_pendingCommandReady = 0;
         ptc_apply_command(s_pendingCommand);
@@ -810,6 +934,12 @@ static void ptc_apply_command(const char *action) {
         ptc_place_portals();
     } else if (strcmp(action, "portalview") == 0) {
         portal_view_toggle();
+    } else if (strcmp(action, "camblend") == 0) {
+        camera_portal_blend_toggle();
+    } else if (strcmp(action, "rumble") == 0) {
+        controller_rumble_play(1.0f, 0.8f);
+    } else if (strcmp(action, "walltest") == 0) {
+        s_wallTest = portal_test_walls();
     } else if (strcmp(action, "stop") == 0) {
         ptc_stop();
     }
@@ -837,7 +967,7 @@ void ptc_format_status(char *buf, int len) {
     snprintf(buf, len,
              "PTC level=%d area=%d phase=%d mode=%d active=%d fail=%d reason=\"%s\" "
              "star=%d star2=%d star_visible=%d portals=%d shotA=%d shotB=%d pdbg=%d "
-             "mom_enter=%.1f mom_exit=%.1f mom_apex=%.1f momy=%.1f momv=%.1f,%.1f,%.1f "
+             "mom_enter=%.1f mom_exit=%.1f mom_apex=%.1f momy=%.1f momv=%.1f,%.1f,%.1f walltest=0x%X "
              "p0=%.1f,%.1f,%.1f n0=%.3f,%.3f,%.3f p1=%.1f,%.1f,%.1f n1=%.3f,%.3f,%.3f "
              "tele=%d src=%d dst=%d onplat=%d "
              "mario=%.2f,%.2f,%.2f vel=%.2f,%.2f,%.2f fv=%.1f in=0x%04X im=%.1f hook=%d action=0x%08X floor=%.2f "
@@ -848,7 +978,7 @@ void ptc_format_status(char *buf, int len) {
              gCurrLevelNum, gCurrAreaIndex, s_phase, s_testMode, s_testActive, s_failed, s_failReason,
              s_starCollected[0], s_starCollected[1], ptc_star_visible(), portal_count(), s_shotA, s_shotB, g_portal_debug,
              s_momEntrySpeed, s_momExitSpeed, s_momApex,
-             s_momExitY, s_momExitVX, s_momExitVY, s_momExitVZ,
+             s_momExitY, s_momExitVX, s_momExitVY, s_momExitVZ, s_wallTest,
              hasA ? pa[0] : 0.0f, hasA ? pa[1] : 0.0f, hasA ? pa[2] : 0.0f,
              hasA ? na[0] : 0.0f, hasA ? na[1] : 0.0f, hasA ? na[2] : 0.0f,
              hasB ? pb[0] : 0.0f, hasB ? pb[1] : 0.0f, hasB ? pb[2] : 0.0f,

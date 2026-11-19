@@ -34,6 +34,7 @@ int  portal_count(void);         // number of placed portals (0..2)
 
 /* Debug / regression-test helpers.  These do not change normal gameplay. */
 void portal_give_gun(void);
+void portal_drop_gun(void);
 void portal_reset(void);
 /* Casts the same hitscan as portal_shoot(), but from an explicit origin
  * towards a target point.  Used by the deterministic Portal Test Chamber. */
@@ -42,5 +43,10 @@ int  portal_get(int which, Vec3f pos, Vec3f normal);
 int  portal_last_src(void);
 int  portal_last_dst(void);
 int  portal_teleport_count(void);
+int  portal_test_walls(void);   // bitmask: front/back/left/right wall accepted
+
+/* Aiming reticle drawn in the N64 UI pass with its own stereo depth. */
+extern float g_portal_reticle_depth_px;
+int  portal_render_reticle(void);
 
 #endif

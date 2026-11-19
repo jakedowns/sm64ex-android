@@ -79,6 +79,7 @@ extern int gfx_ovl_active;
 extern int gfx_ovl_stick_x;
 extern int gfx_ovl_stick_y;
 extern int gfx_ovl_right_x;
+extern int gfx_ovl_right_active;
 extern int gfx_ovl_right_y;
 extern int gfx_ovl_analog;
 extern unsigned int gfx_ovl_buttons;
@@ -183,7 +184,15 @@ Java_com_vdavid003_sm64port_sm64portActivity_nativeSetStereoInt(JNIEnv *env, job
         case 43: gfx_hdt_strength = (float) value; break;
         case 44: gfx_gyro_strength = (float) value; break;
         case 45: gfx_gyro_pivot = (float) value; break;
-        case 46: gfx_cam_dist = (float) value; break;
+        case 46: {
+            extern f32 gCameraZoomDist;
+            extern u16 newcam_distance_target;
+            float d = (float) value;
+            gfx_cam_dist = d;
+            gCameraZoomDist = d;
+            newcam_distance_target = (u16) value;
+            break;
+        }
         case 47: gfx_cam_height = (float) value; break;
         case 48: gfx_cam_recentre_pct = (float) value; break;
         case 49: gfx_cam_sens_pct = (float) value; break;
@@ -218,10 +227,11 @@ Java_com_vdavid003_sm64port_sm64portActivity_nativeOverlayInput(JNIEnv *env, jcl
 
 JNIEXPORT void JNICALL
 Java_com_vdavid003_sm64port_sm64portActivity_nativeOverlayStick2(JNIEnv *env, jclass clazz,
-                                                                jint rx, jint ry) {
+                                                                jint rx, jint ry, jint active) {
     (void) env; (void) clazz;
     gfx_ovl_right_x = rx;
     gfx_ovl_right_y = ry;
+    gfx_ovl_right_active = active;
 }
 
 JNIEXPORT void JNICALL
@@ -317,6 +327,13 @@ Java_com_vdavid003_sm64port_sm64portActivity_nativeGivePortalGun(JNIEnv *env, jc
     (void) env; (void) clazz;
     extern void portal_give_gun(void);
     portal_give_gun();
+}
+
+JNIEXPORT void JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeDropPortalGun(JNIEnv *env, jclass clazz) {
+    (void) env; (void) clazz;
+    extern void portal_drop_gun(void);
+    portal_drop_gun();
 }
 
 JNIEXPORT jint JNICALL

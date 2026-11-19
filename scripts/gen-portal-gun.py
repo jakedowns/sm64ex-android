@@ -121,14 +121,14 @@ def transform(v):
 
 
 def color(v):
-    x, y, z = v
-    if z < -14.0:
-        return (0x36, 0x36, 0x42)       # rear grip
-    if z > 14.0:
-        return (0x86, 0xB4, 0xFF)       # front barrel
-    if abs(x) > 9.0:
-        return (0xD8, 0xD8, 0xE8)       # side shells
-    return (0x88, 0x88, 0xA0)           # body
+    # Smooth white -> grey gradient along the barrel (local +Z is forward).
+    # Per-vertex colors interpolate across the triangles, so no texture is
+    # needed and the clustered mesh stays readable.
+    z = v[2]
+    t = (z + 20.5) / 57.0
+    t = max(0.0, min(1.0, t))
+    g = int(140 + (255 - 140) * t)
+    return (g, g, g)
 
 
 def build_batches(verts, tris):

@@ -225,6 +225,28 @@ touch overlay:
   stick (**C / ANA** toggle); the stick drives the free camera.
 - Free camera parameters (sensitivity, aggression, pan, degradation) are read
   from the existing bettercam config keys.
+- **CAM MODE** in the CAMERA tab cycles *vanilla → bettercam → puppycam →
+  custom orbit → first person*. First person puts the camera at Mario's eye
+  (hiding his model), steers with the right stick, and eases the yaw back to his
+  facing when the stick is released.
+- **C-up shortcut:** the first C-up press enters the vanilla look camera; while
+  that look camera is active, a second C-up press switches to FIRST PERSON.
+  Entering first person also drops the Mario-look action so the left stick runs
+  again. C-up or **Select/Back** leaves first person (an on-screen hint shows
+  the Back shortcut), and the standard camera C-button sounds are muted while
+  first person is active.
+- **CAMERA tab:** the mode selector sits above the slider grid; the persistent
+  debug header also has a redundant `CAM …` cycler next to `FPS …`.
+- **Post-portal handoff:** a teleport still re-aims the camera behind Mario, but
+  the rendered position/focus now ease over ~0.8 s (smoothstep) instead of
+  cutting. Toggle with
+  `adb shell $B --es cmd ptc --es action camblend`.
+- **FLAT / SAME:** when 2D/FLAT or the SAME debug view is selected, only one eye
+  is rendered and the composite reuses it for both halves.
+- **Rumble:** the game now opens the haptic that belongs to the gamepad's
+  `InputDevice` instead of the first haptic in the list (which was often the
+  tablet's own vibrator). Test with
+  `adb shell $B --es cmd ptc --es action rumble`.
 
 ---
 
@@ -387,10 +409,12 @@ respawn follow.
 A Portal-style portal gun (`src/game/portal.c`), enabled by default in the castle
 grounds.
 
-- **Pickup** — a placeholder prop sits next to Mario's spawn in the castle
+- **Pickup** — a spinning prop sits next to Mario's spawn in the castle
   grounds; walk into it to pick it up. The gun is retained across level loads,
-  paintings and level select. While held, the touch overlay shows a centre
-  **aiming reticle** and two buttons: **P1** (blue) and **P2** (orange).
+  paintings and level select. While held, the game UI draws a centre **aiming
+  reticle** (with its own stereo depth from the target distance), and the touch
+  overlay shows **P1** (blue) / **P2** (orange); gamepad **LB/RB** fire the same
+  portals.
 - **Held model** — after pickup, Mario carries a low-poly Portal gun generated
   from the CC0 model *Portal Gun* by 3DESIGNER27 (Tim Gubski), thingiverse
   3022786. `scripts/gen-portal-gun.py` decimates the 47k-triangle STL by vertex
@@ -401,6 +425,12 @@ grounds.
   4000 units). A shot only sticks to solid level geometry: object-owned surfaces
   (NPCs, coins, question blocks, breakable bricks, signs, doors…) and
   water/lava/death-plane/vanish-cap/quicksand surfaces are rejected.
+- **Size** — the portal ellipse is now 1.5x larger (135 x 240 units).
+- **Audio** — firing plays a throw sound; an accepted surface plays a positive
+  select click; an ineligible surface (or a portal that cannot fit) buzzes.
+- **Wall self-test** — `adb shell $B --es cmd ptc --es action walltest` fires at
+  the four greybox room walls and reports a bitmask in the dump
+  (`walltest=0xF` means front/back/left/right all accepted).
 - **Orientation** — the decal is an ellipse oriented to the surface: upright on
   walls, world-X aligned on floors and ceilings, offset 1.5 units out of the
   surface to avoid z-fighting.
@@ -415,6 +445,10 @@ grounds.
   prevents ping-pong. Walking into a wall portal works; a floor portal is
   entered by falling through it.
 - Portals are cleared when the level/area changes; the gun itself is not.
+- **Occluder fade (Portal Test Chamber)** — each platform, the ramp and each
+  room wall has its own display list. A camera→Mario ray sets a per-object
+  bitmask, so only the geometry actually in the way fades; everything else
+  stays opaque.
 
 **Through-portal view (experimental, off by default):** toggle with
 `adb shell $B --es cmd ptc --es action portalview`. It renders the scene a

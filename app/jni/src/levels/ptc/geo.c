@@ -12,6 +12,8 @@
 #include "make_const_nonconst.h"
 #include "levels/ptc/header.h"
 
+extern Gfx *ptc_geo_obj(s32 callContext, struct GraphNode *node, UNUSED void *context);
+
 const GeoLayout ptc_geo[] = {
    GEO_NODE_SCREEN_AREA(10, SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2, SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2),
    GEO_OPEN_NODE(),
@@ -28,8 +30,21 @@ const GeoLayout ptc_geo[] = {
          GEO_OPEN_NODE(),
             GEO_CAMERA(1, 0, 2000, 6000, 0, 0, 0, geo_camera_main),
             GEO_OPEN_NODE(),
-               GEO_DISPLAY_LIST(LAYER_OPAQUE, ptc_dl_walls),
-               GEO_DISPLAY_LIST(LAYER_OPAQUE, ptc_dl_solid),
+               GEO_DISPLAY_LIST(LAYER_OPAQUE, ptc_dl_room),
+               GEO_ASM(0, ptc_geo_obj),
+               GEO_ASM(1, ptc_geo_obj),
+               GEO_ASM(2, ptc_geo_obj),
+               GEO_ASM(3, ptc_geo_obj),
+               GEO_ASM(4, ptc_geo_obj),
+               GEO_ASM(5, ptc_geo_obj),
+               GEO_ASM(6, ptc_geo_obj),
+               GEO_ASM(7, ptc_geo_obj),
+               GEO_ASM(8, ptc_geo_obj),
+               GEO_ASM(9, ptc_geo_obj),
+               GEO_ASM(10, ptc_geo_obj),
+               GEO_ASM(11, ptc_geo_obj),
+               GEO_ASM(12, ptc_geo_obj),
+               GEO_DISPLAY_LIST(LAYER_OPAQUE, ptc_dl_panels),
                GEO_DISPLAY_LIST(LAYER_OPAQUE, ptc_dl_labels),
                GEO_RENDER_OBJ(),
             GEO_CLOSE_NODE(),

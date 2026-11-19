@@ -6,6 +6,7 @@
 // Stereo state lives in gfx_pc.c (set by the Leia bridge).
 extern int gfx_stereo_enabled;
 extern int gfx_stereo_eye;
+extern int gfx_single_eye;
 extern int gfx_stereo_eye_width;
 #ifdef __ANDROID__
 #include <android/log.h>
@@ -1489,6 +1490,9 @@ static int stereo_fx_pass(void) {
                           (void *)(2 * sizeof(float)));
 
     for (int eye = 0; eye < 2; eye++) {
+        if (gfx_single_eye >= 0 && eye != gfx_single_eye) {
+            continue;
+        }
         glBindFramebuffer(GL_FRAMEBUFFER, s_pp_fbo[eye]);
         glViewport(0, 0, s_eye_w, s_eye_h);
         glActiveTexture(GL_TEXTURE0);
@@ -1747,13 +1751,14 @@ void gfx_opengl_stereo_composite(int w, int h, int full_w, int full_h, int has_u
     int zview = gfx_stereo_zbuf && s_depth_tex_mode;
     glUniform1f(s_comp_mode, zview ? 2.0f : 0.0f);
     for (int eye = 0; eye < 2; eye++) {
-        GLuint scene_tex = zview ? s_eye_depth[eye]
-                                 : (fx_ready ? s_pp_tex[eye] : s_eye_tex[eye]);
+        int src = gfx_single_eye >= 0 ? gfx_single_eye : eye;
+        GLuint scene_tex = zview ? s_eye_depth[src]
+                                 : (fx_ready ? s_pp_tex[src] : s_eye_tex[src]);
         glViewport(eye * (full_w / 2), 0, full_w / 2, full_h);
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, scene_tex);
         glActiveTexture(GL_TEXTURE1);
-        glBindTexture(GL_TEXTURE_2D, (has_ui && s_ui_tex[eye]) ? s_ui_tex[eye] : scene_tex);
+        glBindTexture(GL_TEXTURE_2D, (has_ui && s_ui_tex[src]) ? s_ui_tex[src] : scene_tex);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     }
     glActiveTexture(GL_TEXTURE0);

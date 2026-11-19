@@ -225,12 +225,15 @@ static int gfx_shadow_frame = 0;    // frames since the last map update
 // and the UI into its own per-eye buffer, so AO/DOF/GI cannot touch the HUD,
 // dialogs, menus or transitions.
 Gfx *gGfxUiStart = NULL;    // first UI command, or NULL if there is no split
+Gfx *gGfxReticleStart = NULL; // first reticle command (tail of the UI list)
 Gfx *gGfxShadowStart = NULL; // first 3D scene command (after the background)
 int gGfxHasScene = 0;       // a 3D scene was rendered this frame
 int gfx_ui_post = 1;        // UIPOST: split the list and composite UI after FX
 int gfx_ui_parallax = 0;    // UIPARALLAX: 0 = screen-locked UI, 1 = legacy shear
 int gfx_ui_buf = 0;         // UIBUF: debug view of the captured UI buffer
 int gfx_ui_pass = 0;        // set while the UI range is replayed
+int gfx_reticle_pass = 0;   // set while the reticle tail is replayed
+extern float g_portal_reticle_depth_px;
 
 // --- Stereo (Leia half-width SBS) ------------------------------------------
 // When enabled, each frame is rendered twice into a 2x1 side-by-side buffer:
@@ -238,6 +241,7 @@ int gfx_ui_pass = 0;        // set while the UI range is replayed
 // applied as a clip-space shear so the game's own projection stays untouched.
 int gfx_stereo_enabled = 0;
 int gfx_stereo_eye = 0;
+int gfx_single_eye = -1;   // >=0: render only this eye (FLAT/SAME modes)
 int gfx_stereo_eye_width = 1;
 int gfx_stereo_full_w = 1;
 int gfx_stereo_full_h = 1;
@@ -1731,7 +1735,21 @@ static void gfx_draw_rectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_t lr
     
     ulxf = gfx_adjust_x_for_aspect_ratio(ulxf);
     lrxf = gfx_adjust_x_for_aspect_ratio(lrxf);
-    
+
+    /* HUD icons/text use texture rectangles, which bypass the projection
+     * matrix, so apply the UI depth parallax here as well.  The reticle has
+     * its own depth (aim-surface distance) instead of the UI slider. */
+    {
+        float depthPx = gfx_reticle_pass ? g_portal_reticle_depth_px
+                                         : gfx_ui_depth_px;
+        if ((gfx_ui_pass || gfx_reticle_pass) && depthPx != 0.0f) {
+            float uiShift = gfx_stereo_eye_sign * depthPx * 2.0f
+                          / (float) gfx_stereo_eye_width;
+            ulxf += uiShift;
+            lrxf += uiShift;
+        }
+    }
+
     struct LoadedVertex* ul = &rsp.loaded_vertices[MAX_VERTICES + 0];
     struct LoadedVertex* ll = &rsp.loaded_vertices[MAX_VERTICES + 1];
     struct LoadedVertex* lr = &rsp.loaded_vertices[MAX_VERTICES + 2];
@@ -2281,16 +2299,32 @@ void gfx_run(Gfx *commands) {
         }
     }
 
+    gfx_single_eye = -1;
+    if (gfx_stereo_enabled) {
+        if (gfx_stereo_2d) {
+            gfx_single_eye = 0;                 // FLAT: one eye, duplicated in the composite
+        } else if (gfx_stereo_same_both == 1) {
+            gfx_single_eye = 0;                 // SAME L
+        } else if (gfx_stereo_same_both == 2) {
+            gfx_single_eye = 1;                 // SAME R
+        }
+    }
+
     if (gfx_stereo_enabled) {
 #ifdef __ANDROID__
         // Split the frame's list at the UI marker when UIPOST is on: the scene
         // goes through the FX pass, the UI is captured separately and
         // composited afterwards (never post-processed, never sampled by FX).
-        int split = gfx_ui_post && gGfxHasScene && gGfxUiStart != NULL;
+        int ui_sep = gGfxHasScene && gGfxUiStart != NULL;
+        int split = gfx_ui_post && ui_sep;
 #else
+        int ui_sep = 0;
         int split = 0;
 #endif
         for (int eye = 0; eye < 2; eye++) {
+            if (gfx_single_eye >= 0 && eye != gfx_single_eye) {
+                continue;
+            }
             gfx_stereo_eye = eye;
             // Reset RSP state per eye: a matrix stack left over from eye 0
             // made eye 1 render from a different camera (view desync).
@@ -2325,28 +2359,39 @@ void gfx_run(Gfx *commands) {
 #else
             gfx_rapi->start_frame();
 #endif
-            gfx_run_dl_range(commands, split ? gGfxUiStart : NULL);
+            gfx_run_dl_range(commands, ui_sep ? gGfxUiStart : NULL);
             gfx_flush();
 #ifdef __ANDROID__
             if (g_portal_view.active) {
                 gfx_opengl_portal_overlay(eye);
             }
-            if (split) {
-                gfx_opengl_ui_begin(eye, gfx_stereo_eye_width, gfx_stereo_full_h,
-                        gfx_stereo_canvas[0], gfx_stereo_canvas[1],
-                        gfx_stereo_canvas[2], gfx_stereo_canvas[3]);
+            if (ui_sep) {
+                if (split) {
+                    gfx_opengl_ui_begin(eye, gfx_stereo_eye_width, gfx_stereo_full_h,
+                            gfx_stereo_canvas[0], gfx_stereo_canvas[1],
+                            gfx_stereo_canvas[2], gfx_stereo_canvas[3]);
+                }
                 gfx_ui_pass = 1;
-                gfx_run_dl_range(gGfxUiStart, NULL);
+                if (gGfxReticleStart != NULL && gGfxReticleStart >= gGfxUiStart) {
+                    gfx_run_dl_range(gGfxUiStart, gGfxReticleStart);
+                    gfx_reticle_pass = 1;
+                    gfx_run_dl_range(gGfxReticleStart, NULL);
+                    gfx_reticle_pass = 0;
+                } else {
+                    gfx_run_dl_range(gGfxUiStart, NULL);
+                }
                 gfx_ui_pass = 0;
                 gfx_flush();
-                gfx_opengl_ui_end();
+                if (split) {
+                    gfx_opengl_ui_end();
+                }
             }
 #endif
         }
 #ifdef __ANDROID__
         gfx_opengl_stereo_composite(0, 0, gfx_stereo_full_w, gfx_stereo_full_h, split);
 #endif
-        gfx_stereo_eye = 0;
+        gfx_stereo_eye = gfx_single_eye >= 0 ? gfx_single_eye : 0;
         gfx_invalidate_state();
         gfx_wapi->swap_buffers_begin();
         return;

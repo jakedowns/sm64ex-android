@@ -31,7 +31,7 @@ PLATFORMS = [
     ("P4",   750,  150, 1050,  450, 680, (225, 110, 225), (130, 65, 130)),
     ("P5",  -600,  600,  600, 1200, 800, (235, 100, 90), (140, 60, 55)),
     # A freestanding portal wall near Mario.  Its -Z face is the blue target.
-    ("P6",  -750, -400, -450, -300, 200, (150, 150, 160), (90, 90, 100)),
+    ("P6",  -750, -400, -450, -300, 260, (150, 150, 160), (90, 90, 100)),
     # Momentum test: high drop platform, launch ramp target and second star.
     ("P7",  -300, -1500, 300, -1100, 1100, (120, 150, 210), (70, 90, 140)),
     ("P9",  -300,   150, 300,   560,  950, (230, 190, 90), (140, 110, 45)),
@@ -149,7 +149,8 @@ def emit_collision():
     lines.append("    COL_INIT(),")
     faces = list(room_faces)
     for name, x0, z0, x1, z1, top, _top_rgb, _side_rgb in PLATFORMS:
-        faces += box_faces(x0, 0, z0, x1, top, z1)
+        base = -120 if name == "P6" else 0
+        faces += box_faces(x0, base, z0, x1, top, z1)
     faces += ramp_faces()
     lines.append(f"    COL_VERTEX_INIT({len(faces) * 4}),")
     for _name, pts, _n in faces:
@@ -212,10 +213,9 @@ def emit_walls():
         for p in pts:
             s, t = uv(p)
             lines.append(vtx(*p, s, t, (255, 255, 255)))
-    lines += [
-        "};",
-        "",
-        "const Gfx ptc_dl_walls[] = {",
+    lines += ["};", ""]
+
+    wall_setup = [
         "    gsDPPipeSync(),",
         "    gsDPSetCombineMode(G_CC_MODULATERGB, G_CC_MODULATERGB),",
         "    gsSPClearGeometryMode(G_LIGHTING),",
@@ -232,19 +232,40 @@ def emit_walls():
         "                G_TX_WRAP | G_TX_NOMIRROR, 5, G_TX_NOLOD),",
         "    gsDPSetTileSize(0, 0, 0, (32 - 1) << G_TEXTURE_IMAGE_FRAC, (32 - 1) << G_TEXTURE_IMAGE_FRAC),",
         "    gsSPTexture(0xFFFF, 0xFFFF, 0, G_TX_RENDERTILE, G_ON),",
-        "    gsSPVertex(ptc_vtx_walls, 16, 0),",
     ]
-    for i in range(4):
-        b = i * 4
-        lines.append(f"    gsSP2Triangles({b}, {b + 1}, {b + 2}, 0x0, {b}, {b + 2}, {b + 3}, 0x0),")
-    lines += [
+    wall_restore = [
         "    gsSPTexture(0xFFFF, 0xFFFF, 0, G_TX_RENDERTILE, G_OFF),",
         "    gsDPPipeSync(),",
+        "    gsDPSetRenderMode(G_RM_AA_ZB_OPA_SURF, G_RM_AA_ZB_OPA_SURF2),",
         "    gsDPSetCombineMode(G_CC_MODULATERGB, G_CC_MODULATERGB),",
         "    gsSPSetGeometryMode(G_LIGHTING),",
         "    gsSPEndDisplayList(),",
         "};",
     ]
+
+    # One wall per display list so the occluder fade can target only the wall
+    # that is actually between the camera and Mario.
+    for i in range(4):
+        vert = f"ptc_vtx_walls + {i * 4}"
+        tris = [
+            f"    gsSPVertex({vert}, 4, 0),",
+            "    gsSP2Triangles(0, 1, 2, 0x0, 0, 2, 3, 0x0),",
+        ]
+        lines += [
+            f"const Gfx ptc_dl_wall_{i}[] = {{",
+            *wall_setup,
+            "    gsDPSetRenderMode(G_RM_AA_ZB_OPA_SURF, G_RM_AA_ZB_OPA_SURF2),",
+            *tris,
+            *wall_restore,
+            "",
+            f"const Gfx ptc_dl_wall_{i}_fade[] = {{",
+            *wall_setup,
+            "    gsDPSetRenderMode(G_RM_AA_ZB_XLU_SURF, G_RM_AA_ZB_XLU_SURF2),",
+            "    gsDPSetPrimColor(0, 0, 255, 255, 255, 90),",
+            *tris,
+            *wall_restore,
+            "",
+        ]
     return "\n".join(lines)
 
 
@@ -347,7 +368,8 @@ def emit_solid():
     # winding is consistent with the outward normal.
     for name, x0, z0, x1, z1, top, top_rgb, side_rgb in PLATFORMS:
         lines.append(f"static const Vtx ptc_vtx_{name.lower()}[] = {{")
-        for fname, pts, _n in box_faces(x0, 0, z0, x1, top, z1):
+        base = -120 if name == "P6" else 0
+        for fname, pts, _n in box_faces(x0, base, z0, x1, top, z1):
             rgb = top_rgb if fname == "top" else side_rgb
             for p in pts:
                 lines.append(vtx(*p, 0, 0, rgb))
@@ -397,41 +419,68 @@ def emit_solid():
             lines.append(vtx(*p, 0, 0, rgb))
         lines += ["};", ""]
 
-    lines += [
-        "const Gfx ptc_dl_solid[] = {",
-        "    gsDPPipeSync(),",
-        "    gsDPSetCombineMode(G_CC_SHADE, G_CC_SHADE),",
-        "    gsSPClearGeometryMode(G_LIGHTING | G_TEXTURE_GEN | G_TEXTURE_GEN_LINEAR),",
-        "    gsSPSetGeometryMode(G_SHADE | G_CULL_BACK),",
-        "    gsSPTexture(0xFFFF, 0xFFFF, 0, G_TX_RENDERTILE, G_OFF),",
+    def emit_dl(name, body, fade=False):
+        nonlocal lines
+        lines.append(f"const Gfx {name}[] = {{")
+        lines += [
+            "    gsDPPipeSync(),",
+            "    gsDPSetCombineMode(G_CC_PRIMITIVE, G_CC_PRIMITIVE)," if fade
+                else "    gsDPSetCombineMode(G_CC_SHADE, G_CC_SHADE),",
+            "    gsSPClearGeometryMode(G_LIGHTING | G_TEXTURE_GEN | G_TEXTURE_GEN_LINEAR),",
+            "    gsSPSetGeometryMode(G_SHADE | G_CULL_BACK),",
+            "    gsSPTexture(0xFFFF, 0xFFFF, 0, G_TX_RENDERTILE, G_OFF),",
+            "    gsDPSetRenderMode(G_RM_AA_ZB_XLU_SURF, G_RM_AA_ZB_XLU_SURF2)," if fade
+                else "    gsDPSetRenderMode(G_RM_AA_ZB_OPA_SURF, G_RM_AA_ZB_OPA_SURF2),",
+        ]
+        if fade:
+            lines.append("    gsDPSetPrimColor(0, 0, 190, 190, 200, 90),")
+        lines += body
+        lines += [
+            "    gsDPPipeSync(),",
+            "    gsDPSetRenderMode(G_RM_AA_ZB_OPA_SURF, G_RM_AA_ZB_OPA_SURF2),",
+            "    gsDPSetCombineMode(G_CC_MODULATERGB, G_CC_MODULATERGB),",
+            "    gsSPSetGeometryMode(G_LIGHTING),",
+            "    gsSPEndDisplayList(),",
+            "};",
+            "",
+        ]
+
+    # Room floor/ceiling never occlude the camera-to-Mario segment in a way
+    # that needs fading, so they stay one opaque list.
+    room_body = [
         "    gsSPVertex(ptc_vtx_room_floor, 4, 0),",
         "    gsSP2Triangles(0, 1, 2, 0x0, 0, 2, 3, 0x0),",
         "    gsSPVertex(ptc_vtx_room_ceiling, 4, 0),",
         "    gsSP2Triangles(0, 1, 2, 0x0, 0, 2, 3, 0x0),",
     ]
-    # Six faces per platform, four verts each.
+    emit_dl("ptc_dl_room", room_body)
+
+    # Six faces per platform, four verts each: one opaque and one faded list
+    # per platform so only the blocking platform fades.
     for name, *_ in PLATFORMS:
-        lines.append(f"    gsSPVertex(ptc_vtx_{name.lower()}, 24, 0),")
+        body = [f"    gsSPVertex(ptc_vtx_{name.lower()}, 24, 0),"]
         for f in range(6):
             b = f * 4
-            lines.append(f"    gsSP2Triangles({b}, {b + 1}, {b + 2}, 0x0, {b}, {b + 2}, {b + 3}, 0x0),")
+            body.append(f"    gsSP2Triangles({b}, {b + 1}, {b + 2}, 0x0, {b}, {b + 2}, {b + 3}, 0x0),")
+        emit_dl(f"ptc_dl_{name.lower()}", body)
+        emit_dl(f"ptc_dl_{name.lower()}_fade", body, fade=True)
+
     # Ramp wedge: five faces, four verts each.
-    lines.append("    gsSPVertex(ptc_vtx_ramp, 20, 0),")
+    ramp_body = ["    gsSPVertex(ptc_vtx_ramp, 20, 0),"]
     for f in range(5):
         b = f * 4
-        lines.append(f"    gsSP2Triangles({b}, {b + 1}, {b + 2}, 0x0, {b}, {b + 2}, {b + 3}, 0x0),")
+        ramp_body.append(f"    gsSP2Triangles({b}, {b + 1}, {b + 2}, 0x0, {b}, {b + 2}, {b + 3}, 0x0),")
+    emit_dl("ptc_dl_ramp", ramp_body)
+    emit_dl("ptc_dl_ramp_fade", ramp_body, fade=True)
+
+    # Portal target panels are flat decals on the walls; keep them opaque.
+    panel_body = []
     for name in ("a", "b", "ma", "mb"):
-        lines += [
+        panel_body += [
             f"    gsSPVertex(ptc_vtx_panel_{name}, 4, 0),",
             "    gsSP2Triangles(0, 1, 2, 0x0, 0, 2, 3, 0x0),",
         ]
-    lines += [
-        "    gsDPPipeSync(),",
-        "    gsDPSetCombineMode(G_CC_MODULATERGB, G_CC_MODULATERGB),",
-        "    gsSPSetGeometryMode(G_LIGHTING),",
-        "    gsSPEndDisplayList(),",
-        "};",
-    ]
+    emit_dl("ptc_dl_panels", panel_body)
     return "\n".join(lines)
 
 
@@ -526,9 +575,35 @@ def main():
 #include "types.h"
 
 extern const GeoLayout ptc_geo[];
-extern const Gfx ptc_dl_walls[];
-extern const Gfx ptc_dl_solid[];
+extern const Gfx ptc_dl_room[];
+extern const Gfx ptc_dl_panels[];
 extern const Gfx ptc_dl_labels[];
+extern const Gfx ptc_dl_wall_0[];
+extern const Gfx ptc_dl_wall_0_fade[];
+extern const Gfx ptc_dl_wall_1[];
+extern const Gfx ptc_dl_wall_1_fade[];
+extern const Gfx ptc_dl_wall_2[];
+extern const Gfx ptc_dl_wall_2_fade[];
+extern const Gfx ptc_dl_wall_3[];
+extern const Gfx ptc_dl_wall_3_fade[];
+extern const Gfx ptc_dl_p1[];
+extern const Gfx ptc_dl_p1_fade[];
+extern const Gfx ptc_dl_p2[];
+extern const Gfx ptc_dl_p2_fade[];
+extern const Gfx ptc_dl_p3[];
+extern const Gfx ptc_dl_p3_fade[];
+extern const Gfx ptc_dl_p4[];
+extern const Gfx ptc_dl_p4_fade[];
+extern const Gfx ptc_dl_p5[];
+extern const Gfx ptc_dl_p5_fade[];
+extern const Gfx ptc_dl_p6[];
+extern const Gfx ptc_dl_p6_fade[];
+extern const Gfx ptc_dl_p7[];
+extern const Gfx ptc_dl_p7_fade[];
+extern const Gfx ptc_dl_p9[];
+extern const Gfx ptc_dl_p9_fade[];
+extern const Gfx ptc_dl_ramp[];
+extern const Gfx ptc_dl_ramp_fade[];
 extern const Collision ptc_collision[];
 extern const LevelScript level_ptc_entry[];
 
@@ -550,6 +625,8 @@ extern const LevelScript level_ptc_entry[];
 #include "make_const_nonconst.h"
 #include "levels/ptc/header.h"
 
+extern Gfx *ptc_geo_obj(s32 callContext, struct GraphNode *node, UNUSED void *context);
+
 const GeoLayout ptc_geo[] = {
    GEO_NODE_SCREEN_AREA(10, SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2, SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2),
    GEO_OPEN_NODE(),
@@ -566,8 +643,21 @@ const GeoLayout ptc_geo[] = {
          GEO_OPEN_NODE(),
             GEO_CAMERA(1, 0, 2000, 6000, 0, 0, 0, geo_camera_main),
             GEO_OPEN_NODE(),
-               GEO_DISPLAY_LIST(LAYER_OPAQUE, ptc_dl_walls),
-               GEO_DISPLAY_LIST(LAYER_OPAQUE, ptc_dl_solid),
+               GEO_DISPLAY_LIST(LAYER_OPAQUE, ptc_dl_room),
+               GEO_ASM(0, ptc_geo_obj),
+               GEO_ASM(1, ptc_geo_obj),
+               GEO_ASM(2, ptc_geo_obj),
+               GEO_ASM(3, ptc_geo_obj),
+               GEO_ASM(4, ptc_geo_obj),
+               GEO_ASM(5, ptc_geo_obj),
+               GEO_ASM(6, ptc_geo_obj),
+               GEO_ASM(7, ptc_geo_obj),
+               GEO_ASM(8, ptc_geo_obj),
+               GEO_ASM(9, ptc_geo_obj),
+               GEO_ASM(10, ptc_geo_obj),
+               GEO_ASM(11, ptc_geo_obj),
+               GEO_ASM(12, ptc_geo_obj),
+               GEO_DISPLAY_LIST(LAYER_OPAQUE, ptc_dl_panels),
                GEO_DISPLAY_LIST(LAYER_OPAQUE, ptc_dl_labels),
                GEO_RENDER_OBJ(),
             GEO_CLOSE_NODE(),

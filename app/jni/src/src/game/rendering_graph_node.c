@@ -7,6 +7,7 @@
 #include "main.h"
 #include "print.h"
 #include "engine/math_util.h"
+#include "engine/surface_collision.h"
 #include "area.h"
 #include "shadow.h"
 #include "memory.h"
@@ -131,6 +132,7 @@ struct GraphNodeCamera *gCurGraphNodeCamera = NULL;
 
 // Cinematic DOF auto-focus target, consumed by the screen-space FX pass.
 extern float gfx_dof_focus_auto;
+extern int gfx_cam_mode;
 extern struct Object *gMarioObject;
 
 // ---- HFR frame interpolation ---------------------------------------------
@@ -547,7 +549,32 @@ static void geo_process_camera(struct GraphNodeCamera *node) {
 
     // Cinematic DOF auto-focus: distance to Mario's centre, pulled a little
     // closer to the camera by his hitbox radius so his front surface is sharp.
-    if (gMarioObject != NULL) {
+    if (gfx_cam_mode == 4) {
+        /* First person: Mario is the camera, so focus on whatever the view
+         * ray hits instead.  TOEAUTO and the reticle depth use this value. */
+        Vec3f dir, hit;
+        struct Surface *surf = NULL;
+        f32 dx = node->focus[0] - node->pos[0];
+        f32 dy = node->focus[1] - node->pos[1];
+        f32 dz = node->focus[2] - node->pos[2];
+        f32 len = sqrtf(dx * dx + dy * dy + dz * dz);
+        f32 focusDist = 1200.0f;
+
+        if (len > 1.0f) {
+            dir[0] = dx * (3000.0f / len);
+            dir[1] = dy * (3000.0f / len);
+            dir[2] = dz * (3000.0f / len);
+            find_surface_on_ray(node->pos, dir, &surf, hit);
+            if (surf != NULL) {
+                focusDist = sqrtf((hit[0] - node->pos[0]) * (hit[0] - node->pos[0])
+                                + (hit[1] - node->pos[1]) * (hit[1] - node->pos[1])
+                                + (hit[2] - node->pos[2]) * (hit[2] - node->pos[2]));
+            }
+        }
+        if (focusDist < 50.0f) focusDist = 50.0f;
+        if (focusDist > 3000.0f) focusDist = 3000.0f;
+        gfx_dof_focus_auto = focusDist;
+    } else if (gMarioObject != NULL) {
         Vec3f marioCentre;
         f32 focusDist;
 

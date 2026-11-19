@@ -51,4 +51,5 @@ extern s16 newcam_yaw;
 extern int gfx_ovl_active;
 extern int gfx_ovl_analog;
 extern int gfx_ovl_right_x;
+extern int gfx_ovl_right_active;
 extern int gfx_ovl_right_y;

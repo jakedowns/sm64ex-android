@@ -32,14 +32,14 @@
 /* Generated low-poly portal-gun mesh + display list (CC0 model). */
 #include "ptc_gun_model.inc"
 
-#define PORTAL_RX        45.0f     // ellipse half width (world units)
-#define PORTAL_RY        80.0f     // ellipse half height
+#define PORTAL_RX        67.5f     // ellipse half width (world units, 1.5x)
+#define PORTAL_RY        120.0f    // ellipse half height (1.5x)
 #define PORTAL_SEGMENTS  24
 #define PORTAL_RAY_DIST  4000.0f   // hitscan length
 #define PORTAL_EXIT_PUSH 130.0f    // clear the entry trigger after exiting
 #define PORTAL_ENTER_DIST 110.0f    // proximity needed to use a floor/ramp portal
 #define PORTAL_COOLDOWN  20        // ticks before the next teleport
-#define PORTAL_PICKUP_R  150.0f
+#define PORTAL_PICKUP_R  200.0f
 
 #define GUN_HALF_X 18.0f
 #define GUN_HALF_Y 10.0f
@@ -55,11 +55,12 @@ struct Portal {
 };
 
 static struct Portal s_portal[2];
+static int s_lastPlaced = 1;
 // Last placement result, for headless debugging: 0 none, 1 placed, 2 bad
 // surface, 3 could not fit the ellipse, 4 no gun.
 int g_portal_debug = 0;
 PortalViewState g_portal_view;
-static int s_portal_view_enabled = 0;
+static int s_portal_view_enabled = 1;
 static int s_hasGun = 0;
 static int s_gunSpawned = 0;
 static Vec3f s_gunPos = {0.0f, 0.0f, 0.0f};
@@ -272,6 +273,7 @@ static void portal_shoot_ray(int which, Vec3f orig, Vec3f rayDir) {
     s_portal[which].rx = rx;
     s_portal[which].ry = ry;
     s_havePrevCom = 0;
+    s_lastPlaced = which;
     g_portal_debug = 1;
 }
 
@@ -289,7 +291,18 @@ void portal_shoot(int which) {
     vec3f_copy(orig, gLakituState.pos);
     vec3f_copy(dir, gLakituState.focus);
     vec3f_sub(dir, orig);
+
+    /* Fire, then report whether the surface accepted the portal. */
+    play_sound(SOUND_ACTION_THROW, gDefaultSoundArgs);
     portal_shoot_ray(which, orig, dir);
+    printf("portal: shot %d debug=%d active=%d pos=%.1f,%.1f,%.1f\n",
+           which, g_portal_debug, s_portal[which].active,
+           s_portal[which].pos[0], s_portal[which].pos[1], s_portal[which].pos[2]);
+    if (g_portal_debug == 1) {
+        play_sound(SOUND_MENU_CHANGE_SELECT, gDefaultSoundArgs);
+    } else {
+        play_sound(SOUND_MENU_CAMERA_BUZZ, gDefaultSoundArgs);
+    }
 }
 
 int portal_shoot_at(int which, const Vec3f origin, const Vec3f target) {
@@ -418,7 +431,9 @@ static void portal_teleport(int srcIdx, const Vec3f at) {
         }
     }
 
-    // Snap the camera to the new position.
+    // Re-aim the camera at the new position, but ease the rendered handoff so
+    // the view does not cut abruptly (see camera_portal_blend_step()).
+    camera_portal_blend_begin();
     gCameraMovementFlags |= CAM_MOVE_INIT_CAMERA;
     s_cooldown = PORTAL_COOLDOWN;
     s_havePrevCom = 0;
@@ -463,13 +478,16 @@ void portal_update(void) {
     // at the old origin and never seen.
     if (!s_hasGun && !s_gunSpawned && gCurrLevelNum == 16 && gCurrAreaIndex == 1
         && gMarioState != NULL && gMarioState->marioObj != NULL
-        && s_ticksInArea > 8 && s_ticksInArea < 400
+        && s_ticksInArea > 8
         && (gMarioState->pos[0] != 0.0f || gMarioState->pos[2] != 0.0f)) {
         vec3f_copy(s_gunPos, gMarioState->pos);
-        s_gunPos[0] += 200.0f;
-        s_gunPos[2] -= 200.0f;
-        s_gunPos[1] += 40.0f;
+        s_gunPos[0] += 160.0f;
+        s_gunPos[2] -= 160.0f;
+        s_gunPos[1] += 30.0f;
         s_gunSpawned = 1;
+        printf("portal: gun spawned at %.0f %.0f %.0f (mario %.0f %.0f %.0f)\n",
+               s_gunPos[0], s_gunPos[1], s_gunPos[2],
+               gMarioState->pos[0], gMarioState->pos[1], gMarioState->pos[2]);
     }
     if (!s_hasGun && s_gunSpawned && gMarioState != NULL) {
         Vec3f rel;
@@ -479,6 +497,8 @@ void portal_update(void) {
         if (vdot3(rel, rel) < PORTAL_PICKUP_R * PORTAL_PICKUP_R) {
             s_hasGun = 1;
             s_gunSpawned = 0;
+            printf("portal: gun picked up (mario %.0f %.0f %.0f)\n",
+                   gMarioState->pos[0], gMarioState->pos[1], gMarioState->pos[2]);
             play_sound(SOUND_MENU_CHANGE_SELECT, gDefaultSoundArgs);
         }
     }
@@ -566,15 +586,10 @@ static void draw_portal(const struct Portal *p, u8 r, u8 g, u8 b, const Mat4 vie
 }
 
 static void draw_gun(const Mat4 view) {
-    Vtx *v = alloc_display_list(sizeof(Vtx) * 8);
     Vec3f tan, bitan, up;
-    s16 yaw = (s16)s_gunSpin;
+    s16 yaw = (s16) s_gunSpin;
 
-    if (v == NULL) {
-        return;
-    }
-
-    // Spin around world Y.
+    // Spin around world Y; the barrel (local +Z) points along bitan.
     tan[0] = coss(yaw);
     tan[1] = 0.0f;
     tan[2] = -sins(yaw);
@@ -583,31 +598,8 @@ static void draw_gun(const Mat4 view) {
     up[2] = 0.0f;
     vcross3(bitan, up, tan);
 
-    emit_model_matrix(s_gunPos, tan, bitan, up, view);
-
-    // A chunky barrel: placeholder until there is a real gun mesh.
-    fill_vtx(&v[0], -GUN_HALF_X, -GUN_HALF_Y, -GUN_HALF_Z, 0x60, 0x60, 0x70, 0xFF);
-    fill_vtx(&v[1],  GUN_HALF_X, -GUN_HALF_Y, -GUN_HALF_Z, 0x60, 0x60, 0x70, 0xFF);
-    fill_vtx(&v[2],  GUN_HALF_X,  GUN_HALF_Y, -GUN_HALF_Z, 0x90, 0x90, 0xA0, 0xFF);
-    fill_vtx(&v[3], -GUN_HALF_X,  GUN_HALF_Y, -GUN_HALF_Z, 0x90, 0x90, 0xA0, 0xFF);
-    fill_vtx(&v[4], -GUN_HALF_X, -GUN_HALF_Y,  GUN_HALF_Z, 0x60, 0x60, 0x70, 0xFF);
-    fill_vtx(&v[5],  GUN_HALF_X, -GUN_HALF_Y,  GUN_HALF_Z, 0x60, 0x60, 0x70, 0xFF);
-    fill_vtx(&v[6],  GUN_HALF_X,  GUN_HALF_Y,  GUN_HALF_Z, 0x90, 0x90, 0xA0, 0xFF);
-    fill_vtx(&v[7], -GUN_HALF_X,  GUN_HALF_Y,  GUN_HALF_Z, 0x90, 0x90, 0xA0, 0xFF);
-
-    gSPVertex(gDisplayListHead++, VIRTUAL_TO_PHYSICAL(v), 8, 0);
-    gSP1Triangle(gDisplayListHead++, 0, 1, 2, 0);
-    gSP1Triangle(gDisplayListHead++, 0, 2, 3, 0);
-    gSP1Triangle(gDisplayListHead++, 4, 6, 5, 0);
-    gSP1Triangle(gDisplayListHead++, 4, 7, 6, 0);
-    gSP1Triangle(gDisplayListHead++, 0, 4, 5, 0);
-    gSP1Triangle(gDisplayListHead++, 0, 5, 1, 0);
-    gSP1Triangle(gDisplayListHead++, 3, 2, 6, 0);
-    gSP1Triangle(gDisplayListHead++, 3, 6, 7, 0);
-    gSP1Triangle(gDisplayListHead++, 0, 3, 7, 0);
-    gSP1Triangle(gDisplayListHead++, 0, 7, 4, 0);
-    gSP1Triangle(gDisplayListHead++, 1, 5, 6, 0);
-    gSP1Triangle(gDisplayListHead++, 1, 6, 2, 0);
+    emit_model_matrix(s_gunPos, tan, up, bitan, view);
+    gSPDisplayList(gDisplayListHead++, (Gfx *) ptc_gun_dl);
 }
 
 static void draw_held_gun(const Mat4 view) {
@@ -621,10 +613,10 @@ static void draw_held_gun(const Mat4 view) {
 
     /* Keep the prop in Mario's right hand: follow the interpolated render
      * position/angle so it does not jitter against the 60 Hz model. */
-    pos[0] = m->marioObj->header.gfx.pos[0];
-    pos[1] = m->marioObj->header.gfx.pos[1];
-    pos[2] = m->marioObj->header.gfx.pos[2];
-    yaw = m->marioObj->header.gfx.angle[1];
+    pos[0] = m->pos[0];
+    pos[1] = m->pos[1];
+    pos[2] = m->pos[2];
+    yaw = m->faceAngle[1];
 
     right[0] = coss(yaw);
     right[1] = 0.0f;
@@ -778,12 +770,18 @@ void portal_render(void) {
     gDPSetRenderMode(gDisplayListHead++, G_RM_AA_ZB_XLU_SURF, G_RM_AA_ZB_XLU_SURF2);
 
     /* The source portal is drawn by the renderer's textured overlay when the
-     * through-view is active; keep the flat fan as a fallback otherwise. */
-    if (s_portal[0].active && !(g_portal_view.active && g_portal_view.source == 0)) {
-        draw_portal(&s_portal[0], 0x30, 0x60, 0xFF, view);   // blue
-    }
-    if (s_portal[1].active && !(g_portal_view.active && g_portal_view.source == 1)) {
-        draw_portal(&s_portal[1], 0xFF, 0x80, 0x20, view);   // orange
+     * through-view is active; keep the flat fan as a fallback otherwise.
+     * Draw the most recently placed portal last: two shots at the same aim
+     * overlap exactly, and the newest one must not be hidden underneath. */
+    for (int k = 0; k < 2; k++) {
+        int i = (k == 0) ? (1 - s_lastPlaced) : s_lastPlaced;
+        if (!s_portal[i].active) continue;
+        if (g_portal_view.active && g_portal_view.source == i) continue;
+        if (i == 0) {
+            draw_portal(&s_portal[0], 0x30, 0x60, 0xFF, view);   // blue
+        } else {
+            draw_portal(&s_portal[1], 0xFF, 0x80, 0x20, view);   // orange
+        }
     }
     if (s_gunSpawned) {
         draw_gun(view);
@@ -793,9 +791,174 @@ void portal_render(void) {
     gSPClearGeometryMode(gDisplayListHead++, G_ZBUFFER);
 }
 
+/* ------------------------------------------------------- aiming reticle */
+
+/* The reticle is part of the game UI pass, not the Java overlay: that gives it
+ * per-eye stereo (and keeps it crisp after the FX pass).  Its own depth shift
+ * comes from the aim-surface distance, so it does not inherit the UI-depth
+ * slider. */
+float g_portal_reticle_depth_px = 0.0f;
+
+extern float gfx_stereo_ipd_px;
+extern float gfx_dof_focus_auto;
+
+ALIGNED8 static const u16 s_reticle_white[16] = {
+    0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+    0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+    0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+    0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+};
+
+/* Distance to the surface behind the reticle.  The ray is nudged up by the
+ * same amount the crosshair sits above screen centre. */
+static float portal_reticle_distance(void) {
+    Vec3f orig, fwd, right, up, dir, hit;
+    struct Surface *surf = NULL;
+    float len;
+
+    if (gMarioState == NULL) {
+        return 700.0f;
+    }
+    vec3f_copy(orig, gLakituState.pos);
+    vec3f_copy(fwd, gLakituState.focus);
+    vec3f_sub(fwd, orig);
+    len = sqrtf(vdot3(fwd, fwd));
+    if (len < 0.001f) {
+        return 700.0f;
+    }
+    fwd[0] /= len;
+    fwd[1] /= len;
+    fwd[2] /= len;
+
+    up[0] = 0.0f; up[1] = 1.0f; up[2] = 0.0f;
+    vcross3(right, fwd, up);
+    if (vdot3(right, right) < 0.001f) {
+        right[0] = 1.0f; right[1] = 0.0f; right[2] = 0.0f;
+    }
+    vnorm3(right);
+    vcross3(up, right, fwd);
+    vnorm3(up);
+
+    /* 45%-of-screen-height reticle => ~5% above the centre ray. */
+    dir[0] = fwd[0] + up[0] * 0.055f;
+    dir[1] = fwd[1] + up[1] * 0.055f;
+    dir[2] = fwd[2] + up[2] * 0.055f;
+    vnorm3(dir);
+    dir[0] *= PORTAL_RAY_DIST;
+    dir[1] *= PORTAL_RAY_DIST;
+    dir[2] *= PORTAL_RAY_DIST;
+
+    find_surface_on_ray(orig, dir, &surf, hit);
+    if (surf == NULL) {
+        return 700.0f;
+    }
+    len = sqrtf((hit[0] - orig[0]) * (hit[0] - orig[0])
+              + (hit[1] - orig[1]) * (hit[1] - orig[1])
+              + (hit[2] - orig[2]) * (hit[2] - orig[2]));
+    return len < 50.0f ? 50.0f : len;
+}
+
+static void portal_reticle_rect(s16 x0, s16 y0, s16 x1, s16 y1) {
+    gSPTextureRectangle(gDisplayListHead++, x0 << 2, y0 << 2, x1 << 2, y1 << 2,
+                        G_TX_RENDERTILE, 0, 0, 4 << 10, 1 << 10);
+}
+
+/* Appends the crosshair to the UI display list.  Returns 1 when it drew. */
+int portal_render_reticle(void) {
+    static const s16 bars[5][4] = {
+        { 118, 106, 138, 109 },   /* left  */
+        { 182, 106, 202, 109 },   /* right */
+        { 159,  86, 161, 106 },   /* up    */
+        { 159, 110, 161, 130 },   /* down  */
+        { 157, 105, 163, 111 },   /* dot   */
+    };
+    float dist, half, z;
+
+    if (!s_hasGun || gMarioState == NULL) {
+        g_portal_reticle_depth_px = 0.0f;
+        return 0;
+    }
+
+    dist = portal_reticle_distance();
+    half = 0.5f * gfx_stereo_ipd_px;
+    /* Positive shift = in front of the display plane.  Relative to the
+     * autofocus plane (Mario), a target behind him needs a negative shift. */
+    z = half * (gfx_dof_focus_auto / dist - 1.0f);
+    if (z > half) z = half;
+    if (z < -half) z = -half;
+    g_portal_reticle_depth_px = z;
+
+    gDPPipeSync(gDisplayListHead++);
+    gDPSetCycleType(gDisplayListHead++, G_CYC_1CYCLE);
+    gDPSetAlphaCompare(gDisplayListHead++, G_AC_NONE);
+    gDPSetCombineMode(gDisplayListHead++, G_CC_MODULATEIA_PRIM, G_CC_MODULATEIA_PRIM);
+    gDPSetTextureFilter(gDisplayListHead++, G_TF_POINT);
+    gDPSetTexturePersp(gDisplayListHead++, G_TP_NONE);
+    gDPSetTextureLUT(gDisplayListHead++, G_TT_NONE);
+    gDPSetTextureImage(gDisplayListHead++, G_IM_FMT_RGBA, G_IM_SIZ_16b, 1, s_reticle_white);
+    gDPLoadSync(gDisplayListHead++);
+    gDPLoadBlock(gDisplayListHead++, G_TX_LOADTILE, 0, 0, 16 - 1,
+                 CALC_DXT(4, G_IM_SIZ_16b_BYTES));
+    gDPPipeSync(gDisplayListHead++);
+    gDPSetTile(gDisplayListHead++, G_IM_FMT_RGBA, G_IM_SIZ_16b, 1, 0,
+               G_TX_RENDERTILE, 0, G_TX_CLAMP, 2, G_TX_NOLOD,
+               G_TX_CLAMP, 2, G_TX_NOLOD);
+    gDPSetTileSize(gDisplayListHead++, G_TX_RENDERTILE, 0, 0,
+                   3 << G_TEXTURE_IMAGE_FRAC, 3 << G_TEXTURE_IMAGE_FRAC);
+    gDPSetPrimColor(gDisplayListHead++, 0, 0, 255, 255, 255, 220);
+    gDPSetRenderMode(gDisplayListHead++, G_RM_AA_XLU_SURF, G_RM_AA_XLU_SURF2);
+
+    for (int i = 0; i < 5; i++) {
+        portal_reticle_rect(bars[i][0], bars[i][1], bars[i][2], bars[i][3]);
+    }
+
+    gDPPipeSync(gDisplayListHead++);
+    gDPSetRenderMode(gDisplayListHead++, G_RM_AA_ZB_OPA_SURF, G_RM_AA_ZB_OPA_SURF2);
+    gDPSetCombineMode(gDisplayListHead++, G_CC_MODULATERGB, G_CC_MODULATERGB);
+    gDPSetTexturePersp(gDisplayListHead++, G_TP_PERSP);
+    gDPSetPrimColor(gDisplayListHead++, 0, 0, 255, 255, 255, 255);
+    return 1;
+}
+
+int portal_test_walls(void) {
+    static const Vec3f wallOrig[4] = {
+        { 0.0f, 400.0f, -1500.0f },
+        { 0.0f, 400.0f,   600.0f },
+        {-600.0f, 400.0f,  -700.0f },
+        { 600.0f, 400.0f,  -700.0f },
+    };
+    static const Vec3f wallTarget[4] = {
+        { 0.0f, 400.0f, -2599.0f },
+        { 0.0f, 400.0f,  1199.0f },
+        {-1199.0f, 400.0f, -700.0f },
+        { 1199.0f, 400.0f, -700.0f },
+    };
+    int mask = 0;
+    int hadGun = s_hasGun;
+
+    s_hasGun = 1;
+    for (int i = 0; i < 4; i++) {
+        portal_reset();
+        s_hasGun = 1;
+        if (portal_shoot_at(0, wallOrig[i], wallTarget[i]) && s_portal[0].active) {
+            mask |= 1 << i;
+        }
+    }
+    portal_reset();
+    s_hasGun = hadGun;
+    return mask;
+}
+
 void portal_give_gun(void) {
     s_hasGun = 1;
     s_gunSpawned = 0;
+}
+
+void portal_drop_gun(void) {
+    s_hasGun = 0;
+    s_gunSpawned = 0;
+    portal_clear();
+    play_sound(SOUND_MENU_CHANGE_SELECT, gDefaultSoundArgs);
 }
 
 int gfx_portal_field(int which, int field) {

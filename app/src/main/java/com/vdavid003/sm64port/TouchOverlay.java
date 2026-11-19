@@ -65,7 +65,8 @@ public class TouchOverlay extends View {
     private final int[] camPressed = {-1, -1};
     private final float camRadius = 52f;
 
-    // Portal gun buttons (P1 = blue, P2 = orange) and the aiming reticle.
+    // Portal gun buttons (P1 = blue, P2 = orange).  The reticle lives in the
+    // game UI pass so it can have its own stereo depth.
     private final float[][] portalPos = new float[2][2];
     private final float portalRadius = 46f;
     private int portalPressed = -1;
@@ -392,7 +393,7 @@ public class TouchOverlay extends View {
             rx = (int) ((rknobX - rstickX) / stickRadius * 127f);
             ry = (int) (-(rknobY - rstickY) / stickRadius * 127f);
         }
-        sm64portActivity.nativeOverlayStick2(rx, ry);
+        sm64portActivity.nativeOverlayStick2(rx, ry, rstickActive ? 1 : 0);
         // Buttons are always merged by the native side. The stick only takes
         // over while the overlay stick is actually held, so a paired gamepad
         // keeps its left stick after tapping the overlay.
@@ -488,7 +489,7 @@ public class TouchOverlay extends View {
             c.drawText(camLabels[i], camPos[i][0], camPos[i][1] + 17f, paint);
         }
 
-        // Portal gun: two colour buttons plus a screen-centre aiming reticle.
+        // Portal gun: two colour buttons (the reticle is drawn in-game).
         if (portalGunHeld()) {
             paint.setTextSize(38f);
             for (int i = 0; i < 2; i++) {
@@ -513,18 +514,29 @@ public class TouchOverlay extends View {
 
         c.restoreToCount(layer);
 
-        // Aiming reticle stays at full opacity even when the controls are faded.
-        if (portalGunHeld()) {
-            float cx = getWidth() * 0.5f, cy = getHeight() * 0.5f;
-            paint.setStyle(Paint.Style.STROKE);
-            paint.setStrokeWidth(3f);
-            paint.setColor(0xCCFFFFFF);
-            c.drawCircle(cx, cy, 24f, paint);
-            c.drawLine(cx - 42, cy, cx - 16, cy, paint);
-            c.drawLine(cx + 16, cy, cx + 42, cy, paint);
-            c.drawLine(cx, cy - 42, cx, cy - 16, paint);
-            c.drawLine(cx, cy + 16, cx, cy + 42, paint);
-            paint.setStrokeWidth(6f);
+        // The aiming reticle is drawn by the game UI pass (N64 display list)
+        // so it gets per-eye stereo depth from the aim-surface distance.
+
+        if (fpvActive()) {
+            String hint = "SELECT / BACK exits FPV";
+            paint.setStyle(Paint.Style.FILL);
+            paint.setTextSize(28f);
+            float tw = paint.measureText(hint);
+            float hx = getWidth() * 0.5f;
+            float hy = getHeight() - 44f;
+            paint.setColor(0x8C000000);
+            c.drawRoundRect(hx - tw * 0.5f - 18f, hy - 32f,
+                    hx + tw * 0.5f + 18f, hy + 10f, 12f, 12f, paint);
+            paint.setColor(0xFFFFFFFF);
+            c.drawText(hint, hx - tw * 0.5f, hy, paint);
+        }
+    }
+
+    private boolean fpvActive() {
+        try {
+            return sm64portActivity.nativeGetCamMode() == 4;
+        } catch (Throwable t) {
+            return false;
         }
     }
 }

@@ -339,7 +339,7 @@ static void newcam_rotate_button(void)
         s16 camStickX = gPlayer2Controller->stickX;
         s16 camStickY = gPlayer2Controller->stickY;
         /* Android overlay right stick replaces the player-2 stick. */
-        if (gfx_ovl_analog && gfx_ovl_active) {
+        if (gfx_ovl_analog && gfx_ovl_right_active) {
             camStickX = (s16) gfx_ovl_right_x;
             camStickY = (s16) gfx_ovl_right_y;
         }

@@ -15,6 +15,7 @@
 #include "game/mario.h"
 #include "game/bettercamera.h"
 #include "game/game_init.h"   // gPlayer2Controller
+#include "engine/graph_node.h"
 
 int gfx_cam_mode = 0;
 
@@ -30,13 +31,95 @@ static f32 s_dist() { return gfx_cam_dist; }
 static Vec3f s_pos;
 static int s_init = 0;
 
+static s16 s_fpYaw;
+static s16 s_fpPitch;
+
+static s16 approach_s16_cam(s16 cur, s16 target, s16 inc);
+static f32 clamps(f32 v, f32 lo, f32 hi);
+
+void custom_camera_first_person_reset(void) {
+    s_fpYaw = gMarioState != NULL ? gMarioState->faceAngle[1] : 0;
+    s_fpPitch = 0;
+}
+
+/* Called after update_lakitu() so the first-person eye position wins over the
+ * third-person follow.  Right stick looks around; with no input the yaw eases
+ * back to Mario's facing. */
+void first_person_camera_update(struct Camera *c) {
+    Vec3f eye, dir, focus;
+    s16 inX = 0, inY = 0;
+
+    if (gMarioState == NULL || gMarioObject == NULL) {
+        return;
+    }
+    if (gfx_ovl_analog && gfx_ovl_right_active) {
+        inX = (s16) gfx_ovl_right_x;
+        inY = (s16) gfx_ovl_right_y;
+    } else if (gPlayer2Controller != NULL) {
+        inX = gPlayer2Controller->stickX;
+        inY = gPlayer2Controller->stickY;
+    }
+    {
+        f32 sens = gfx_cam_sens_pct / 100.0f;
+        if (inX > 12 || inX < -12) {
+            // Match the third-person orbit: overlay right-stick X is mirrored
+            // relative to the N64 stick, so look right on a right push.
+            s_fpYaw -= (s16)((f32) inX * 26.0f * sens);
+        }
+        if (inY > 12 || inY < -12) {
+            s_fpPitch = (s16) clamps((f32) s_fpPitch + (f32) inY * 10.0f * sens,
+                                     0x0400, 0x3400);
+        }
+    }
+    if (inX <= 12 && inX >= -12) {
+        s_fpYaw = approach_s16_cam(s_fpYaw, gMarioState->faceAngle[1], 0x0200);
+    }
+
+    dir[0] = sins(s_fpYaw) * coss(s_fpPitch);
+    dir[1] = sins(s_fpPitch);
+    dir[2] = coss(s_fpYaw) * coss(s_fpPitch);
+    vec3f_copy(eye, gMarioState->pos);
+    {
+        float hoff = gfx_cam_height - 110.0f;
+        if (hoff < -90.0f) hoff = -90.0f;
+        if (hoff > 300.0f) hoff = 300.0f;
+        eye[1] += 140.0f + hoff;
+    }
+    eye[0] += dir[0] * 12.0f;
+    eye[2] += dir[2] * 12.0f;
+    focus[0] = eye[0] + dir[0] * 400.0f;
+    focus[1] = eye[1] + dir[1] * 400.0f;
+    focus[2] = eye[2] + dir[2] * 400.0f;
+
+    vec3f_copy(c->pos, eye);
+    vec3f_copy(c->focus, focus);
+    vec3f_copy(gLakituState.pos, eye);
+    vec3f_copy(gLakituState.focus, focus);
+    /* The movement code interprets gLakituState.yaw as the direction from
+     * the camera towards Mario; s_fpYaw is the look direction, so flip it. */
+    gLakituState.yaw = (s16)(s_fpYaw + 0x8000);
+    c->yaw = gLakituState.yaw;
+    gLakituState.focusDistance = 400.0f;
+    gLakituState.roll = 0;
+    gMarioObject->header.gfx.node.flags |= GRAPH_RENDER_INVISIBLE;
+}
+
 void custom_camera_reset(void) {
     s_init = 0;
 }
 
 void custom_camera_apply_mode(int mode) {
-    if (mode < 0 || mode > 3) {
+    if (mode < 0 || mode > 4) {
         mode = 0;
+    }
+    if (gfx_cam_mode == 4 && mode != 4 && gMarioObject != NULL) {
+        gMarioObject->header.gfx.node.flags &= ~GRAPH_RENDER_INVISIBLE;
+    }
+    if (mode == 4) {
+        custom_camera_first_person_reset();
+        if (gMarioObject != NULL) {
+            gMarioObject->header.gfx.node.flags |= GRAPH_RENDER_INVISIBLE;
+        }
     }
 #ifdef BETTERCAMERA
     if (mode == 2) {
@@ -96,7 +179,7 @@ void custom_camera_update(struct Camera *c) {
     }
 
     // Right stick / overlay analog orbits the camera.
-    if (gfx_ovl_analog && gfx_ovl_active) {
+    if (gfx_ovl_analog && gfx_ovl_right_active) {
         inX = (s16) gfx_ovl_right_x;
         inY = (s16) gfx_ovl_right_y;
     } else if (gPlayer2Controller != NULL) {
@@ -109,7 +192,8 @@ void custom_camera_update(struct Camera *c) {
             s_yaw -= (s16)((f32) inX * 26.0f * sens);
         }
         if (inY > 12 || inY < -12) {
-            s_pitch = (s16) clamps((f32) s_pitch + (f32) inY * 10.0f * sens,
+            // Inverted Y: stick up lowers the orbit (camera looks up).
+            s_pitch = (s16) clamps((f32) s_pitch - (f32) inY * 10.0f * sens,
                                    0x0400, 0x3400);
         }
     }
