@@ -982,6 +982,40 @@ static void ptc_apply_command(const char *action) {
         portal_view_force(0);
     } else if (strcmp(action, "portalauto") == 0) {
         portal_view_force(-1);
+    } else if (strcmp(action, "portaltest") == 0) {
+        extern int gfx_stereo_2d;
+        extern int gfx_stereo_same_both;
+        Vec3f camPos = { -600.0f, 400.0f, -1100.0f };
+        Vec3f camFocus = { -600.0f, 250.0f, -404.0f };
+        ptc_place_portals();
+        portal_view_force(0);
+        if (gMarioState != NULL) {
+            gMarioState->pos[0] = -900.0f;
+            gMarioState->pos[1] = 0.0f;
+            gMarioState->pos[2] = -1000.0f;
+            gMarioState->vel[0] = gMarioState->vel[1] = gMarioState->vel[2] = 0.0f;
+            gMarioState->faceAngle[1] = 0;
+            set_mario_action(gMarioState, ACT_IDLE, 0);
+            if (gMarioState->marioObj != NULL) {
+                vec3f_copy(gMarioState->marioObj->header.gfx.pos, gMarioState->pos);
+            }
+        }
+        camera_debug_hold(camPos, camFocus, 1200);
+        gfx_stereo_2d = 1;          /* flat output for screenshots */
+        gfx_stereo_same_both = 1;   /* LEFT eye duplicated */
+    } else if (strcmp(action, "eyeL") == 0) {
+        extern int gfx_stereo_2d;
+        extern int gfx_stereo_same_both;
+        gfx_stereo_2d = 1;
+        gfx_stereo_same_both = 1;
+    } else if (strcmp(action, "eyeR") == 0) {
+        extern int gfx_stereo_2d;
+        extern int gfx_stereo_same_both;
+        gfx_stereo_2d = 1;
+        gfx_stereo_same_both = 2;
+    } else if (strcmp(action, "eyeOff") == 0) {
+        extern int gfx_stereo_same_both;
+        gfx_stereo_same_both = 0;
     } else if (strcmp(action, "portalblit") == 0) {
         extern int gfx_portal_debug_blit;
         gfx_portal_debug_blit = !gfx_portal_debug_blit;

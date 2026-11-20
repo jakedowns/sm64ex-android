@@ -115,6 +115,10 @@ public class DebugReceiver extends BroadcastReceiver {
                 Log.i(TAG, "CMD busy " + v);
                 break;
             }
+            case "logo":
+                a.debugResetToLogo();
+                Log.i(TAG, "CMD logo");
+                break;
             case "reinit":
                 a.debugReinit();
                 Log.i(TAG, "CMD reinit");

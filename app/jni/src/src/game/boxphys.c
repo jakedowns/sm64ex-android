@@ -43,6 +43,12 @@ static u32 s_tick;
 static int s_inited;
 static int s_onResetPad;
 static u32 s_lastAction;
+static b3Pos s_boxHomePos[BP_MAX_BOXES];
+static b3Quat s_boxHomeRot[BP_MAX_BOXES];
+static b3Pos s_boxAnimPos[BP_MAX_BOXES];
+static b3Quat s_boxAnimRot[BP_MAX_BOXES];
+static int s_resetAnim;
+static float s_resetT;
 
 static void bp_box_half(b3BoxHull *h) {
     *h = b3MakeBoxHull(BP_CUBE_HALF, BP_CUBE_HALF, BP_CUBE_HALF);
@@ -60,10 +66,12 @@ static void bp_add_box(float x, float y, float z) {
     bd.angularDamping = 0.05f;
     b3BodyId body = b3CreateBody(s_world, &bd);
     bp_box_half(&hull);
-    sd.density = 80.0f;           /* light: punches and balls launch cubes */
+    sd.density = 65.0f;           /* light: slams/punches launch cubes */
     sd.baseMaterial.friction = 0.6f;
-    sd.baseMaterial.restitution = 0.05f;
+    sd.baseMaterial.restitution = 0.12f;
     b3CreateHullShape(body, &sd, &hull.base);
+    s_boxHomePos[s_boxCount] = bd.position;
+    s_boxHomeRot[s_boxCount] = b3Quat_identity;
     s_boxes[s_boxCount++] = body;
 }
 
@@ -82,7 +90,7 @@ static void bp_pyramid(void) {
     }
 }
 
-void boxphys_reset(void) {
+static void boxphys_world_create(void) {
     b3WorldDef wd;
 
     if (s_world.index1 != 0) {
@@ -125,12 +133,41 @@ void boxphys_reset(void) {
         b3CreateHullShape(s_marioBody, &sd, &mhull.base);
     }
     bp_pyramid();
+    s_resetAnim = 0;
+    s_resetT = 0.0f;
     s_inited = 1;
+}
+
+/* Smooth reset: animate every cube back to its spawn transform while its
+ * collisions are disabled, then hand it back to the dynamic solver. */
+void boxphys_reset(void) {
+    int b, i;
+
+    if (s_world.index1 == 0) {
+        boxphys_world_create();
+        return;
+    }
+    if (s_resetAnim || s_boxCount == 0) {
+        return;
+    }
+    for (b = 0; b < s_boxCount; b++) {
+        s_boxAnimPos[b] = b3Body_GetPosition(s_boxes[b]);
+        s_boxAnimRot[b] = b3Body_GetRotation(s_boxes[b]);
+        b3Body_SetLinearVelocity(s_boxes[b], (b3Vec3){ 0, 0, 0 });
+        b3Body_SetAngularVelocity(s_boxes[b], (b3Vec3){ 0, 0, 0 });
+        b3Body_Disable(s_boxes[b]);
+    }
+    for (i = 0; i < s_ballCount; i++) {
+        b3DestroyBody(s_balls[i]);
+    }
+    s_ballCount = 0;
+    s_resetT = 0.0f;
+    s_resetAnim = 1;
 }
 
 void boxphys_init(void) {
     if (!s_inited || s_world.index1 == 0) {
-        boxphys_reset();
+        boxphys_world_create();
     }
 }
 
@@ -267,7 +304,7 @@ static void bp_slam(float x, float z, float radius, float power) {
             float k = 1.0f - d / radius;
             float inv = 1.0f / (d + 1.0f);
             b3Body_ApplyLinearImpulseToCenter(s_boxes[b],
-                (b3Vec3){ dx * inv * power * k, power * 0.85f * k,
+                (b3Vec3){ dx * inv * power * k, power * 0.95f * k,
                           dz * inv * power * k }, true);
         }
     }
@@ -276,7 +313,7 @@ static void bp_slam(float x, float z, float radius, float power) {
 void boxphys_slam_test(void) {
     if (gMarioState == NULL) return;
     boxphys_init();
-    bp_slam(gMarioState->pos[0], gMarioState->pos[2], 340.0f, 1600.0f);
+    bp_slam(gMarioState->pos[0], gMarioState->pos[2], 380.0f, 2000.0f);
     play_sound(SOUND_ACTION_TERRAIN_HEAVY_LANDING, gDefaultSoundArgs);
 }
 
@@ -286,6 +323,34 @@ void boxphys_update(void) {
     if (gCurrLevelNum != 38) return;
     boxphys_init();
     if (s_world.index1 == 0) return;
+
+    if (s_resetAnim) {
+        int b;
+        s_resetT += (1.0f / 30.0f) / 0.55f;
+        if (s_resetT > 1.0f) s_resetT = 1.0f;
+        {
+            float e = s_resetT * s_resetT * (3.0f - 2.0f * s_resetT);
+            for (b = 0; b < s_boxCount; b++) {
+                b3Pos p;
+                b3Quat q = b3NLerp(s_boxAnimRot[b], s_boxHomeRot[b], e);
+                p.x = s_boxAnimPos[b].x + (s_boxHomePos[b].x - s_boxAnimPos[b].x) * e;
+                p.y = s_boxAnimPos[b].y + (s_boxHomePos[b].y - s_boxAnimPos[b].y) * e;
+                p.z = s_boxAnimPos[b].z + (s_boxHomePos[b].z - s_boxAnimPos[b].z) * e;
+                b3Body_SetTransform(s_boxes[b], p, q);
+            }
+        }
+        if (s_resetT >= 1.0f) {
+            for (b = 0; b < s_boxCount; b++) {
+                b3Body_SetTransform(s_boxes[b], s_boxHomePos[b], s_boxHomeRot[b]);
+                b3Body_SetLinearVelocity(s_boxes[b], (b3Vec3){ 0, 0, 0 });
+                b3Body_SetAngularVelocity(s_boxes[b], (b3Vec3){ 0, 0, 0 });
+                b3Body_Enable(s_boxes[b]);
+                b3Body_SetAwake(s_boxes[b], true);
+            }
+            s_resetAnim = 0;
+        }
+        return;
+    }
 
     /* Green reset pad: landing on it rebuilds the pyramid. */
     if (gMarioState != NULL) {
@@ -371,16 +436,32 @@ void boxphys_update(void) {
                 /* Land the slam on the cube top; the shockwave runs below. */
                 m->forwardVel = 0.0f;
                 m->vel[0] = m->vel[2] = 0.0f;
+                m->input &= ~INPUT_OFF_FLOOR;
                 set_mario_action(m, ACT_GROUND_POUND_LAND, 0);
+            } else if (m->input & INPUT_NONZERO_ANALOG) {
+                /* Walk on the cube top: keep the game's horizontal velocity so
+                 * the stick moves him, but pin the feet/floor height. */
+                m->input &= ~INPUT_OFF_FLOOR;
+                if (!(m->action & ACT_FLAG_MOVING)) {
+                    set_mario_action(m, ACT_WALKING, 0);
+                }
+                if (m->marioObj != NULL) {
+                    set_mario_animation(m, MARIO_ANIM_WALKING);
+                }
             } else if (m->action & ACT_FLAG_AIR) {
-                /* First contact: kill the fall/slide carry-over so he lands
-                 * instead of skidding in the falling pose. */
+                /* Contact: force a grounded idle pose every tick.  The cube is
+                 * not in static collision, so the next Mario update would
+                 * otherwise cancel idle to ACT_FREEFALL again and leave the
+                 * fall animation on screen. */
                 m->forwardVel = 0.0f;
                 m->vel[0] = m->vel[2] = 0.0f;
+                m->input &= ~INPUT_OFF_FLOOR;
                 set_mario_action(m, ACT_IDLE, 0);
+                set_mario_animation(m, MARIO_ANIM_IDLE_HEAD_LEFT);
             } else {
                 m->forwardVel = 0.0f;
                 m->vel[0] = m->vel[2] = 0.0f;
+                m->input &= ~INPUT_OFF_FLOOR;
             }
             m->pos[1] = top;
             m->vel[1] = 0.0f;
@@ -398,7 +479,7 @@ void boxphys_update(void) {
     if (gMarioState != NULL) {
         struct MarioState *m = gMarioState;
         if (m->action == ACT_GROUND_POUND_LAND && s_lastAction != ACT_GROUND_POUND_LAND) {
-            bp_slam(m->pos[0], m->pos[2], 320.0f, 1500.0f);
+            bp_slam(m->pos[0], m->pos[2], 380.0f, 1900.0f);
             play_sound(SOUND_ACTION_TERRAIN_HEAVY_LANDING, gDefaultSoundArgs);
         }
         s_lastAction = m->action;

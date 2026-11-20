@@ -603,10 +603,12 @@ static struct LevelCommand *levelCommandAddr;
  * still rendering. */
 int g_hard_paused = 0;
 
-/* Return to the logo/intro level script from anywhere. */
+/* Return to the logo/intro level script from anywhere.  The JNI call only
+ * raises a flag; thread 5 applies it at a safe point. */
+static volatile int s_pendingIntroReset;
+
 void game_reset_to_intro(void) {
-    g_hard_paused = 0;
-    levelCommandAddr = segmented_to_virtual(level_script_entry);
+    s_pendingIntroReset = 1;
 }
 
 // main game loop thread. runs forever as long as the game
@@ -631,6 +633,11 @@ void thread5_game_loop(UNUSED void *arg) {
 }
 
 void game_loop_one_iteration(void) {
+        if (s_pendingIntroReset) {
+            s_pendingIntroReset = 0;
+            g_hard_paused = 0;
+            levelCommandAddr = segmented_to_virtual(level_script_entry);
+        }
         // if the reset timer is active, run the process to reset the game.
         //if (gResetTimer) {
 //	            draw_reset_bars(); (N64 target only?)

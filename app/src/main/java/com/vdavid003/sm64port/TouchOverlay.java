@@ -31,6 +31,8 @@ public class TouchOverlay extends View {
     // Overlay-only camera buttons (not N64 pad bits).
     public static final int BTN_CAM = 0x01000000;
     public static final int BTN_RECENTER = 0x02000000;
+    // Overlay-only Select/Back (short press = exit FPV, hold = level select).
+    public static final int BTN_BACK = 0x04000000;
 
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
 
@@ -52,16 +54,16 @@ public class TouchOverlay extends View {
     private int gFov0, gDist0, gHeight0;
 
     private int buttons;
-    private final int[] btnIds = {BTN_A, BTN_B, BTN_Z, BTN_R, BTN_START, BTN_L};
-    private final String[] btnLabels = {"A", "B", "Z", "R", "S", "L"};
-    private final float[][] btnPos = new float[6][2];
+    private final int[] btnIds = {BTN_A, BTN_B, BTN_Z, BTN_R, BTN_START, BTN_L, BTN_BACK};
+    private final String[] btnLabels = {"A", "B", "Z", "R", "S", "L", "SEL"};
+    private final float[][] btnPos = new float[7][2];
     private int buttonPointer = -1;
 
     private final float radius = 90f;      // button radius
     private final float stickRadius = 190f;
     private final float knobRadius = 70f;
 
-    private final int[] pressedPointer = {-1, -1, -1, -1, -1, -1};
+    private final int[] pressedPointer = {-1, -1, -1, -1, -1, -1, -1};
 
     // C buttons: smaller cluster (up/down/left/right)
     private final int[] cIds = {BTN_CUP, BTN_CDOWN, BTN_CLEFT, BTN_CRIGHT};
@@ -129,6 +131,7 @@ public class TouchOverlay extends View {
         btnPos[3][0] = w * 0.79f; btnPos[3][1] = h * 0.60f;   // R
         btnPos[4][0] = w * 0.50f; btnPos[4][1] = h * 0.88f;   // START (bottom centre)
         btnPos[5][0] = w * 0.90f; btnPos[5][1] = h * 0.84f;   // L (below A)
+        btnPos[6][0] = w * 0.38f; btnPos[6][1] = h * 0.88f;   // SELECT/BACK, left of START
 
         // C-button cluster: cross to the left of A/B
         float cx = w * 0.68f, cy = h * 0.70f, d = cRadius * 1.35f;
@@ -190,6 +193,9 @@ public class TouchOverlay extends View {
 
     /** Index into cIds for a C-button hit, else -1. */
     private int hitCButton(float x, float y) {
+        /* In analog-camera mode the C cluster is hidden; its invisible hit
+         * circles must not steal touches from the right analog stick. */
+        if (analogMode) return -1;
         for (int i = 0; i < 4; i++) {
             float dx = x - cPos[i][0], dy = y - cPos[i][1];
             if (dx * dx + dy * dy <= (cRadius * 1.3f) * (cRadius * 1.3f)) return i;

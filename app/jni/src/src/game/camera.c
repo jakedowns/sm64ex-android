@@ -3128,6 +3128,16 @@ static void camera_portal_blend_step(void) {
  * The main camera update function.
  * Gets controller input, checks for cutscenes, handles mode changes, and moves the camera
  */
+/* Deterministic debug camera for automated portal-relay captures. */
+static int s_debugCamHold;
+static Vec3f s_debugCamPos, s_debugCamFocus;
+
+void camera_debug_hold(const Vec3f pos, const Vec3f focus, int frames) {
+    vec3f_copy(s_debugCamPos, pos);
+    vec3f_copy(s_debugCamFocus, focus);
+    s_debugCamHold = frames > 0 ? frames : 0;
+}
+
 void update_camera(struct Camera *c) {
     UNUSED u8 unused[24];
 
@@ -3693,6 +3703,22 @@ void init_camera(struct Camera *c) {
         newcam_init(c, 0);
     }
 #endif
+
+    if (s_debugCamHold > 0) {
+        vec3f_copy(gLakituState.pos, s_debugCamPos);
+        vec3f_copy(gLakituState.focus, s_debugCamFocus);
+        vec3f_copy(gLakituState.curPos, s_debugCamPos);
+        vec3f_copy(gLakituState.curFocus, s_debugCamFocus);
+        vec3f_copy(gLakituState.goalPos, s_debugCamPos);
+        vec3f_copy(gLakituState.goalFocus, s_debugCamFocus);
+        vec3f_copy(c->pos, s_debugCamPos);
+        vec3f_copy(c->focus, s_debugCamFocus);
+        gLakituState.yaw = calculate_yaw(c->focus, c->pos);
+        gLakituState.nextYaw = gLakituState.yaw;
+        c->yaw = gLakituState.yaw;
+        c->nextYaw = gLakituState.yaw;
+        s_debugCamHold--;
+    }
 }
 
 /**

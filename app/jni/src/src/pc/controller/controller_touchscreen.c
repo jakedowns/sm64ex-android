@@ -8,6 +8,8 @@
 #include "config.h"
 #include "sm64.h"
 #include "game/game_init.h"
+#include "game/camera.h"
+#include "game/level_update.h"
 #include "game/memory.h"
 #include "game/segment2.h"
 #include "gfx_dimensions.h"
@@ -63,6 +65,7 @@ int gfx_hide_touch_controls = 0;
 // Overlay-only buttons (not N64 pad bits). Consumed by the camera code.
 #define OVL_BTN_CAM      0x01000000u   // X: toggle free camera
 #define OVL_BTN_RECENTER 0x02000000u   // Y: recentre / reset view
+#define OVL_BTN_BACK     0x04000000u   // on-screen SELECT: exit FPV / hold level select
 u8 camera_mode_button_pressed = 0;
 u8 camera_recenter_button_pressed = 0;
 static unsigned int s_prev_ovl_buttons = 0;
@@ -288,6 +291,25 @@ static void touchscreen_read(OSContPad *pad) {
     }
     if (pressed & OVL_BTN_RECENTER) {
         camera_recenter_button_pressed = 1;
+    }
+    {
+        /* On-screen SELECT/BACK mirrors the physical Back button: short press
+         * exits first person, ~0.7s hold opens level select. */
+        static int backFrames, backFired;
+        if (gfx_ovl_buttons & OVL_BTN_BACK) {
+            if (backFrames == 0) backFired = 0;
+            backFrames++;
+            if (!backFired && backFrames > 21) {
+                backFired = 1;
+                level_select_request_open(-1);
+            }
+        } else {
+            if (backFrames > 0 && !backFired) {
+                camera_exit_first_person();
+            }
+            backFrames = 0;
+            backFired = 0;
+        }
     }
     pad->button |= (u16)(gfx_ovl_buttons & 0xFFFFu);
     if (gfx_ovl_active) {

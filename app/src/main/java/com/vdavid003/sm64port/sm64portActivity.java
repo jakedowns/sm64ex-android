@@ -772,11 +772,11 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
 
         TextView camBtn = new TextView(this);
         camCycleButton = camBtn;
-        camBtn.setText("CAM " + camModeLetter(camMode2));
+        camBtn.setText("CAM: " + camModeName(camMode2));
         camBtn.setTextColor(0xFFCCCCCC);
-        camBtn.setTextSize(16);
+        camBtn.setTextSize(14);
         camBtn.setPadding(pad, pad / 2, pad, pad / 2);
-        header.addView(camBtn, abs(980, 0, 210, 64));
+        header.addView(camBtn, abs(620, 0, 370, 64));
         camBtn.setOnClickListener(v -> cycleCamMode());
 
         TextView fpsBtn = new TextView(this);
@@ -1013,6 +1013,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             }
             selectTopTab(idx);
         });
+        addPressFeedback(b);
         bar.addView(b);
         tabButtons.add(b);
     }
@@ -1350,6 +1351,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addEnhButton("CALIBRATE JUMPS", () -> debugPtc("calibrate"));
         portalGunButton = addEnhButton(portalGunLabel(), this::togglePortalGun);
         addEnhButton("RESET TO LOGO", this::resetToLogo);
+        addEnhButton("REINIT LEIA SURFACE", this::debugReinit);
         addEnhButton("BALL BLASTER (TOGGLE)", () -> {
             ballBlasterOn = !ballBlasterOn;
             nativePtcCommand("ballequip");
@@ -1752,7 +1754,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             return;
         }
         if (camCycleButton != null && camMode2 >= 0 && camMode2 < CAM_MODE_SHORT.length) {
-            camCycleButton.setText("CAM " + camModeLetter(camMode2));
+            camCycleButton.setText("CAM: " + camModeName(camMode2));
         }
         for (int i = 0; i < camModePills.length; i++) {
             TextView pill = camModePills[i];
@@ -1774,14 +1776,18 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         }
     }
 
-    private String camModeLabel() {
-        switch (camMode2) {
-            case 1: return "CAM MODE: BETTERCAM";
-            case 2: return "CAM MODE: PUPPYCAM";
-            case 3: return "CAM MODE: CUSTOM";
-            case 4: return "CAM MODE: FIRST PERSON";
-            default: return "CAM MODE: VANILLA";
+    private static String camModeName(int mode) {
+        switch (mode) {
+            case 1: return "BETTERCAM";
+            case 2: return "PUPPYCAM";
+            case 3: return "CUSTOM";
+            case 4: return "FIRST PERSON";
+            default: return "VANILLA";
         }
+    }
+
+    private String camModeLabel() {
+        return "CAM MODE: " + camModeName(camMode2);
     }
 
     private void addCamSlider(String name, int min, int max, int initial, String unit,
@@ -1946,6 +1952,19 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         return b;
     }
 
+    private void addPressFeedback(TextView v) {
+        v.setOnTouchListener((view, e) -> {
+            int a = e.getActionMasked();
+            if (a == android.view.MotionEvent.ACTION_DOWN) {
+                view.setAlpha(0.55f);
+            } else if (a == android.view.MotionEvent.ACTION_UP
+                    || a == android.view.MotionEvent.ACTION_CANCEL) {
+                view.setAlpha(1f);
+            }
+            return false;
+        });
+    }
+
     private TextView addEnhButton(String name, final Runnable action) {
         TextView b = new TextView(this);
         b.setText(name);
@@ -1953,6 +1972,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         b.setTextColor(0xFFFF9966);
         b.setPadding(dp(4), dp(10), dp(4), dp(10));
         b.setOnClickListener(v -> action.run());
+        addPressFeedback(b);
         enhParent().addView(b);
         return b;
     }
@@ -2815,6 +2835,10 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     void debugPortal(int which) {
         nativeShootPortal(which);
         Log.i(TAG, "PORTAL shoot " + which + " count=" + nativeGetPortalCount());
+    }
+
+    void debugResetToLogo() {
+        resetToLogo();
     }
 
     private void resetToLogo() {
