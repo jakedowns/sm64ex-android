@@ -42,6 +42,7 @@ static int s_equipped;
 static u32 s_tick;
 static int s_inited;
 static int s_onResetPad;
+static u32 s_lastAction;
 
 static void bp_box_half(b3BoxHull *h) {
     *h = b3MakeBoxHull(BP_CUBE_HALF, BP_CUBE_HALF, BP_CUBE_HALF);
@@ -252,6 +253,33 @@ static int bp_up_face(b3BodyId id, Vec3f center, Vec3f uax, Vec3f vax, float *to
     return 1;
 }
 
+/* Radial shockwave: shove nearby cubes outward and up. */
+static void bp_slam(float x, float z, float radius, float power) {
+    int b;
+    for (b = 0; b < s_boxCount; b++) {
+        b3Pos p = b3Body_GetPosition(s_boxes[b]);
+        float dx = p.x / BP_SCALE - x;
+        float dz = p.z / BP_SCALE - z;
+        float d2 = dx * dx + dz * dz;
+        if (d2 > radius * radius) continue;
+        {
+            float d = sqrtf(d2);
+            float k = 1.0f - d / radius;
+            float inv = 1.0f / (d + 1.0f);
+            b3Body_ApplyLinearImpulseToCenter(s_boxes[b],
+                (b3Vec3){ dx * inv * power * k, power * 0.85f * k,
+                          dz * inv * power * k }, true);
+        }
+    }
+}
+
+void boxphys_slam_test(void) {
+    if (gMarioState == NULL) return;
+    boxphys_init();
+    bp_slam(gMarioState->pos[0], gMarioState->pos[2], 340.0f, 1600.0f);
+    play_sound(SOUND_ACTION_TERRAIN_HEAVY_LANDING, gDefaultSoundArgs);
+}
+
 void boxphys_update(void) {
     int i;
 
@@ -318,6 +346,7 @@ void boxphys_update(void) {
     s_tick++;
     b3World_Step(s_world, 1.0f / 30.0f, 6);
 
+
     /* Stand on an upward-facing cube face.  Mario's static collision knows
      * nothing about the physics cubes, so this runs after his action step and
      * pins him to the face: idle action (no fall pose), no sliding, and a
@@ -338,7 +367,12 @@ void boxphys_update(void) {
             if (m->pos[1] > top + 16.0f || m->pos[1] < top - 55.0f) continue;
             if (m->vel[1] > 20.0f) continue;
 
-            if (m->action & ACT_FLAG_AIR) {
+            if (m->action == ACT_GROUND_POUND) {
+                /* Land the slam on the cube top; the shockwave runs below. */
+                m->forwardVel = 0.0f;
+                m->vel[0] = m->vel[2] = 0.0f;
+                set_mario_action(m, ACT_GROUND_POUND_LAND, 0);
+            } else if (m->action & ACT_FLAG_AIR) {
                 /* First contact: kill the fall/slide carry-over so he lands
                  * instead of skidding in the falling pose. */
                 m->forwardVel = 0.0f;
@@ -357,6 +391,17 @@ void boxphys_update(void) {
             }
             break;
         }
+    }
+
+    /* Ground-pound shockwave: fires once on the landing tick, whether Mario
+     * hit the floor or the support code just landed him on a cube. */
+    if (gMarioState != NULL) {
+        struct MarioState *m = gMarioState;
+        if (m->action == ACT_GROUND_POUND_LAND && s_lastAction != ACT_GROUND_POUND_LAND) {
+            bp_slam(m->pos[0], m->pos[2], 320.0f, 1500.0f);
+            play_sound(SOUND_ACTION_TERRAIN_HEAVY_LANDING, gDefaultSoundArgs);
+        }
+        s_lastAction = m->action;
     }
 
     /* Expire old balls. */

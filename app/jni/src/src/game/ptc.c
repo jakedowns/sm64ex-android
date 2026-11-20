@@ -1026,6 +1026,32 @@ static void ptc_apply_command(const char *action) {
             }
             gCameraMovementFlags |= CAM_MOVE_INIT_CAMERA;
         }
+    } else if (strcmp(action, "slam") == 0) {
+        if (gMarioState != NULL) {
+            gMarioState->pos[0] = 1450.0f;
+            gMarioState->pos[1] = 0.0f;
+            gMarioState->pos[2] = 400.0f;
+            gMarioState->vel[0] = gMarioState->vel[1] = gMarioState->vel[2] = 0.0f;
+            gMarioState->faceAngle[1] = 0x4000;
+            set_mario_action(gMarioState, ACT_IDLE, 0);
+            if (gMarioState->marioObj != NULL) {
+                vec3f_copy(gMarioState->marioObj->header.gfx.pos, gMarioState->pos);
+            }
+            boxphys_slam_test();
+            gCameraMovementFlags |= CAM_MOVE_INIT_CAMERA;
+        }
+    } else if (strcmp(action, "groundslam") == 0) {
+        if (gMarioState != NULL) {
+            gMarioState->pos[0] = 1800.0f;
+            gMarioState->pos[1] = 620.0f;
+            gMarioState->pos[2] = 400.0f;
+            gMarioState->vel[0] = gMarioState->vel[1] = gMarioState->vel[2] = 0.0f;
+            set_mario_action(gMarioState, ACT_GROUND_POUND, 0);
+            if (gMarioState->marioObj != NULL) {
+                vec3f_copy(gMarioState->marioObj->header.gfx.pos, gMarioState->pos);
+            }
+            gCameraMovementFlags |= CAM_MOVE_INIT_CAMERA;
+        }
     } else if (strcmp(action, "cubetop") == 0) {
         if (gMarioState != NULL) {
             gMarioState->pos[0] = 1800.0f;

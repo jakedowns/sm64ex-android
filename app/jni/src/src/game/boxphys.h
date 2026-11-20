@@ -7,6 +7,7 @@
  * a stack of cubes and a ball blaster. */
 void boxphys_init(void);
 void boxphys_reset(void);
+void boxphys_slam_test(void);
 void boxphys_update(void);
 void boxphys_render(void);
 void boxphys_equip_toggle(void);

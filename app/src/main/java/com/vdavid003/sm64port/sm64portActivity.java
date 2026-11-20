@@ -1358,6 +1358,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addEnhButton("RESET CUBES", () -> nativePtcCommand("ballreset"));
         addEnhButton("WARP TO CUBES", () -> nativePtcCommand("annex"));
         addEnhButton("WARP TO RESET PAD", () -> nativePtcCommand("resetpad"));
+        addEnhButton("BUTT SLAM TEST", () -> nativePtcCommand("slam"));
         addEnhButton("FIRE TEST BALL", () -> nativePtcCommand("balltest"));
         pauseLoopToggle = new TextView(this);
         pauseLoopToggle.setText("PAUSE GAME LOOP: OFF");
