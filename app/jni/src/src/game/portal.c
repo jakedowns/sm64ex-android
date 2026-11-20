@@ -707,19 +707,26 @@ static void portal_view_update(const Mat4 view) {
         best = s_forceView;
         if (!s_portal[best].active) best = -1;
     } else {
-        float bestScore = 1.2f;   /* roughly tan(50 deg): ignore far off-screen */
+        /* Prefer the portal the camera-to-focus ray actually passes through. */
+        Vec3f look, hit, rel;
+        float bestT = 1e30f;
+        vec3f_copy(look, gLakituState.focus);
+        vec3f_sub(look, gLakituState.pos);
         for (i = 0; i < 2; i++) {
-            Vec3f p;
-            float vx, vy, vz, score;
+            float denom, t;
             if (!s_portal[i].active) continue;
-            vec3f_copy(p, s_portal[i].pos);
-            vx = view[0][0] * p[0] + view[0][1] * p[1] + view[0][2] * p[2] + view[0][3];
-            vy = view[1][0] * p[0] + view[1][1] * p[1] + view[1][2] * p[2] + view[1][3];
-            vz = view[2][0] * p[0] + view[2][1] * p[1] + view[2][2] * p[2] + view[2][3];
-            if (vz > -10.0f) continue;   /* behind the camera / too close */
-            score = (vx * vx + vy * vy) / (vz * vz);
-            if (score < bestScore) {
-                bestScore = score;
+            denom = vdot3(look, s_portal[i].normal);
+            if (fabsf(denom) < 1e-5f) continue;
+            rel[0] = s_portal[i].pos[0] - gLakituState.pos[0];
+            rel[1] = s_portal[i].pos[1] - gLakituState.pos[1];
+            rel[2] = s_portal[i].pos[2] - gLakituState.pos[2];
+            t = vdot3(rel, s_portal[i].normal) / denom;
+            if (t <= 0.0f) continue;
+            hit[0] = gLakituState.pos[0] + look[0] * t;
+            hit[1] = gLakituState.pos[1] + look[1] * t;
+            hit[2] = gLakituState.pos[2] + look[2] * t;
+            if (portal_point_inside(&s_portal[i], hit) && t < bestT) {
+                bestT = t;
                 best = i;
             }
         }
