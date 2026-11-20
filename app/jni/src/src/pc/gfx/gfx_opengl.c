@@ -2270,6 +2270,10 @@ void gfx_opengl_portal_overlay(int eye) {
         glDisable(GL_BLEND);
         glDisable(GL_SCISSOR_TEST);
         glDisable(GL_DEPTH_TEST);
+        /* The game leaves opengl_vbo bound; on GLES a bound VBO makes these
+         * client pointers look like buffer offsets and the draw produces
+         * nothing. Unbind for the overlay, then restore it. */
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
         glVertexAttribPointer(s_portal_apos, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), q);
         glVertexAttribPointer(s_portal_auv, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), q + 3);
         glEnableVertexAttribArray(s_portal_apos);
@@ -2277,6 +2281,7 @@ void gfx_opengl_portal_overlay(int eye) {
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         glDisableVertexAttribArray(s_portal_apos);
         glDisableVertexAttribArray(s_portal_auv);
+        glBindBuffer(GL_ARRAY_BUFFER, opengl_vbo);
         glEnable(GL_DEPTH_TEST);
         glUseProgram(0);
         return;
@@ -2328,6 +2333,7 @@ void gfx_opengl_portal_overlay(int eye) {
         glDepthFunc(GL_LEQUAL);
     }
     glDepthMask(GL_FALSE);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
     glVertexAttribPointer(s_portal_apos, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), buf);
     glVertexAttribPointer(s_portal_auv, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), buf + 3);
     glEnableVertexAttribArray(s_portal_apos);
@@ -2335,6 +2341,7 @@ void gfx_opengl_portal_overlay(int eye) {
     glDrawArrays(GL_TRIANGLE_FAN, 0, PORTAL_VIEW_SEGS + 2);
     glDisableVertexAttribArray(s_portal_apos);
     glDisableVertexAttribArray(s_portal_auv);
+    glBindBuffer(GL_ARRAY_BUFFER, opengl_vbo);
     glDepthMask(GL_TRUE);
     glUseProgram(0);
 }
