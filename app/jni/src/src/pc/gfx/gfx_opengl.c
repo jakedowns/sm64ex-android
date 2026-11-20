@@ -2153,6 +2153,7 @@ static void gfx_opengl_start_frame(void) {
 extern float gfx_eye_shear[2];
 extern int gfx_get_portal_view_proj(float out[4][4]);
 extern int gfx_portal_debug_blit;
+extern int g_portal_debug_color;
 
 static GLuint s_portal_fbo = 0, s_portal_tex = 0, s_portal_depth = 0;
 static int s_portal_w = 0, s_portal_h = 0;
@@ -2237,10 +2238,19 @@ int gfx_opengl_portal_begin(int w, int h) {
     glBindFramebuffer(GL_FRAMEBUFFER, s_portal_fbo);
     glDisable(GL_SCISSOR_TEST);
     glDepthMask(GL_TRUE);
-    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    if (g_portal_debug_color) {
+        glClearColor(0.10f, 0.85f, 0.25f, 1.0f);   /* solid relay test */
+    } else {
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    }
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glViewport(0, 0, w, h);
     return 1;
+}
+
+void gfx_opengl_portal_fill_green(void) {
+    glClearColor(0.10f, 0.85f, 0.25f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
 }
 
 void gfx_opengl_portal_end(void) {

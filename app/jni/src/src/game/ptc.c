@@ -985,24 +985,34 @@ static void ptc_apply_command(const char *action) {
     } else if (strcmp(action, "portaltest") == 0) {
         extern int gfx_stereo_2d;
         extern int gfx_stereo_same_both;
-        Vec3f camPos = { -600.0f, 400.0f, -1100.0f };
-        Vec3f camFocus = { -600.0f, 250.0f, -404.0f };
         ptc_place_portals();
         portal_view_force(0);
         if (gMarioState != NULL) {
-            gMarioState->pos[0] = -900.0f;
+            gMarioState->pos[0] = -600.0f;
             gMarioState->pos[1] = 0.0f;
-            gMarioState->pos[2] = -1000.0f;
+            gMarioState->pos[2] = -900.0f;
             gMarioState->vel[0] = gMarioState->vel[1] = gMarioState->vel[2] = 0.0f;
-            gMarioState->faceAngle[1] = 0;
+            gMarioState->faceAngle[1] = 0;   /* face +Z, toward portal A */
             set_mario_action(gMarioState, ACT_IDLE, 0);
             if (gMarioState->marioObj != NULL) {
                 vec3f_copy(gMarioState->marioObj->header.gfx.pos, gMarioState->pos);
             }
         }
-        camera_debug_hold(camPos, camFocus, 1200);
-        gfx_stereo_2d = 1;          /* flat output for screenshots */
-        gfx_stereo_same_both = 1;   /* LEFT eye duplicated */
+        g_portal_debug_color = 1;   /* stage 1: solid green relay */
+        gfx_stereo_2d = 1;
+        gfx_stereo_same_both = 1;
+    } else if (strcmp(action, "portalcolor") == 0) {
+        g_portal_debug_color = !g_portal_debug_color;
+    } else if (strcmp(action, "portalcam") == 0) {
+        if (gMarioState != NULL) {
+            gMarioState->pos[0] = -600.0f;
+            gMarioState->pos[1] = 0.0f;
+            gMarioState->pos[2] = -900.0f;
+            gMarioState->vel[0] = gMarioState->vel[1] = gMarioState->vel[2] = 0.0f;
+            gMarioState->faceAngle[1] = 0;
+            set_mario_action(gMarioState, ACT_IDLE, 0);
+            gCameraMovementFlags |= CAM_MOVE_INIT_CAMERA;
+        }
     } else if (strcmp(action, "eyeL") == 0) {
         extern int gfx_stereo_2d;
         extern int gfx_stereo_same_both;

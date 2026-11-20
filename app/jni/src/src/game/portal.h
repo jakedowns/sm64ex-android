@@ -26,7 +26,8 @@ void portal_view_force(int src);
 
 /** Portal gun state: pickup prop, two portals, hitscan placement, teleport. */
 extern int g_portal_debug;
-extern int g_portal_debug_align;       // last placement result (1 = ok, 2..4 = failure)
+extern int g_portal_debug_align;
+extern int g_portal_debug_color;       // last placement result (1 = ok, 2..4 = failure)
 
 void portal_update(void);        // simulation tick: pickup + teleport checks
 void portal_render(void);        // append the portal / gun geometry to the dlist

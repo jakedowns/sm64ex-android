@@ -7,17 +7,18 @@ a missing relay shows the flat blue portal fan.
 ## Run
 
 ```bash
-scripts/portal-relay-test.sh /tmp/opencode/portal
+scripts/portal-relay-test.sh color   # stage 1
+scripts/portal-relay-test.sh scene   # stage 2
 ```
 
-The script:
+Two stages, one command/capture each:
 
-1. loads the Portal Test Chamber,
-2. runs `ptc portaltest` — places A/B, forces A as the relay source and locks a
-   fixed camera in front of A,
-3. captures the **left eye** with 2D/same-L (`ptc eyeL` defaults),
-4. switches to the **right eye** with `ptc eyeR`,
-5. analyses both images with `scripts/portal-relay-test.py`.
+1. **Color (default)** — `ptc portaltest` places the portals, puts Mario in a
+   stable view of A, forces A and fills the relay FBO **solid green** while
+   skipping the scene pass. The decal should be a green ellipse exactly on the
+   portal. This isolates geometry/UVs from the destination camera.
+2. **Scene** — `portalcolor` toggles the scene pass back on; only after stage 1
+   passes is it worth debugging the relay content.
 
 You can also switch eyes manually:
 

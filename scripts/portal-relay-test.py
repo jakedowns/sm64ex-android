@@ -35,7 +35,7 @@ def roi_bounds(w, h, roi):
     return (int(w * roi[0]), int(h * roi[1]), int(w * roi[2]), int(h * roi[3]))
 
 
-def analyse(path, roi=None):
+def analyse(path, roi=None, solid_green=False):
     im = load_rgb(path)
     w, h = im.size
     x0, y0, x1, y1 = roi_bounds(w, h, roi)
@@ -68,6 +68,23 @@ def analyse(path, roi=None):
                 edge_y += 1
     edge_density = 0.5 * (edge_x + edge_y) / max(1, cw * (ch - 1) + (cw - 1) * ch)
     ratio = gx_sum / max(gy_sum, 1e-3)
+
+    if solid_green:
+        green = sum(1 for p in px if p[1] > 150 and p[0] < 130 and p[2] < 130)
+        blue = sum(1 for p in px if p[2] > 150 and p[0] < 120 and p[1] < 150)
+        gf = green / max(1, n)
+        bf = blue / max(1, n)
+        ok = gf > 0.005
+        return {
+            "path": path,
+            "pass": bool(ok),
+            "roi": [x0, y0, x1, y1],
+            "green_fraction": round(gf, 4),
+            "blue_fraction": round(bf, 4),
+            "verdict": ("green relay decal visible (geometry/UVs work)" if ok else
+                        ("blue flat portal: decal missing" if bf > gf else
+                         "no green decal: relay overlay/geometry missing")),
+        }
 
     flat_blue = math.sqrt(sum((mean[i] - c) ** 2 for i, c in enumerate((48, 96, 255))))
     flat = edge_density < 0.004 and std < 6.0
@@ -102,9 +119,10 @@ def main():
     ap.add_argument("--pair", help="second eye screenshot for comparison")
     ap.add_argument("--roi", help="x0,y0,x1,y1 as fractions (default centre)")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--solid-green", action="store_true", help="stage-1 solid relay colour")
     args = ap.parse_args()
 
-    result = analyse(args.image, args.roi)
+    result = analyse(args.image, args.roi, args.solid_green)
     if args.pair:
         result["pair_mean_abs_diff"] = pair_diff(args.image, args.pair)
 

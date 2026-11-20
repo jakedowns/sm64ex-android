@@ -39,6 +39,7 @@ int gfx_portal_debug_blit = 0;   /* debug: show the portal FBO full-screen */
 float gfx_last_persp_proj[4][4];
 extern int gfx_opengl_portal_begin(int w, int h);
 extern void gfx_opengl_portal_end(void);
+extern void gfx_opengl_portal_fill_green(void);
 extern void gfx_opengl_portal_overlay(int eye);
 
 #define SUPPORT_CHECK(x) assert(x)
@@ -2385,6 +2386,9 @@ void gfx_run(Gfx *commands) {
             gfx_run_dl_range(commands,
                     (gGfxHasScene && gGfxUiStart != NULL) ? gGfxUiStart : NULL);
             gfx_flush();
+            if (g_portal_debug_color) {
+                gfx_opengl_portal_fill_green();
+            }
             gfx_portal_pass = 0;
             gfx_opengl_portal_end();
             gfx_invalidate_state();

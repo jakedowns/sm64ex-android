@@ -61,6 +61,7 @@ static int s_lastPlaced = 1;
 // surface, 3 could not fit the ellipse, 4 no gun.
 int g_portal_debug = 0;
 int g_portal_debug_align = 0;   /* magenta source fan behind the relay decal */
+int g_portal_debug_color = 0;   /* solid relay colour: isolate geometry/UVs */
 PortalViewState g_portal_view;
 static int s_portal_view_enabled = 1;
 static int s_forceView = -1;   /* debug: -1 auto, 0/1 force that source */
