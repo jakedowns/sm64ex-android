@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "app/jni/src/levels/ptc"
 
 # ---- world-space layout (N64 units) -------------------------------------
-ROOM = dict(x0=-1200, x1=1200, y0=0, y1=1400, z0=-2600, z1=1200)
+ROOM = dict(x0=-1200, x1=2400, y0=0, y1=1400, z0=-2600, z1=1200)
 
 # name: (x0, z0, x1, z1, top_y, top_rgb, side_rgb)
 PLATFORMS = [

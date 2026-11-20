@@ -1,4 +1,5 @@
 LOCAL_PATH := $(call my-dir)
+BOX3D_PATH := $(LOCAL_PATH)/box3d
 
 include $(CLEAR_VARS)
 LOCAL_MODULE := main
@@ -132,8 +133,9 @@ GENERATED_C_FILES := $(PC_BUILD_DIR)/assets/mario_anim_data.c $(PC_BUILD_DIR)/as
 
 LOCAL_SHORT_COMMANDS := true
 LOCAL_SHARED_LIBRARIES := SDL2
+LOCAL_STATIC_LIBRARIES := box3d
 LOCAL_LDLIBS := -lEGL -lGLESv2 -llog -landroid
-LOCAL_C_INCLUDES := $(LOCAL_PATH)/$(SDL_PATH)/include $(LOCAL_PATH)/include $(LOCAL_PATH)/src $(PC_BUILD_DIR) $(PC_BUILD_DIR)/include
+LOCAL_C_INCLUDES := $(LOCAL_PATH)/$(SDL_PATH)/include $(LOCAL_PATH)/include $(LOCAL_PATH)/src $(BOX3D_PATH)/include $(PC_BUILD_DIR) $(PC_BUILD_DIR)/include
 LOCAL_CFLAGS := -DNON_MATCHING -DAVOID_UB -DTARGET_LINUX -DENABLE_OPENGL -DWIDESCREEN -DF3DEX_GBI_2E -D_LANGUAGE_C -DNO_SEGMENTED_MEMORY -D$(VERSION_DEF) -DSTDC_HEADERS -DUSE_GLES -DRAPI_GL -DWAPI_SDL2 -DAAPI_SDL2 -DCAPI_SDL2 -DHAVE_SDL2 -DBETTERCAMERA -O3
 
 ifeq ($(TOUCH_CONTROLS),1)
@@ -156,3 +158,14 @@ endif
 LOCAL_SRC_FILES := $(C_FILES) $(CXX_FILES) $(GENERATED_C_FILES) $(ULTRA_C_FILES) $(GODDARD_C_FILES) $(PC_BUILD_DIR)/sound/sound_data.ctl.c $(PC_BUILD_DIR)/sound/sound_data.tbl.c $(PC_BUILD_DIR)/sound/sequences.bin.c $(PC_BUILD_DIR)/sound/bank_sets.c
 
 include $(BUILD_SHARED_LIBRARY)
+
+# Box3D 3D physics engine (MIT, github.com/erincatto/box3d), vendored for the
+# Portal Test Chamber cube/ball prototype.
+include $(CLEAR_VARS)
+LOCAL_PATH := $(call my-dir)
+LOCAL_MODULE := box3d
+LOCAL_SRC_FILES := $(wildcard $(BOX3D_PATH)/src/*.c)
+LOCAL_C_INCLUDES := $(BOX3D_PATH)/include
+LOCAL_EXPORT_C_INCLUDES := $(BOX3D_PATH)/include
+LOCAL_CFLAGS := -std=gnu17 -O2 -Wno-unused-function
+include $(BUILD_STATIC_LIBRARY)

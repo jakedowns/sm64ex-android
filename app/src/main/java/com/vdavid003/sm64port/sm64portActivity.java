@@ -127,6 +127,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     private TextView portalGunButton;
     private TextView pauseLoopToggle;
     private boolean hardPaused;
+    private boolean ballBlasterOn;
     private boolean aoOn, dofOn, giOn;
     private int fxDebug = 0;
     // SSRTX screen-space ray-traced reflections (opt-in: expensive).
@@ -198,6 +199,8 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
           + "  per-object occluder fade (only the blocking platform/wall fades).\n"
           + "Movement kit (ENH): Titanfall-style wall-run, grapple and a fuel\n"
           + "  jetpack, with fuel-tank and refill-pump upgrades. L = use.\n"
+          + "PTC annex: widened chamber with a 30-cube Box3D pyramid and a\n"
+          + "  ball blaster (ENH) that fires physics spheres (Z to fire).\n"
           + "Splat prototype: point-sprite rendering for Mario/trees/all\n"
           + "  objects (SPLAT toggle or adb); merged from feat/splat-prototype.\n"
           + "Camera: CAMERA-tab distance/height affect vanilla and custom;\n"
@@ -1320,6 +1323,13 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addEnhButton("CALIBRATE JUMPS", () -> debugPtc("calibrate"));
         portalGunButton = addEnhButton(portalGunLabel(), this::togglePortalGun);
         addEnhButton("RESET TO LOGO", this::resetToLogo);
+        addEnhButton("BALL BLASTER (TOGGLE)", () -> {
+            ballBlasterOn = !ballBlasterOn;
+            nativePtcCommand("ballequip");
+            Log.i(TAG, "BALL BLASTER=" + ballBlasterOn);
+        });
+        addEnhButton("RESET CUBES", () -> nativePtcCommand("ballreset"));
+        addEnhButton("FIRE TEST BALL", () -> nativePtcCommand("balltest"));
         pauseLoopToggle = new TextView(this);
         pauseLoopToggle.setText("PAUSE GAME LOOP: OFF");
         pauseLoopToggle.setTextSize(16);

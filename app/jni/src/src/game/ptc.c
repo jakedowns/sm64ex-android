@@ -37,6 +37,7 @@
 #include "engine/math_util.h"
 #include "engine/surface_collision.h"
 #include "levels/ptc/header.h"
+#include "boxphys.h"
 
 /* Per-object occluder fade.  Bit N = fade object N (0..7 platforms, 8 ramp,
  * 9..12 room walls), set by ptc_occlusion_update(). */
@@ -945,6 +946,25 @@ static void ptc_apply_command(const char *action) {
         camera_portal_blend_toggle();
     } else if (strcmp(action, "rumble") == 0) {
         controller_rumble_play(1.0f, 0.8f);
+    } else if (strcmp(action, "annex") == 0) {
+        if (gMarioState != NULL) {
+            gMarioState->pos[0] = 1000.0f;
+            gMarioState->pos[1] = 0.0f;
+            gMarioState->pos[2] = 400.0f;
+            gMarioState->vel[0] = gMarioState->vel[1] = gMarioState->vel[2] = 0.0f;
+            gMarioState->faceAngle[1] = 0x4000;
+            set_mario_action(gMarioState, ACT_IDLE, 0);
+            if (gMarioState->marioObj != NULL) {
+                vec3f_copy(gMarioState->marioObj->header.gfx.pos, gMarioState->pos);
+            }
+            gCameraMovementFlags |= CAM_MOVE_INIT_CAMERA;
+        }
+    } else if (strcmp(action, "balltest") == 0) {
+        boxphys_test_fire();
+    } else if (strcmp(action, "ballreset") == 0) {
+        boxphys_reset();
+    } else if (strcmp(action, "ballequip") == 0) {
+        boxphys_equip_toggle();
     } else if (strcmp(action, "aspecttest") == 0) {
         ptc_aspect_calib_toggle();
     } else if (strcmp(action, "walltest") == 0) {

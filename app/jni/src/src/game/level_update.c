@@ -9,6 +9,7 @@
 #include "portal.h"
 #include "ptc.h"
 #include "movekit.h"
+#include "boxphys.h"
 #include "game_init.h"
 #include "level_update.h"
 #include "main.h"
@@ -1001,6 +1002,7 @@ void basic_update(UNUSED s16 *arg) {
     ptc_update();
     ptc_hud_update();
     movekit_update(gMarioState);
+    boxphys_update();
     update_hud_values();
 
     if (gCurrentArea != NULL) {

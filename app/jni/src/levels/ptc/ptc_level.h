@@ -6,7 +6,7 @@
  * sync with these values. */
 
 #define PTC_ROOM_X0 -1200
-#define PTC_ROOM_X1 1200
+#define PTC_ROOM_X1 2400
 #define PTC_ROOM_Y0 0
 #define PTC_ROOM_Y1 1400
 #define PTC_ROOM_Z0 -2600
