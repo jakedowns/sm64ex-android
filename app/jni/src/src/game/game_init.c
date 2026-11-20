@@ -599,6 +599,16 @@ void setup_game_memory(void) {
 
 static struct LevelCommand *levelCommandAddr;
 
+/* Hard pause: skip the level script (all object/physics/camera ticking) while
+ * still rendering. */
+int g_hard_paused = 0;
+
+/* Return to the logo/intro level script from anywhere. */
+void game_reset_to_intro(void) {
+    g_hard_paused = 0;
+    levelCommandAddr = segmented_to_virtual(level_script_entry);
+}
+
 // main game loop thread. runs forever as long as the game
 // continues.
 void thread5_game_loop(UNUSED void *arg) {
@@ -639,7 +649,9 @@ void game_loop_one_iteration(void) {
         audio_game_loop_tick();
         config_gfx_pool();
         read_controller_inputs();
-        levelCommandAddr = level_script_execute(levelCommandAddr);
+        if (!g_hard_paused) {
+            levelCommandAddr = level_script_execute(levelCommandAddr);
+        }
         display_and_vsync();
 
         // when debug info is enabled, print the "BUF %d" information.

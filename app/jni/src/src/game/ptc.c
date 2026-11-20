@@ -976,6 +976,7 @@ void ptc_format_status(char *buf, int len) {
     snprintf(buf, len,
              "PTC level=%d area=%d phase=%d mode=%d active=%d fail=%d reason=\"%s\" "
              "star=%d star2=%d star_visible=%d portals=%d shotA=%d shotB=%d pdbg=%d "
+             "view=%d vsrc=%d "
              "mom_enter=%.1f mom_exit=%.1f mom_apex=%.1f momy=%.1f momv=%.1f,%.1f,%.1f walltest=0x%X "
              "p0=%.1f,%.1f,%.1f n0=%.3f,%.3f,%.3f p1=%.1f,%.1f,%.1f n1=%.3f,%.3f,%.3f "
              "tele=%d src=%d dst=%d onplat=%d "
@@ -986,6 +987,7 @@ void ptc_format_status(char *buf, int len) {
              "cal=%.1f,%.1f,%.1f ledge_reach=%.1f",
              gCurrLevelNum, gCurrAreaIndex, s_phase, s_testMode, s_testActive, s_failed, s_failReason,
              s_starCollected[0], s_starCollected[1], ptc_star_visible(), portal_count(), s_shotA, s_shotB, g_portal_debug,
+             g_portal_view.active, g_portal_view.source,
              s_momEntrySpeed, s_momExitSpeed, s_momApex,
              s_momExitY, s_momExitVX, s_momExitVY, s_momExitVZ, s_wallTest,
              hasA ? pa[0] : 0.0f, hasA ? pa[1] : 0.0f, hasA ? pa[2] : 0.0f,

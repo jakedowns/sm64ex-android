@@ -62,25 +62,19 @@ void first_person_camera_update(struct Camera *c) {
     {
         f32 sens = gfx_cam_sens_pct / 100.0f;
         if (inX > 12 || inX < -12) {
-            // Match the third-person orbit: overlay right-stick X is mirrored
-            // relative to the N64 stick, so look right on a right push.
-            s_fpYaw -= (s16)((f32) inX * 26.0f * sens);
+            // Half-speed FPV look; overlay right-stick X is mirrored relative
+            // to the N64 stick.
+            s_fpYaw -= (s16)((f32) inX * 13.0f * sens);
         }
         if (inY > 12 || inY < -12) {
-            s_fpPitch = (s16) clamps((f32) s_fpPitch + (f32) inY * 10.0f * sens,
-                                     0x0400, 0x3400);
+            s_fpPitch = (s16) clamps((f32) s_fpPitch + (f32) inY * 5.0f * sens,
+                                     -0x3F00, 0x3F00);
         }
     }
-    if (inX <= 12 && inX >= -12) {
-        /* Only recentre while standing still.  Chasing Mario's face angle
-         * while walking forms a feedback loop (facing is camera-relative), so
-         * each step re-aimed the view by the stick angle and looked like
-         * ~90-degree snapping.  A fixed camera + camera-relative left stick
-         * gives smooth continuous turning. */
-        if (gMarioState->forwardVel <= 1.0f) {
-            s_fpYaw = approach_s16_cam(s_fpYaw, gMarioState->faceAngle[1], 0x0080);
-        }
-    }
+    /* No auto-recentre: it felt like the view kept turning back to a default
+     * look target after the stick was released.  FPV yaw changes only while
+     * the look stick is pushed. */
+    (void) 0;
 
     dir[0] = sins(s_fpYaw) * coss(s_fpPitch);
     dir[1] = sins(s_fpPitch);

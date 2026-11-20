@@ -3099,8 +3099,10 @@ static void camera_portal_blend_step(void) {
         return;
     }
     if (sPortalCamBlend.frame == 0) {
-        vec3f_copy(sPortalCamBlend.toPos, gLakituState.pos);
-        vec3f_copy(sPortalCamBlend.toFocus, gLakituState.focus);
+        /* The vanilla camera may still be smoothing its old position here;
+         * blend toward the new goal so both position and rotation travel. */
+        vec3f_copy(sPortalCamBlend.toPos, gLakituState.goalPos);
+        vec3f_copy(sPortalCamBlend.toFocus, gLakituState.goalFocus);
     }
 
     sPortalCamBlend.frame++;

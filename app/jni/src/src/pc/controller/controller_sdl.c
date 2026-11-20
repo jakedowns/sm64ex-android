@@ -29,6 +29,9 @@
 #define MAX_MOUSEBUTTONS 8 // arbitrary
 
 extern int16_t rightx;
+
+/* Last time any physical controller input changed (for hiding touch controls). */
+volatile u32 g_hw_input_ms = 0;
 extern int16_t righty;
 
 #ifdef BETTERCAMERA
@@ -237,20 +240,38 @@ static void controller_sdl_read(OSContPad *pad) {
                 }
             }
         }
-        if (p1 && !p1Prev) portal_shoot(0);
-        if (p2 && !p2Prev) portal_shoot(1);
+        if (p1 && p2 && !p1Prev && !p2Prev) {
+            /* L+R together drops the portal gun instead of firing both. */
+            portal_drop_gun();
+        } else {
+            if (p1 && !p1Prev) portal_shoot(0);
+            if (p2 && !p2Prev) portal_shoot(1);
+        }
         p1Prev = p1;
         p2Prev = p2;
     }
 
-    /* Select / Back leaves first-person (the C-up path does the same). */
+    /* Select / Back: short press leaves first person; hold opens level select. */
     {
-        static int backPrev = 0;
+        static int backDown = 0, backHoldFired = 0;
+        static Uint32 backDownMs = 0;
         int back = SDL_GameControllerGetButton(sdl_cntrl, SDL_CONTROLLER_BUTTON_BACK);
-        if (back && !backPrev) {
-            camera_exit_first_person();
+        Uint32 now = SDL_GetTicks();
+        if (back && !backDown) {
+            backDown = 1;
+            backHoldFired = 0;
+            backDownMs = now;
         }
-        backPrev = back;
+        if (backDown && !backHoldFired && (now - backDownMs) > 700) {
+            backHoldFired = 1;
+            level_select_request_open(-1);
+        }
+        if (!back && backDown) {
+            backDown = 0;
+            if (!backHoldFired) {
+                camera_exit_first_person();
+            }
+        }
     }
 
     for (u32 i = 0; i < SDL_CONTROLLER_BUTTON_MAX; ++i) {
@@ -260,6 +281,7 @@ static void controller_sdl_read(OSContPad *pad) {
         if (pressed) {
 			last_joybutton = i;
 			inputChanged=true;
+			g_hw_input_ms = SDL_GetTicks();
 		}
     }
 
@@ -269,6 +291,13 @@ static void controller_sdl_read(OSContPad *pad) {
             buttons_down |= joy_binds[i][1];
 
     pad->button |= buttons_down;
+
+    /* LB is always the N64 L shoulder, even if an old sm64config.txt still
+     * binds key_z to the left shoulder button. */
+    if (SDL_GameControllerGetButton(sdl_cntrl, SDL_CONTROLLER_BUTTON_LEFTSHOULDER)) {
+        pad->button &= ~Z_TRIG;
+        pad->button |= L_TRIG;
+    }
 
     const u32 xstick = buttons_down & STICK_XMASK;
     const u32 ystick = buttons_down & STICK_YMASK;
@@ -324,7 +353,7 @@ static void controller_sdl_read(OSContPad *pad) {
     if (ltrig > 30 * 256) pad->button |= Z_TRIG;
     // Right trigger is the natural "Z" trigger on an Xbox-style pad (R stays on
     // the right shoulder button).
-    if (rtrig > 30 * 256) pad->button |= Z_TRIG;
+    if (rtrig > 30 * 256) pad->button |= R_TRIG;
 
     uint32_t magnitude_sq = (uint32_t)(leftx * leftx) + (uint32_t)(lefty * lefty);
     uint32_t stickDeadzoneActual = configStickDeadzone * DEADZONE_STEP;

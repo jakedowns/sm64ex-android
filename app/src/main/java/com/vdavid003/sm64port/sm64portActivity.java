@@ -117,14 +117,16 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     private LinearLayout effectsSubBar;
     private final java.util.List<TextView> effectsSubButtons = new java.util.ArrayList<>();
     private static final int EFFECTS_TOP_INDEX = 1;
-    private static final int[] EFFECT_PAGES = {1, 2, 3, 4, 5, 8};
-    private static final String[] EFFECT_LABELS = {"GENERIC", "MXAO", "C.DOF", "SSGI", "SSRTX", "SHADOW"};
+    private static final int[] EFFECT_PAGES = {1, 2, 3, 4, 5, 8, 9};
+    private static final String[] EFFECT_LABELS = {"GENERIC", "MXAO", "C.DOF", "SSGI", "SSRTX", "SHADOW", "SPLAT"};
     private int lastEffectPage = 1;
     private final java.util.List<TextView> fxDebugButtons = new java.util.ArrayList<>();
     private final java.util.List<Integer> fxDebugModes = new java.util.ArrayList<>();
     private TextView aoToggle, dofToggle, giToggle;
     private TextView camCycleButton;
     private TextView portalGunButton;
+    private TextView pauseLoopToggle;
+    private boolean hardPaused;
     private boolean aoOn, dofOn, giOn;
     private int fxDebug = 0;
     // SSRTX screen-space ray-traced reflections (opt-in: expensive).
@@ -145,6 +147,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     private boolean testOn = false;
     private boolean tintOn, zbufOn, wireOn, perfOn, swapOn, sameOn, nocullOn, flatOn, analogOn;
     private int splatMode;  // 0 off, 1 Mario, 2 trees, 3 all objects
+    private TextView splatTargetButton;
     private boolean stayOn = true, uiParallaxOn, uiBufOn;
     private boolean toeAutoOn = true;
     // Camera tracking (Leia eye/face tracking + tablet gyro).
@@ -203,9 +206,9 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
           + "  no standard camera SFX in FPV; TOEAUTO raycasts forward there.\n"
           + "Camera gestures (opt-in, CAMERA tab): two-finger pinch = FOV,\n"
           + "  drag Y = camera distance, drag X = camera height.\n"
-          + "Stereo: Aspect % in 0.1 steps, default 84% (21:25) with a live\n"
-          + "  ratio label; 3D width/height calibration and a magenta ASPECT\n"
-          + "  TEST square; 3D height defaults to 50% for the Leia panel.\n"
+          + "Stereo: Aspect % in 0.1 steps, default 83.4% with a live ratio\n"
+          + "  label; 3D width/height calibration and a magenta ASPECT TEST\n"
+          + "  square; 3D defaults 50% width / 100% height for the Leia panel.\n"
           + "Debug: inline -/+ buttons on every slider; ASPECT TEST; branch\n"
           + "  name shown in About, Changelog and the bottom status line.\n"
           + "Existing: 120 Hz interpolated rendering (30 Hz sim), UI after\n"
@@ -788,9 +791,9 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addTabButton(tabBar, "EFFECTS", -1);
         addTabButton(tabBar, "CAMERA", 6);
         addTabButton(tabBar, "ENH", 7);
-        addTabButton(tabBar, "CHANGELOG", 9);
-        addTabButton(tabBar, "EXPORT", 10);
-        addTabButton(tabBar, "ABOUT", 11);
+        addTabButton(tabBar, "CHANGELOG", 10);
+        addTabButton(tabBar, "EXPORT", 11);
+        addTabButton(tabBar, "ABOUT", 12);
         panel.addView(tabBar);
         addEffectsSubBar(panel);
 
@@ -827,12 +830,14 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addSlider("Zero parallax", -100, 100, 40, " px", 1);
         addSlider("Depth", -200, 200, 10, " %", 2);
         addSlider("UI depth", -60, 60, 0, " px", 38);
+        addSlider("UI size", 50, 160, 100, " %", 58);
         addSlider("Toe in/out", -100, 100, 0, " %", 17);
-        addSlider("Aspect % (in)", 10, 4000, 840, "", 57);
+        addSlider("Aspect % (in)", 10, 4000, 834, "", 57);
         addSlider("Eye margin%", 50, 100, 100, " %", 14);
         addIntSlider("Ctl opacity", 0, 100, overlayAlphaPct, new java.util.function.IntConsumer() {
             @Override public void accept(int v) { applyOverlayAlpha(v); }
         });
+        controls.addView(makePinchToggle());
         // Hidden for now (kept for later): V%, W-px, H-shift%, V-shift.
         outVal[1] = 100; outVal[3] = 0; outVal[4] = 0;
         startDebugReadout(panel);
@@ -941,6 +946,13 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                 }
                 for (int i = 0; i < 6; i++) {
                     if (outBars[i] != null) outBars[i].setProgress(outDefs[i]);
+                }
+                if (splatTargetButton != null) {
+                    splatMode = 0;
+                    nativeSetStereoInt(60, 0);
+                    splatTargetButton.setText(splatTargetLabel());
+                    splatTargetButton.setTextColor(0xFF888888);
+                    refreshTabStyles();
                 }
                 leiaView.setScaleX(1f); leiaView.setScaleY(1f);
                 leiaView.setTranslationX(0); leiaView.setTranslationY(0);
@@ -1056,7 +1068,8 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     /** Which top-level tabs show "feature enabled" in green. */
     private boolean tabFeatureOn(int i) {
         switch (i) {
-            case 1: return aoOn || dofOn || giOn || ssrtxOn || shadowOn; // EFFECTS
+            case 1: return aoOn || dofOn || giOn || ssrtxOn || shadowOn
+                    || splatMode != 0;                               // EFFECTS
             case 2: return hdtOn || gyroOn;                              // CAMERA
             default: return false;
         }
@@ -1069,6 +1082,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             case 3: return giOn;     // SSGI
             case 4: return ssrtxOn;  // SSRTX
             case 5: return shadowOn; // SHADOW
+            case 6: return splatMode != 0; // SPLAT
             default: return false;   // GENERIC
         }
     }
@@ -1121,6 +1135,15 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         grid.setOrientation(android.widget.GridLayout.HORIZONTAL);
         content.addView(grid);
         return content;
+    }
+
+    private String splatTargetLabel() {
+        switch (splatMode) {
+            case 1: return "SPLAT TARGET: MARIO";
+            case 2: return "SPLAT TARGET: TREES";
+            case 3: return "SPLAT TARGET: ALL OBJECTS";
+            default: return "SPLAT TARGET: OFF";
+        }
     }
 
     private void buildFxTabs() {
@@ -1191,24 +1214,12 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         controls.addView(camTop, 0);
 
-        final TextView pinchTgl = new TextView(this);
-        pinchTgl.setText("PINCH CAM: " + (TouchOverlay.camGesturesEnabled ? "ON" : "OFF"));
-        pinchTgl.setTextSize(15);
-        pinchTgl.setGravity(Gravity.CENTER);
-        pinchTgl.setPadding(dp(4), dp(8), dp(4), dp(8));
-        pinchTgl.setTextColor(TouchOverlay.camGesturesEnabled ? 0xFF66FF99 : 0xFF888888);
-        pinchTgl.setOnClickListener(v -> {
-            TouchOverlay.camGesturesEnabled = !TouchOverlay.camGesturesEnabled;
-            pinchTgl.setText("PINCH CAM: " + (TouchOverlay.camGesturesEnabled ? "ON" : "OFF"));
-            pinchTgl.setTextColor(TouchOverlay.camGesturesEnabled ? 0xFF66FF99 : 0xFF888888);
-            Log.i(TAG, "PINCH_CAM=" + TouchOverlay.camGesturesEnabled);
-        });
-        controls.addView(pinchTgl, 3);
+        controls.addView(makePinchToggle(), 0);
 
         addCamSlider("Cam distance", 1, 1500, 700, " u", 46);
         addCamSlider("FOV %", 1, 400, 100, " %", 20);
-        addCamSlider("3D height", 50, 150, 50, " %", 50);
-        addCamSlider("3D width", 50, 150, 100, " %", 51);
+        addCamSlider("3D height", 50, 150, 100, " %", 50);
+        addCamSlider("3D width", 50, 150, 50, " %", 51);
         addCamSlider("Cam height", 0, 400, 110, " u", 47);
         addCamSlider("Cam recentre", 0, 200, 50, " %", 48);
         addCamSlider("Cam sensitivity", 10, 300, 100, " %", 49);
@@ -1308,6 +1319,19 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addEnhButton("RESET PORTAL TEST", () -> debugPtc("reset"));
         addEnhButton("CALIBRATE JUMPS", () -> debugPtc("calibrate"));
         portalGunButton = addEnhButton(portalGunLabel(), this::togglePortalGun);
+        addEnhButton("RESET TO LOGO", this::resetToLogo);
+        pauseLoopToggle = new TextView(this);
+        pauseLoopToggle.setText("PAUSE GAME LOOP: OFF");
+        pauseLoopToggle.setTextSize(16);
+        pauseLoopToggle.setTextColor(0xFF888888);
+        pauseLoopToggle.setPadding(dp(4), dp(10), dp(4), dp(10));
+        pauseLoopToggle.setOnClickListener(v -> {
+            hardPaused = !hardPaused;
+            nativeSetHardPause(hardPaused ? 1 : 0);
+            pauseLoopToggle.setText("PAUSE GAME LOOP: " + (hardPaused ? "ON" : "OFF"));
+            pauseLoopToggle.setTextColor(hardPaused ? 0xFF66FF99 : 0xFF888888);
+        });
+        controls.addView(pauseLoopToggle);
         enhColumnTarget = null;
 
         // --- Realtime dynamic shadows (quality / performance) ---
@@ -1339,6 +1363,38 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addShadowSlider("Update every", 1, 4, 1, " fr", 2);
         // Push the current values once so the native defaults match the labels.
         nativeSetShadow(1, shadowRes);
+
+        // --- Splat rendering (first slice, plan-cool-additions §5.6) ---
+        beginTab();
+        splatTargetButton = new TextView(this);
+        splatTargetButton.setText(splatTargetLabel());
+        splatTargetButton.setTextSize(16);
+        splatTargetButton.setTextColor(splatMode != 0 ? 0xFF66FF99 : 0xFF888888);
+        splatTargetButton.setPadding(dp(4), dp(10), dp(4), dp(10));
+        splatTargetButton.setOnClickListener(v -> {
+            splatMode = (splatMode + 1) % 4;
+            nativeSetStereoInt(60, splatMode);
+            splatTargetButton.setText(splatTargetLabel());
+            splatTargetButton.setTextColor(splatMode != 0 ? 0xFF66FF99 : 0xFF888888);
+            refreshTabStyles();
+            Log.i(TAG, "SPLAT target=" + splatMode);
+        });
+        controls.addView(splatTargetButton);
+        addSlider("Splat size", 1, 64, 14, " px", 61);
+        addSlider("Opacity", 0, 100, 100, " %", 62);
+        addSlider("Softness", 0, 100, 70, " %", 63);
+        TextView splatHint = new TextView(this);
+        splatHint.setTextSize(13);
+        splatHint.setTextColor(0xFFAACCFF);
+        splatHint.setPadding(dp(4), dp(10), dp(4), dp(4));
+        splatHint.setText("Point-sprite pass over tagged object geometry."
+                + " Mario is the verified target; trees currently disappear"
+                + " at distance (see SPLAT-PROTOTYPE.md). Knobs 60-63.");
+        controls.addView(splatHint);
+        nativeSetStereoInt(60, splatMode);
+        nativeSetStereoInt(61, 14);
+        nativeSetStereoInt(62, 100);
+        nativeSetStereoInt(63, 70);
 
         // --- Changelog ---
         beginTab();
@@ -1726,6 +1782,25 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             stereoValues.put(key, value);
             nativeSetStereoInt(key, value);
         }
+    }
+
+    /** The two-finger camera gesture enable toggle (also mirrored in CAMERA). */
+    private TextView makePinchToggle() {
+        final TextView t = new TextView(this);
+        t.setText("CAMERA GESTURES (PINCH): "
+                + (TouchOverlay.camGesturesEnabled ? "ON" : "OFF"));
+        t.setTextSize(15);
+        t.setGravity(Gravity.CENTER);
+        t.setPadding(dp(4), dp(8), dp(4), dp(8));
+        t.setTextColor(TouchOverlay.camGesturesEnabled ? 0xFF66FF99 : 0xFF888888);
+        t.setOnClickListener(v -> {
+            TouchOverlay.camGesturesEnabled = !TouchOverlay.camGesturesEnabled;
+            t.setText("CAMERA GESTURES (PINCH): "
+                    + (TouchOverlay.camGesturesEnabled ? "ON" : "OFF"));
+            t.setTextColor(TouchOverlay.camGesturesEnabled ? 0xFF66FF99 : 0xFF888888);
+            Log.i(TAG, "PINCH_CAM=" + TouchOverlay.camGesturesEnabled);
+        });
+        return t;
     }
 
     private TextView makeCamToggle(String name, final int key, boolean initial) {
@@ -2518,6 +2593,13 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                             + "  cam=" + (nativeGetCamMode() != 0 ? "free" : "vanilla"));
                 }
                 if (touchOverlay != null) {
+                    long sinceTouch = System.currentTimeMillis() - TouchOverlay.lastTouchMs;
+                    int hwAge = nativeHwInputAgeMs();
+                    if (hwAge < 1200 && sinceTouch > 1200) {
+                        touchOverlay.setControlsHidden(true);
+                    } else if (sinceTouch < 1200 || hwAge > 2500) {
+                        touchOverlay.setControlsHidden(false);
+                    }
                     touchOverlay.invalidate();   // refresh gun reticle / P1-P2
                 }
                 if (portalGunButton != null) {
@@ -2593,6 +2675,9 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     static native int nativeGetMarioPos(int axis);
     static native int nativeGetPortalField(int which, int field);
     static native void nativeGivePortalGun();
+    static native int nativeHwInputAgeMs();
+    static native void nativeSetHardPause(int on);
+    static native void nativeResetToIntro();
     static native void nativeDropPortalGun();
     static native void nativePtcCommand(String action);
     static native String nativePtcStatus();
@@ -2642,6 +2727,13 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         runOnUiThread(() -> {
             if (debugView != null) {
                 if (touchOverlay != null) {
+                    long sinceTouch = System.currentTimeMillis() - TouchOverlay.lastTouchMs;
+                    int hwAge = nativeHwInputAgeMs();
+                    if (hwAge < 1200 && sinceTouch > 1200) {
+                        touchOverlay.setControlsHidden(true);
+                    } else if (sinceTouch < 1200 || hwAge > 2500) {
+                        touchOverlay.setControlsHidden(false);
+                    }
                     touchOverlay.invalidate();   // refresh gun reticle / P1-P2
                 }
                 debugView.setTextColor(busyOn ? 0xFFFF5555 : 0xFFAAFFAA);
@@ -2666,6 +2758,17 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     void debugPortal(int which) {
         nativeShootPortal(which);
         Log.i(TAG, "PORTAL shoot " + which + " count=" + nativeGetPortalCount());
+    }
+
+    private void resetToLogo() {
+        hardPaused = false;
+        nativeSetHardPause(0);
+        nativeResetToIntro();
+        if (pauseLoopToggle != null) {
+            pauseLoopToggle.setText("PAUSE GAME LOOP: OFF");
+            pauseLoopToggle.setTextColor(0xFF888888);
+        }
+        Log.i(TAG, "RESET TO LOGO");
     }
 
     void debugGiveGun() {

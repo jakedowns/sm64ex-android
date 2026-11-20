@@ -42,6 +42,10 @@ public class TouchOverlay extends View {
     // Two-finger camera gestures: pinch = FOV, drag Y = cam distance, drag X = cam height.
     // Disabled by default; the CAMERA tab has the enable toggle.
     public static boolean camGesturesEnabled = false;
+    /* Hardware input hides the on-screen controls; touching the screen brings
+     * them back. */
+    public static volatile long lastTouchMs = 0;
+    private boolean controlsHidden;
     private boolean camGesture;
     private int camPtr1 = -1, camPtr2 = -1;
     private float gSpan0, gCx0, gCy0;
@@ -258,8 +262,20 @@ public class TouchOverlay extends View {
         }
     }
 
+    public void setControlsHidden(boolean hidden) {
+        if (controlsHidden != hidden) {
+            controlsHidden = hidden;
+            invalidate();
+        }
+    }
+
     @Override
     public boolean onTouchEvent(MotionEvent e) {
+        lastTouchMs = System.currentTimeMillis();
+        if (controlsHidden) {
+            controlsHidden = false;
+            invalidate();
+        }
         if (btnPos[0][0] == 0) layoutButtons();
         float x = e.getX(), y = e.getY();
         int action = e.getActionMasked();
@@ -433,6 +449,9 @@ public class TouchOverlay extends View {
     @Override
     protected void onDraw(Canvas c) {
         super.onDraw(c);
+        if (controlsHidden) {
+            return;
+        }
         if (btnPos[0][0] == 0) layoutButtons();
 
         // One layer for the whole control set so "Ctl opacity" can fade it.

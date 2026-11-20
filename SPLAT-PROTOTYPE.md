@@ -32,6 +32,10 @@ sorting.
 
 `SPLAT` adb toggle cycles target `0 → 1 → 2 → 3 → 0`.
 
+The same controls are available in the on-screen debug panel under the
+**SPLAT** tab: a target cycle button plus size / opacity / softness sliders.
+`RESET` returns the target to OFF and the sliders to their defaults.
+
 ```bash
 B="am broadcast -n com.vdavid003.sm64port/.DebugReceiver -a com.vdavid003.sm64port.CMD"
 adb shell $B --es cmd toggle --es name SPLAT

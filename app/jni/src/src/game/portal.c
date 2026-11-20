@@ -215,11 +215,31 @@ static void portal_shoot_ray(int which, Vec3f orig, Vec3f rayDir) {
     vnorm3(n);
     portal_basis_from_normal(n, tan, bitan);
 
+    /* Floor/ceiling portals: rotate the tall axis of the ellipse towards the
+     * camera so it reads as a doorway in front of the player instead of a
+     * fixed east-west oval. */
+    if (fabsf(n[1]) > 0.7f) {
+        Vec3f look, flat;
+        float d;
+        vec3f_copy(look, gLakituState.focus);
+        vec3f_sub(look, gLakituState.pos);
+        d = vdot3(look, n);
+        flat[0] = look[0] - n[0] * d;
+        flat[1] = look[1] - n[1] * d;
+        flat[2] = look[2] - n[2] * d;
+        if (vdot3(flat, flat) > 4.0f) {
+            vnorm3(flat);
+            vec3f_copy(bitan, flat);
+            vcross3(tan, bitan, n);
+            vnorm3(tan);
+        }
+    }
+
     vec3f_copy(centre, hit);
     // Nudge the portal off the surface a little so it does not z-fight.
-    centre[0] += n[0] * 1.5f;
-    centre[1] += n[1] * 1.5f;
-    centre[2] += n[2] * 1.5f;
+    centre[0] += n[0] * 4.0f;
+    centre[1] += n[1] * 4.0f;
+    centre[2] += n[2] * 4.0f;
 
     // Edge fitting: push the ellipse away from edges until every rim probe
     // still lands on the same surface; shrink it if that is not enough.
@@ -251,9 +271,9 @@ static void portal_shoot_ray(int which, Vec3f orig, Vec3f rayDir) {
             }
             if (!improved) {
                 vec3f_copy(centre, hit);
-                centre[0] += n[0] * 1.5f;
-                centre[1] += n[1] * 1.5f;
-                centre[2] += n[2] * 1.5f;
+                centre[0] += n[0] * 4.0f;
+                centre[1] += n[1] * 4.0f;
+                centre[2] += n[2] * 4.0f;
             }
         }
         if (!fitted) {
@@ -408,28 +428,28 @@ static void portal_teleport(int srcIdx, const Vec3f at) {
     portal_rotate_vec(src, dst, vel, newVel);
     vec3f_copy(gMarioState->vel, newVel);
 
-    // Facing: turn by the difference of the two portals' tangents.
-    {
-        s16 fromYaw = atan2s(src->tan[2], src->tan[0]);
-        s16 toYaw = atan2s(dst->tan[2], dst->tan[0]);
-        s16 delta = (s16)(toYaw - fromYaw) + (s16)0x8000;
-        gMarioState->faceAngle[1] = (s16)(gMarioState->faceAngle[1] + delta);
-        gMarioState->marioObj->oMoveAngleYaw = gMarioState->faceAngle[1];
-    }
-
     // This fork rebuilds the horizontal air velocity from forwardVel every
     // tick (update_air_without_turn), which would erase a portal launch.
-    // Store the rotated momentum in forwardVel and face the exit direction so
-    // the airborne step reproduces the same trajectory.
+    // Store the rotated momentum in forwardVel, then face out of the exit
+    // surface: the normal points away from the wall/floor the portal sits on.
     {
         f32 hsp = sqrtf(newVel[0] * newVel[0] + newVel[2] * newVel[2]);
+        f32 nh = sqrtf(dst->normal[0] * dst->normal[0]
+                     + dst->normal[2] * dst->normal[2]);
+        s16 exitYaw;
+
         gMarioState->forwardVel = hsp;
-        if (hsp > 1.0f) {
-            // SM64 yaw is measured from +Z: direction (sins, coss), so the
-            // yaw for a world velocity is atan2s(vz, vx).
-            gMarioState->faceAngle[1] = atan2s(newVel[2], newVel[0]);
-            gMarioState->marioObj->oMoveAngleYaw = gMarioState->faceAngle[1];
+        if (nh > 0.1f) {
+            /* Wall / ramp: face the way the destination portal points. */
+            exitYaw = atan2s(dst->normal[2], dst->normal[0]);
+        } else if (hsp > 1.0f) {
+            /* Floor/ceiling: the normal is vertical; use the exit velocity. */
+            exitYaw = atan2s(newVel[2], newVel[0]);
+        } else {
+            exitYaw = gMarioState->faceAngle[1];
         }
+        gMarioState->faceAngle[1] = exitYaw;
+        gMarioState->marioObj->oMoveAngleYaw = exitYaw;
     }
 
     // Re-aim the camera at the new position, but ease the rendered handoff so
@@ -666,8 +686,6 @@ static void mat4_world_to_local(float out[4][4], const Vec3f pos, const Vec3f ta
 /* Build the camera-space portal transform and the source fan geometry. */
 static void portal_view_update(const Mat4 view) {
     struct Portal *a, *b, *src, *dst;
-    Vec3f toCam;
-    float d[2];
     int i, best = -1;
 
     g_portal_view.active = 0;
@@ -675,16 +693,31 @@ static void portal_view_update(const Mat4 view) {
         return;
     }
 
-    /* Show the portal the camera is actually looking into. */
-    d[0] = d[1] = -1e9f;
-    for (i = 0; i < 2; i++) {
-        if (!s_portal[i].active) continue;
-        toCam[0] = gLakituState.pos[0] - s_portal[i].pos[0];
-        toCam[1] = gLakituState.pos[1] - s_portal[i].pos[1];
-        toCam[2] = gLakituState.pos[2] - s_portal[i].pos[2];
-        d[i] = vdot3(toCam, s_portal[i].normal);
-        if (d[i] > 0.0f && (best < 0 || d[i] > d[best])) {
-            best = i;
+    /* Show the portal only when the view ray actually passes through its
+     * ellipse.  The old "camera in front of the plane" test picked the
+     * farthest portal, so the one being looked at stayed a solid fan. */
+    {
+        Vec3f look, hit, rel;
+        float bestT = 1e30f;
+        vec3f_copy(look, gLakituState.focus);
+        vec3f_sub(look, gLakituState.pos);
+        for (i = 0; i < 2; i++) {
+            float denom, t;
+            if (!s_portal[i].active) continue;
+            denom = vdot3(look, s_portal[i].normal);
+            if (fabsf(denom) < 1e-5f) continue;
+            rel[0] = s_portal[i].pos[0] - gLakituState.pos[0];
+            rel[1] = s_portal[i].pos[1] - gLakituState.pos[1];
+            rel[2] = s_portal[i].pos[2] - gLakituState.pos[2];
+            t = vdot3(rel, s_portal[i].normal) / denom;
+            if (t <= 0.0f) continue;
+            hit[0] = gLakituState.pos[0] + look[0] * t;
+            hit[1] = gLakituState.pos[1] + look[1] * t;
+            hit[2] = gLakituState.pos[2] + look[2] * t;
+            if (portal_point_inside(&s_portal[i], hit) && t < bestT) {
+                bestT = t;
+                best = i;
+            }
         }
     }
     if (best < 0) {
@@ -769,6 +802,8 @@ void portal_render(void) {
 
     gSPSetGeometryMode(gDisplayListHead++, G_ZBUFFER);
     gSPClearGeometryMode(gDisplayListHead++, G_LIGHTING);
+    /* Portals are visible from both sides (e.g. the back of a floor portal). */
+    gSPClearGeometryMode(gDisplayListHead++, G_CULL_FRONT | G_CULL_BACK);
     gDPSetCombineMode(gDisplayListHead++, G_CC_SHADE, G_CC_SHADE);
     gDPSetRenderMode(gDisplayListHead++, G_RM_AA_ZB_XLU_SURF, G_RM_AA_ZB_XLU_SURF2);
 
@@ -792,6 +827,7 @@ void portal_render(void) {
     draw_held_gun(view);
     portal_draw_reticle(view);
 
+    gSPSetGeometryMode(gDisplayListHead++, G_CULL_BACK);
     gSPClearGeometryMode(gDisplayListHead++, G_ZBUFFER);
 }
 

@@ -33,6 +33,9 @@
 /* Through-portal view: the portal pass is a second execution of the scene
  * display list with a camera-space transform. */
 int gfx_portal_pass = 0;
+/* Last camera perspective projection, for the portal overlay: by the time the
+ * overlay runs, rsp.P_matrix may hold the skybox/HUD ortho. */
+float gfx_last_persp_proj[4][4];
 extern int gfx_opengl_portal_begin(int w, int h);
 extern void gfx_opengl_portal_end(void);
 extern void gfx_opengl_portal_overlay(int eye);
@@ -277,8 +280,9 @@ int gfx_stereo_fit = 2;    // 0 = fill eye, 1 = 4:3 fit, 2 = 16:9 fit (best)
 int gfx_stereo_aspect_pct = 0;
 int gfx_stereo_aspect_tenths = 0;   // key 57: tenths of a percent (0.1% steps)
 /* Debug calibration for panel/weave pixel aspect: scales 3D Y only. */
-float gfx_geo_y_scale = 0.5f;   // calibrated for the Leia panel/weave
-float gfx_geo_x_scale = 1.0f;
+extern s16 gCurrAreaIndex;
+float gfx_geo_y_scale = 1.0f;   // calibrated default (height 100%)
+float gfx_geo_x_scale = 0.5f;   // calibrated default (width 50%)
 int gfx_stereo_fov_pct = 100;   // camera FOV scale
 int gfx_stereo_2d = 0;          // 2D mode: keep the stereo path, zero the parallax  // 0 = auto; else aspect*100 for the eye canvas
 int gfx_stereo_toe_pct = 0;    // toe-in (-) / toe-out (+) camera canting
@@ -958,7 +962,7 @@ int gfx_get_portal_view_proj(float out[4][4]) {
     if (!g_portal_view.active) {
         return 0;
     }
-    gfx_matrix_mul(out, g_portal_view.view, rsp.P_matrix);
+    gfx_matrix_mul(out, g_portal_view.view, gfx_last_persp_proj);
     return 1;
 }
 
@@ -1079,6 +1083,9 @@ static void gfx_sp_matrix(uint8_t parameters, const int32_t *addr) {
             memcpy(rsp.P_matrix, matrix, sizeof(matrix));
             /* guPerspective() sets m[2][3] = -1; guOrtho() leaves it 0. */
             rsp.proj_is_perspective = (matrix[2][3] < -0.5f);
+            if (rsp.proj_is_perspective) {
+                memcpy(gfx_last_persp_proj, matrix, sizeof(matrix));
+            }
         } else {
             gfx_matrix_mul(rsp.P_matrix, matrix, rsp.P_matrix);
         }
@@ -1115,8 +1122,20 @@ static void gfx_sp_pop_matrix(uint32_t count) {
     }
 }
 
-static float gfx_adjust_x_for_aspect_ratio(float x) {
-    return x * (4.0f / 3.0f) / ((float)gfx_current_dimensions.width / (float)gfx_current_dimensions.height);
+/* 4:3 UI fit with square pixels:
+ * - wide canvas: keep the height and compress x (pillarbox)
+ * - narrow canvas: keep the width and compress y (letterbox), so dialog
+ *   boxes and HUD text are never cropped at tall aspect settings. */
+float gfx_ui_fit_scale = 1.0f;   // UI size %, 100 = exact 4:3 fit
+
+static float gfx_ui_x_fit(void) {
+    float a = (float)gfx_current_dimensions.width / (float)gfx_current_dimensions.height;
+    return (a >= (4.0f / 3.0f) ? (4.0f / 3.0f) / a : 1.0f) * gfx_ui_fit_scale;
+}
+
+static float gfx_ui_y_fit(void) {
+    float a = (float)gfx_current_dimensions.width / (float)gfx_current_dimensions.height;
+    return (a < (4.0f / 3.0f) ? a / (4.0f / 3.0f) : 1.0f) * gfx_ui_fit_scale;
 }
 
 static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx *vertices) {
@@ -1135,14 +1154,19 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx *verti
         if (!gfx_shadow_pass) {
             if (!rsp.proj_is_perspective) {
                 /* 2D/UI ortho only: the 3D perspective already has the aspect. */
-                x = gfx_adjust_x_for_aspect_ratio(x);
+                x *= gfx_ui_x_fit();
+                if (gfx_ui_pass) {
+                    y *= gfx_ui_y_fit();
+                }
                 /* The skybox/2D scene ortho gets the panel correction too;
                  * the UI pass stays at native 1:1. */
-                if (!gfx_ui_pass && gfx_geo_y_scale != 1.0f) {
+                if (!gfx_ui_pass && gCurrAreaIndex > 0 && gfx_geo_y_scale != 1.0f) {
                     y *= gfx_geo_y_scale;
                 }
-            } else {
-                /* Panel/weave calibration: 3D only, UI stays 1:1. */
+            } else if (gCurrAreaIndex > 0) {
+                /* Panel/weave calibration: gameplay 3D only.  The intro
+                 * (logo, Mario head, file select) is a 2D/4:3 presentation and
+                 * must render at 100% width/height. */
                 if (gfx_geo_x_scale != 1.0f) x *= gfx_geo_x_scale;
                 if (gfx_geo_y_scale != 1.0f) y *= gfx_geo_y_scale;
             }
@@ -1776,8 +1800,12 @@ static void gfx_draw_rectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_t lr
     lrxf = lrxf / (4.0f * HALF_SCREEN_WIDTH) - 1.0f;
     lryf = -(lryf / (4.0f * HALF_SCREEN_HEIGHT)) + 1.0f;
     
-    ulxf = gfx_adjust_x_for_aspect_ratio(ulxf);
-    lrxf = gfx_adjust_x_for_aspect_ratio(lrxf);
+    if (gfx_ui_pass) {
+        ulxf *= gfx_ui_x_fit();
+        lrxf *= gfx_ui_x_fit();
+        ulyf *= gfx_ui_y_fit();
+        lryf *= gfx_ui_y_fit();
+    }
 
     /* HUD icons/text use texture rectangles, which bypass the projection
      * matrix, so apply the UI depth parallax here as well.  The reticle has
