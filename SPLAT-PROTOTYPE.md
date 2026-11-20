@@ -59,6 +59,10 @@ Suggested test: Bob-omb Battlefield (`target=2`, trees), or the castle lobby
 - Fixed pixel size: no distance attenuation or per-splat anisotropy yet.
 - One splat per triangle, round-robin corner: density follows the source
   tessellation; sparse meshes look sparse.
+- `target=1` (Mario) is verified on device. `target=2` (trees) currently removes
+  the trees without visible flecks at distance — their master-list blend/depth
+  state is not reproduced by the point pass. Next step: capture per-list blend
+  mode and force depth-write for splats.
 - No G-buffer albedo sampling or build-time bake (plan §5.6.2 options 1–2), so
   motion/temporal stability is not addressed.
 - Alpha blending relies on the object draw's blend state; splat alpha is forced

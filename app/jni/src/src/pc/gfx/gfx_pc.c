@@ -28,13 +28,6 @@
 #include "../configfile.h"
 #include "../fs/fs.h"
 
-#ifdef __ANDROID__
-#include <android/log.h>
-#define SPLAT_LOG(...) __android_log_print(ANDROID_LOG_INFO, "SM64SPLAT", __VA_ARGS__)
-#else
-#define SPLAT_LOG(...) do {} while (0)
-#endif
-
 #define SUPPORT_CHECK(x) assert(x)
 
 // SCALE_M_N: upscale/downscale M-bit integer to N-bit
