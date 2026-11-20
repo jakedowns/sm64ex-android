@@ -297,7 +297,7 @@ static void geo_append_display_list(void *displayList, s16 layer) {
         // interpolation together with the previous tick's transform.
         hfr_record(listNode->transform, gMatStackPrev[gMatStackIndex]);
         listNode->displayList = displayList;
-        listNode->splat = gSplatCurrentObject;
+        listNode->splat = gSplatCurrentObject || (gfx_splat_target == 3);
         listNode->next = 0;
         if (gCurGraphNodeMasterList->listHeads[layer] == 0) {
             gCurGraphNodeMasterList->listHeads[layer] = listNode;

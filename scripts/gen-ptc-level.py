@@ -372,7 +372,10 @@ def emit_solid():
         for fname, pts, _n in box_faces(x0, base, z0, x1, top, z1):
             rgb = top_rgb if fname == "top" else side_rgb
             for p in pts:
-                lines.append(vtx(*p, 0, 0, rgb))
+                t = (p[1] - base) / max(1, top - base)
+                shade = 0.60 + 0.40 * t
+                c = tuple(min(255, int(v * shade)) for v in rgb)
+                lines.append(vtx(*p, 0, 0, c))
         lines += ["};", ""]
 
     # Ramp wedge: four vertices per face, wound by ramp_faces().
@@ -380,7 +383,10 @@ def emit_solid():
     for fname, pts, _n in ramp_faces():
         rgb = (190, 170, 120) if fname == "ramp_top" else (100, 90, 65)
         for p in pts:
-            lines.append(vtx(*p, 0, 0, rgb))
+            t = (p[1] - 500) / 300.0
+            shade = 0.60 + 0.40 * max(0.0, min(1.0, t))
+            c = tuple(min(255, int(v * shade)) for v in rgb)
+            lines.append(vtx(*p, 0, 0, c))
     lines += ["};", ""]
 
     # Portal target panels, one unit in front of each wall.

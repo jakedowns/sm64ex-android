@@ -230,6 +230,35 @@ void boxphys_update(void) {
         });
     }
 
+    /* Punch / kick impact: a fresh attack action shoves nearby cubes. */
+    {
+        static int s_attackCooldown;
+        u32 a = gMarioState != NULL ? gMarioState->action : 0;
+        int attacking = (a == ACT_PUNCHING || a == ACT_MOVE_PUNCHING
+                      || a == ACT_JUMP_KICK || a == ACT_SLIDE_KICK);
+        if (s_attackCooldown > 0) s_attackCooldown--;
+        if (attacking && s_attackCooldown == 0 && gMarioState != NULL) {
+            float fx = sins(gMarioState->faceAngle[1]);
+            float fz = coss(gMarioState->faceAngle[1]);
+            int b;
+            for (b = 0; b < s_boxCount; b++) {
+                b3Pos bp = b3Body_GetPosition(s_boxes[b]);
+                float dx = bp.x / BP_SCALE - gMarioState->pos[0];
+                float dz = bp.z / BP_SCALE - gMarioState->pos[2];
+                float d2 = dx * dx + dz * dz;
+                if (d2 < 190.0f * 190.0f) {
+                    float inv = 1.0f / sqrtf(d2 + 1.0f);
+                    if (dx * inv * fx + dz * inv * fz > -0.25f) {
+                        b3Body_ApplyLinearImpulseToCenter(s_boxes[b],
+                            (b3Vec3){ fx * 900.0f + dx * 2.0f, 280.0f,
+                                      fz * 900.0f + dz * 2.0f }, true);
+                    }
+                }
+            }
+            s_attackCooldown = 10;
+        }
+    }
+
     s_tick++;
     b3World_Step(s_world, 1.0f / 30.0f, 6);
 
