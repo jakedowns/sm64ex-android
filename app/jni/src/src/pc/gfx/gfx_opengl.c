@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <math.h>
 
 // Stereo state lives in gfx_pc.c (set by the Leia bridge).
 extern int gfx_stereo_enabled;
@@ -59,6 +60,7 @@ extern int gfx_splat_active;
 extern int gfx_splat_size_px;
 extern int gfx_splat_opacity;
 extern int gfx_splat_softness;
+extern int gfx_splat_density;
 
 struct ShaderProgram {
     uint32_t shader_id;
@@ -742,6 +744,7 @@ extern int gfx_splat_active;
 extern int gfx_splat_size_px;
 extern int gfx_splat_opacity;
 extern int gfx_splat_softness;
+extern int gfx_splat_density;
 static int s_shadow_map_valid = 0;    // set by gfx_opengl_shadow_end()
 
 /* Shadow map FBO: RGBA8 colour with packed depth + a depth renderbuffer. */
@@ -1883,17 +1886,101 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
 #ifdef __ANDROID__
     wire_now = wire_now && !s_shadow_rendering;
 #endif
-    if (gfx_splat_active) {
-        // Splat pass (first slice): one camera-facing point sprite per triangle.
-        // A single corner is picked (round-robin, deduped) so shared vertices do
-        // not blend several times at the same depth.
-        static GLuint s_splat_ibo = 0;
-        static GLsizei s_splat_cap = 0;
-        static GLushort *cpu_idx = NULL;
-        static size_t cpu_cap = 0;
-        size_t need = buf_vbo_num_tris;
+    if (gfx_splat_active && opengl_prg != NULL) {
+        // Splat pass: one point sprite per triangle, plus interpolated points on
+        // large triangles.  Density is measured in screen pixels so walls and
+        // floors (two huge triangles each) get an even Poisson-ish fill.
+        static float *s_splat_out = NULL;
+        static size_t s_splat_out_cap = 0;
+        static int *s_splat_extra = NULL;
+        static size_t s_splat_extra_cap = 0;
+        const size_t nf = opengl_prg->num_floats;
+        const size_t nt = buf_vbo_num_tris;
+        const size_t max_points = 120000;
+        GLint vp[4] = { 0, 0, 1, 1 };
+        size_t total = 0, t;
 
-        if (opengl_prg != NULL) {
+        glGetIntegerv(GL_VIEWPORT, vp);
+        {
+            float vw = vp[2] > 0 ? (float)vp[2] : 1.0f;
+            float vh = vp[3] > 0 ? (float)vp[3] : 1.0f;
+            float spacing = (float)gfx_splat_size_px * 1.6f;
+            float inv_spacing2 = 1.0f / (spacing * spacing + 1.0f);
+            float density = (float)gfx_splat_density / 100.0f;
+
+            if (s_splat_extra_cap < nt) {
+                int *p = (int *)realloc(s_splat_extra, nt * sizeof(int));
+                if (p == NULL) return;
+                s_splat_extra = p;
+                s_splat_extra_cap = nt;
+            }
+
+            for (t = 0; t < nt; t++) {
+                const float *v = buf_vbo + t * 3 * nf;
+                int extra = 0;
+
+                if (density > 0.0f && nf >= 4 && v[3] > 0.0001f
+                    && v[nf + 3] > 0.0001f && v[2 * nf + 3] > 0.0001f) {
+                    float ax = v[0] / v[3], ay = v[1] / v[3];
+                    float bx = v[nf] / v[nf + 3], by = v[nf + 1] / v[nf + 3];
+                    float cx = v[2 * nf] / v[2 * nf + 3], cy = v[2 * nf + 1] / v[2 * nf + 3];
+                    float area = 0.5f * fabsf((bx - ax) * (cy - ay) - (by - ay) * (cx - ax));
+                    float pixels = area * vw * vh;
+                    extra = (int)(pixels * density * inv_spacing2);
+                    if (extra > 400) extra = 400;
+                }
+                if (total + 1 + (size_t)extra > max_points) {
+                    extra = (total + 1 >= max_points) ? 0
+                          : (int)(max_points - total - 1);
+                }
+                s_splat_extra[t] = extra;
+                total += 1 + (size_t)extra;
+                if (total >= max_points) break;
+            }
+            for (; t < nt; t++) s_splat_extra[t] = 0;
+            total = 0;
+            for (t = 0; t < nt; t++) total += 1 + (size_t)s_splat_extra[t];
+        }
+
+        if (total > 0 && nf > 0) {
+            if (s_splat_out_cap < total * nf) {
+                float *p = (float *)realloc(s_splat_out, total * nf * sizeof(float));
+                if (p == NULL) return;
+                s_splat_out = p;
+                s_splat_out_cap = total * nf;
+            }
+
+            size_t o = 0;
+            for (t = 0; t < nt; t++) {
+                const float *v = buf_vbo + t * 3 * nf;
+                int extra = s_splat_extra[t];
+                int pick = (int)(t % 3);
+                size_t f;
+                float jitter = (float)((t * 2654435761u) & 0xFFFF) / 65536.0f;
+
+                memcpy(s_splat_out + o * nf, v + pick * nf, nf * sizeof(float));
+                o++;
+
+                for (int i = 0; i < extra; i++) {
+                    // Low-discrepancy (golden-ratio) samples mapped through a
+                    // unit-triangle transform: even coverage, no regular grid.
+                    float u = fmodf((i + 0.5f) * 0.7548776662f + jitter, 1.0f);
+                    float w = fmodf((i + 0.5f) * 0.5698402910f + jitter * 0.37f, 1.0f);
+                    float r = sqrtf(u);
+                    float b0 = 1.0f - r;
+                    float b1 = r * (1.0f - w);
+                    float b2 = r * w;
+                    for (f = 0; f < nf; f++) {
+                        s_splat_out[o * nf + f] =
+                            v[f] * b0 + v[nf + f] * b1 + v[2 * nf + f] * b2;
+                    }
+                    o++;
+                }
+            }
+
+            glBindBuffer(GL_ARRAY_BUFFER, opengl_vbo);
+            glBufferData(GL_ARRAY_BUFFER, total * nf * sizeof(float),
+                         s_splat_out, GL_STREAM_DRAW);
             if (opengl_prg->splat_size_loc >= 0)
                 glUniform1f(opengl_prg->splat_size_loc, (float)gfx_splat_size_px);
             if (opengl_prg->splat_on_loc >= 0)
@@ -1902,37 +1989,23 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
                 glUniform1f(opengl_prg->splat_opacity_loc, gfx_splat_opacity / 100.0f);
             if (opengl_prg->splat_softness_loc >= 0)
                 glUniform1f(opengl_prg->splat_softness_loc, gfx_splat_softness / 100.0f);
-        }
+
 #ifndef USE_GLES
-        glEnable(GL_POINT_SPRITE);
-        glEnable(GL_VERTEX_PROGRAM_POINT_SIZE);
+            glEnable(GL_POINT_SPRITE);
+            glEnable(GL_VERTEX_PROGRAM_POINT_SIZE);
 #endif
-        if (s_splat_cap < (GLsizei)need) {
-            if (s_splat_ibo == 0)
-                glGenBuffers(1, &s_splat_ibo);
-            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, s_splat_ibo);
-            s_splat_cap = (GLsizei)need;
-            glBufferData(GL_ELEMENT_ARRAY_BUFFER, s_splat_cap * sizeof(GLushort),
-                         NULL, GL_STREAM_DRAW);
-        }
-        if (need > cpu_cap) {
-            free(cpu_idx);
-            cpu_idx = (GLushort *)malloc(need * sizeof(GLushort));
-            cpu_cap = cpu_idx ? need : 0;
-        }
-        if (cpu_idx != NULL) {
-            for (size_t t = 0; t < need; t++)
-                cpu_idx[t] = (GLushort)(3 * t + (t % 3));
-            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, s_splat_ibo);
-            glBufferData(GL_ELEMENT_ARRAY_BUFFER, need * sizeof(GLushort),
-                         cpu_idx, GL_STREAM_DRAW);
-            glDrawElements(GL_POINTS, (GLsizei)need, GL_UNSIGNED_SHORT, NULL);
-        }
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+            /* The tagged list's own render-mode command disables GL_BLEND
+             * before the points are flushed; force it back on so opacity and
+             * the softness alpha falloff actually apply. */
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            glDepthFunc(GL_LEQUAL);
+            glDrawArrays(GL_POINTS, 0, (GLsizei)total);
 #ifndef USE_GLES
-        glDisable(GL_POINT_SPRITE);
-        glDisable(GL_VERTEX_PROGRAM_POINT_SIZE);
+            glDisable(GL_POINT_SPRITE);
+            glDisable(GL_VERTEX_PROGRAM_POINT_SIZE);
 #endif
+        }
         return;
     }
     if (wire_now) {

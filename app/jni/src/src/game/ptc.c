@@ -39,9 +39,12 @@
 #include "levels/ptc/header.h"
 #include "boxphys.h"
 
-/* Per-object occluder fade.  Bit N = fade object N (0..7 platforms, 8 ramp,
- * 9..12 room walls), set by ptc_occlusion_update(). */
+/* Per-object occluder fade.  Bit N = fade object N (0..8 platforms, 9 ramp,
+ * 10..13 room walls), set by ptc_occlusion_update(). */
 u32 g_ptc_fade_mask = 0;
+
+/* Animated 0..1 fade amount per object (0 = opaque, 1 = fully faded). */
+static f32 s_ptc_fade[14];
 
 /* Debug calibration quad: a camera-facing world-space square, drawn to check
  * that 3D geometry keeps square pixels at any aspect setting. */
@@ -50,14 +53,23 @@ void ptc_aspect_calib_toggle(void) {
     g_ptc_aspect_calib = !g_ptc_aspect_calib;
 }
 
-static const Gfx *const s_ptc_solid_dl[9] = {
+static const Gfx *const s_ptc_solid_dl[10] = {
     ptc_dl_p1, ptc_dl_p2, ptc_dl_p3, ptc_dl_p4,
-    ptc_dl_p5, ptc_dl_p6, ptc_dl_p7, ptc_dl_p9, ptc_dl_ramp,
+    ptc_dl_p5, ptc_dl_p6, ptc_dl_p7, ptc_dl_p8, ptc_dl_p9, ptc_dl_ramp,
 };
-static const Gfx *const s_ptc_solid_fade[9] = {
-    ptc_dl_p1_fade, ptc_dl_p2_fade, ptc_dl_p3_fade, ptc_dl_p4_fade,
-    ptc_dl_p5_fade, ptc_dl_p6_fade, ptc_dl_p7_fade, ptc_dl_p9_fade,
-    ptc_dl_ramp_fade,
+/* Per-platform pre-list: a writable prim-colour command (alpha is updated
+ * each frame to animate the fade) followed by the translucent display list. */
+static Gfx s_ptc_fade_pre[10][3] = {
+    { gsDPSetPrimColor(0, 0, 190, 190, 200, 255), gsSPDisplayList(ptc_dl_p1_fade), gsSPEndDisplayList() },
+    { gsDPSetPrimColor(0, 0, 190, 190, 200, 255), gsSPDisplayList(ptc_dl_p2_fade), gsSPEndDisplayList() },
+    { gsDPSetPrimColor(0, 0, 190, 190, 200, 255), gsSPDisplayList(ptc_dl_p3_fade), gsSPEndDisplayList() },
+    { gsDPSetPrimColor(0, 0, 190, 190, 200, 255), gsSPDisplayList(ptc_dl_p4_fade), gsSPEndDisplayList() },
+    { gsDPSetPrimColor(0, 0, 190, 190, 200, 255), gsSPDisplayList(ptc_dl_p5_fade), gsSPEndDisplayList() },
+    { gsDPSetPrimColor(0, 0, 190, 190, 200, 255), gsSPDisplayList(ptc_dl_p6_fade), gsSPEndDisplayList() },
+    { gsDPSetPrimColor(0, 0, 190, 190, 200, 255), gsSPDisplayList(ptc_dl_p7_fade), gsSPEndDisplayList() },
+    { gsDPSetPrimColor(0, 0, 190, 190, 200, 255), gsSPDisplayList(ptc_dl_p8_fade), gsSPEndDisplayList() },
+    { gsDPSetPrimColor(0, 0, 190, 190, 200, 255), gsSPDisplayList(ptc_dl_p9_fade), gsSPEndDisplayList() },
+    { gsDPSetPrimColor(0, 0, 190, 190, 200, 255), gsSPDisplayList(ptc_dl_ramp_fade), gsSPEndDisplayList() },
 };
 static const Gfx *const s_ptc_wall_dl[4] = {
     ptc_dl_wall_0, ptc_dl_wall_1, ptc_dl_wall_2, ptc_dl_wall_3,
@@ -74,13 +86,18 @@ Gfx *ptc_geo_obj(s32 callContext, struct GraphNode *node, UNUSED void *context) 
     int id = (int) gen->parameter;
 
     (void) callContext; (void) context;
-    if (id >= 0 && id < 9) {
-        return (Gfx *)((g_ptc_fade_mask & (1u << id))
-                ? s_ptc_solid_fade[id] : s_ptc_solid_dl[id]);
+    if (id >= 0 && id < 10) {
+        if (s_ptc_fade[id] > 0.01f) {
+            u32 a = (u32)(255.0f - s_ptc_fade[id] * 175.0f);
+            s_ptc_fade_pre[id][0].words.w1 =
+                (s_ptc_fade_pre[id][0].words.w1 & 0xFFFFFF00u) | (a & 0xFF);
+            return s_ptc_fade_pre[id];
+        }
+        return (Gfx *) s_ptc_solid_dl[id];
     }
-    id -= 9;
+    id -= 10;
     if (id >= 0 && id < 4) {
-        return (Gfx *)((g_ptc_fade_mask & (1u << (9 + id)))
+        return (Gfx *)((g_ptc_fade_mask & (1u << (10 + id)))
                 ? s_ptc_wall_fade[id] : s_ptc_wall_dl[id]);
     }
     return (Gfx *) ptc_dl_room;
@@ -118,6 +135,21 @@ static int ptc_ray_plane(const Vec3f o, const Vec3f d, int axis, f32 plane,
     return u >= a0 && u <= a1 && v >= b0 && v <= b1;
 }
 
+/* Approach the per-object fade target so occlusion fades in and out. */
+static void ptc_fade_update(void) {
+    const f32 step = 0.09f;
+    for (int i = 0; i < 14; i++) {
+        f32 target = (g_ptc_fade_mask & (1u << i)) ? 1.0f : 0.0f;
+        if (s_ptc_fade[i] < target) {
+            s_ptc_fade[i] += step;
+            if (s_ptc_fade[i] > target) s_ptc_fade[i] = target;
+        } else if (s_ptc_fade[i] > target) {
+            s_ptc_fade[i] -= step;
+            if (s_ptc_fade[i] < target) s_ptc_fade[i] = target;
+        }
+    }
+}
+
 /* Fade only the PTC objects that actually cross the camera-to-Mario ray. */
 static void ptc_occlusion_update(void) {
     static const f32 boxes[][6] = {
@@ -128,13 +160,15 @@ static void ptc_occlusion_update(void) {
         {  -600, 0,  600,  600, 800, 1200 },   /* 4 P5 */
         {  -750, -120, -400, -450, 260, -300 },/* 5 P6 */
         {  -300, 0, -1500, 300, 1100, -1100 }, /* 6 P7 */
-        {  -300, 0,  150, 300, 950,  560 },    /* 7 P9 */
-        {  -250, 500, -850, 250, 800, -550 },  /* 8 ramp */
+        { 1150, 0,  650, 1350,  40,  850 },    /* 7 P8 reset pad */
+        {  -300, 0,  150, 300, 950,  560 },    /* 8 P9 */
+        {  -250, 500, -850, 250, 800, -550 },  /* 9 ramp */
     };
     Vec3f o, d, target;
 
     g_ptc_fade_mask = 0;
     if (gCurrLevelNum != 38 || gCurrAreaIndex != 1 || gMarioState == NULL) {
+        ptc_fade_update();
         return;
     }
     vec3f_copy(o, gLakituState.pos);
@@ -150,19 +184,20 @@ static void ptc_occlusion_update(void) {
             g_ptc_fade_mask |= 1u << i;
         }
     }
-    /* Walls: 9 front (z-), 10 back (z+), 11 left (x-), 12 right (x+). */
-    if (ptc_ray_plane(o, d, 2, -2600.0f, -1200.0f, 1200.0f, 0.0f, 1400.0f)) {
-        g_ptc_fade_mask |= 1u << 9;
-    }
-    if (ptc_ray_plane(o, d, 2, 1200.0f, -1200.0f, 1200.0f, 0.0f, 1400.0f)) {
+    /* Walls: 10 front (z-), 11 back (z+), 12 left (x-), 13 right (x+). */
+    if (ptc_ray_plane(o, d, 2, -2600.0f, -1200.0f, 2450.0f, 0.0f, 1400.0f)) {
         g_ptc_fade_mask |= 1u << 10;
     }
-    if (ptc_ray_plane(o, d, 0, -1200.0f, 0.0f, 1400.0f, -2600.0f, 1200.0f)) {
+    if (ptc_ray_plane(o, d, 2, 1250.0f, -1200.0f, 2450.0f, 0.0f, 1400.0f)) {
         g_ptc_fade_mask |= 1u << 11;
     }
-    if (ptc_ray_plane(o, d, 0, 1200.0f, 0.0f, 1400.0f, -2600.0f, 1200.0f)) {
+    if (ptc_ray_plane(o, d, 0, -1200.0f, 0.0f, 1400.0f, -2600.0f, 1250.0f)) {
         g_ptc_fade_mask |= 1u << 12;
     }
+    if (ptc_ray_plane(o, d, 0, 2450.0f, 0.0f, 1400.0f, -2600.0f, 1250.0f)) {
+        g_ptc_fade_mask |= 1u << 13;
+    }
+    ptc_fade_update();
 }
 
 #define PTC_SETUP_TICKS       60      /* visible pause after portal placement */
@@ -961,8 +996,10 @@ static void ptc_apply_command(const char *action) {
             /* Put the camera west of Mario looking at the cube pyramid so the
              * debug warp always produces a useful view. */
             if (cam != NULL) {
-                cam->pos[0] = 900.0f; cam->pos[1] = 300.0f; cam->pos[2] = 400.0f;
-                cam->focus[0] = 1700.0f; cam->focus[1] = 220.0f; cam->focus[2] = 400.0f;
+                /* South-west of the pyramid, clear of every platform, so the
+                 * whole stack and the green reset pad are in frame. */
+                cam->pos[0] = 1400.0f; cam->pos[1] = 330.0f; cam->pos[2] = 0.0f;
+                cam->focus[0] = 1800.0f; cam->focus[1] = 150.0f; cam->focus[2] = 400.0f;
                 cam->yaw = calculate_yaw(cam->pos, cam->focus);
                 vec3f_copy(gLakituState.pos, cam->pos);
                 vec3f_copy(gLakituState.focus, cam->focus);
@@ -977,6 +1014,30 @@ static void ptc_apply_command(const char *action) {
         boxphys_equip_toggle();
     } else if (strcmp(action, "aspecttest") == 0) {
         ptc_aspect_calib_toggle();
+    } else if (strcmp(action, "resetpad") == 0) {
+        if (gMarioState != NULL) {
+            gMarioState->pos[0] = 1250.0f;
+            gMarioState->pos[1] = 60.0f;
+            gMarioState->pos[2] = 750.0f;
+            gMarioState->vel[0] = gMarioState->vel[1] = gMarioState->vel[2] = 0.0f;
+            set_mario_action(gMarioState, ACT_IDLE, 0);
+            if (gMarioState->marioObj != NULL) {
+                vec3f_copy(gMarioState->marioObj->header.gfx.pos, gMarioState->pos);
+            }
+            gCameraMovementFlags |= CAM_MOVE_INIT_CAMERA;
+        }
+    } else if (strcmp(action, "cubetop") == 0) {
+        if (gMarioState != NULL) {
+            gMarioState->pos[0] = 1800.0f;
+            gMarioState->pos[1] = 620.0f;
+            gMarioState->pos[2] = 400.0f;
+            gMarioState->vel[0] = gMarioState->vel[1] = gMarioState->vel[2] = 0.0f;
+            set_mario_action(gMarioState, ACT_FREEFALL, 0);
+            if (gMarioState->marioObj != NULL) {
+                vec3f_copy(gMarioState->marioObj->header.gfx.pos, gMarioState->pos);
+            }
+            gCameraMovementFlags |= CAM_MOVE_INIT_CAMERA;
+        }
     } else if (strcmp(action, "walltest") == 0) {
         s_wallTest = portal_test_walls();
     } else if (strcmp(action, "stop") == 0) {

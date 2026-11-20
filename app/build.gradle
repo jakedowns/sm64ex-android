@@ -30,8 +30,8 @@ android {
     defaultConfig {
         minSdkVersion 30
         targetSdkVersion 34
-        versionCode 3
-        versionName "1.0-alpha2"
+        versionCode 4
+        versionName "1.0-alpha3"
         // Real build timestamp for the in-game changelog tab.
         buildConfigField "String", "BUILD_STAMP", "\"${new Date().format('yyyy-MM-dd HH:mm')}\""
         // Branch name at build time, shown in About/Changelog and the debug bar.

@@ -14,6 +14,7 @@
 #include "game/memory.h"
 #include "game/print.h"
 #include "game/game_init.h"
+#include "pc/gfx/gfx_pc.h"
 #include "audio/external.h"
 #include "seq_ids.h"
 #include "engine/math_util.h"
@@ -40,6 +41,7 @@ static int s_ballCount;
 static int s_equipped;
 static u32 s_tick;
 static int s_inited;
+static int s_onResetPad;
 
 static void bp_box_half(b3BoxHull *h) {
     *h = b3MakeBoxHull(BP_CUBE_HALF, BP_CUBE_HALF, BP_CUBE_HALF);
@@ -57,7 +59,7 @@ static void bp_add_box(float x, float y, float z) {
     bd.angularDamping = 0.05f;
     b3BodyId body = b3CreateBody(s_world, &bd);
     bp_box_half(&hull);
-    sd.density = 120.0f;          /* light enough for a ball to topple */
+    sd.density = 80.0f;           /* light: punches and balls launch cubes */
     sd.baseMaterial.friction = 0.6f;
     sd.baseMaterial.restitution = 0.05f;
     b3CreateHullShape(body, &sd, &hull.base);
@@ -210,12 +212,66 @@ int boxphys_test_fire(void) {
     return 1;
 }
 
+/* Highest upward-facing cube face.  Requires dot(worldNormal, up) >= 0.55 so
+ * Mario only lands on a face that actually points up, as cubes tumble. */
+static int bp_up_face(b3BodyId id, Vec3f center, Vec3f uax, Vec3f vax, float *topOut) {
+    static const b3Vec3 axis[3] = { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 } };
+    b3Pos p = b3Body_GetPosition(id);
+    b3Quat q = b3Body_GetRotation(id);
+    float best = 0.55f;
+    int bestAxis = -1, bestSign = 1, a, sign;
+
+    for (a = 0; a < 3; a++) {
+        for (sign = -1; sign <= 1; sign += 2) {
+            b3Vec3 n = b3RotateVector(q, (b3Vec3){
+                axis[a].x * sign, axis[a].y * sign, axis[a].z * sign });
+            if (n.y > best) {
+                best = n.y;
+                bestAxis = a;
+                bestSign = sign;
+            }
+        }
+    }
+    if (bestAxis < 0) return 0;
+
+    {
+        b3Vec3 n = b3RotateVector(q, (b3Vec3){
+            axis[bestAxis].x * bestSign, axis[bestAxis].y * bestSign,
+            axis[bestAxis].z * bestSign });
+        b3Vec3 u = b3RotateVector(q, axis[(bestAxis + 1) % 3]);
+        b3Vec3 v = b3RotateVector(q, axis[(bestAxis + 2) % 3]);
+        float lift = BP_CUBE_HALF * (fabsf(u.y) + fabsf(v.y));
+
+        center[0] = (p.x + n.x * BP_CUBE_HALF) / BP_SCALE;
+        center[1] = (p.y + n.y * BP_CUBE_HALF) / BP_SCALE;
+        center[2] = (p.z + n.z * BP_CUBE_HALF) / BP_SCALE;
+        uax[0] = u.x; uax[1] = u.y; uax[2] = u.z;
+        vax[0] = v.x; vax[1] = v.y; vax[2] = v.z;
+        *topOut = center[1] + lift / BP_SCALE;
+    }
+    return 1;
+}
+
 void boxphys_update(void) {
     int i;
 
     if (gCurrLevelNum != 38) return;
     boxphys_init();
     if (s_world.index1 == 0) return;
+
+    /* Green reset pad: landing on it rebuilds the pyramid. */
+    if (gMarioState != NULL) {
+        struct MarioState *m = gMarioState;
+        int onPad = m->pos[0] > 1120.0f && m->pos[0] < 1380.0f
+                 && m->pos[2] > 620.0f && m->pos[2] < 880.0f
+                 && m->pos[1] > 25.0f && m->pos[1] < 70.0f;
+        if (onPad && !s_onResetPad) {
+            s_onResetPad = 1;
+            boxphys_reset();
+            return;
+        }
+        s_onResetPad = onPad;
+    }
 
     if (gMarioState != NULL && s_marioBody.index1 != 0) {
         b3Body_SetTransform(s_marioBody, (b3Pos){
@@ -246,12 +302,12 @@ void boxphys_update(void) {
                 float dx = bp.x / BP_SCALE - gMarioState->pos[0];
                 float dz = bp.z / BP_SCALE - gMarioState->pos[2];
                 float d2 = dx * dx + dz * dz;
-                if (d2 < 190.0f * 190.0f) {
+                if (d2 < 210.0f * 210.0f) {
                     float inv = 1.0f / sqrtf(d2 + 1.0f);
                     if (dx * inv * fx + dz * inv * fz > -0.25f) {
                         b3Body_ApplyLinearImpulseToCenter(s_boxes[b],
-                            (b3Vec3){ fx * 900.0f + dx * 2.0f, 280.0f,
-                                      fz * 900.0f + dz * 2.0f }, true);
+                            (b3Vec3){ fx * 1400.0f + dx * 2.0f, 360.0f,
+                                      fz * 1400.0f + dz * 2.0f }, true);
                     }
                 }
             }
@@ -262,43 +318,44 @@ void boxphys_update(void) {
     s_tick++;
     b3World_Step(s_world, 1.0f / 30.0f, 6);
 
-    /* Simple platform support: land/stand on the top of any cube. */
+    /* Stand on an upward-facing cube face.  Mario's static collision knows
+     * nothing about the physics cubes, so this runs after his action step and
+     * pins him to the face: idle action (no fall pose), no sliding, and a
+     * floorHeight that keeps the camera/HUD stable. */
     if (gMarioState != NULL) {
         struct MarioState *m = gMarioState;
-        float feet = m->pos[1];
         int b;
         for (b = 0; b < s_boxCount; b++) {
-            b3Pos p = b3Body_GetPosition(s_boxes[b]);
-            b3Quat q = b3Body_GetRotation(s_boxes[b]);
-            float minx = 1e9f, maxx = -1e9f, minz = 1e9f, maxz = -1e9f, top = -1e9f;
-            int c;
-            for (c = 0; c < 8; c++) {
-                static const float lx[8] = { -1, 1, 1, -1, -1, 1, 1, -1 };
-                static const float ly[8] = { -1, -1, 1, 1, -1, -1, 1, 1 };
-                static const float lz[8] = { -1, -1, -1, -1, 1, 1, 1, 1 };
-                b3Vec3 w = b3RotateVector(q, (b3Vec3){
-                    lx[c] * BP_CUBE_HALF, ly[c] * BP_CUBE_HALF, lz[c] * BP_CUBE_HALF });
-                float x = (p.x + w.x) / BP_SCALE;
-                float y = (p.y + w.y) / BP_SCALE;
-                float z = (p.z + w.z) / BP_SCALE;
-                if (x < minx) minx = x;
-                if (x > maxx) maxx = x;
-                if (z < minz) minz = z;
-                if (z > maxz) maxz = z;
-                if (y > top) top = y;
+            Vec3f c, u, v;
+            float top, du, dv, margin = 60.0f + 16.0f;
+
+            if (!bp_up_face(s_boxes[b], c, u, v, &top)) continue;
+            du = (m->pos[0] - c[0]) * u[0] + (m->pos[1] - c[1]) * u[1]
+               + (m->pos[2] - c[2]) * u[2];
+            dv = (m->pos[0] - c[0]) * v[0] + (m->pos[1] - c[1]) * v[1]
+               + (m->pos[2] - c[2]) * v[2];
+            if (fabsf(du) > margin || fabsf(dv) > margin) continue;
+            if (m->pos[1] > top + 16.0f || m->pos[1] < top - 55.0f) continue;
+            if (m->vel[1] > 20.0f) continue;
+
+            if (m->action & ACT_FLAG_AIR) {
+                /* First contact: kill the fall/slide carry-over so he lands
+                 * instead of skidding in the falling pose. */
+                m->forwardVel = 0.0f;
+                m->vel[0] = m->vel[2] = 0.0f;
+                set_mario_action(m, ACT_IDLE, 0);
+            } else {
+                m->forwardVel = 0.0f;
+                m->vel[0] = m->vel[2] = 0.0f;
             }
-            if (m->pos[0] > minx - 12.0f && m->pos[0] < maxx + 12.0f
-                && m->pos[2] > minz - 12.0f && m->pos[2] < maxz + 12.0f
-                && feet <= top + 12.0f && feet >= top - 60.0f
-                && m->vel[1] <= 5.0f) {
-                m->pos[1] = top;
-                m->vel[1] = 0.0f;
-                m->floorHeight = top;
-                if (m->marioObj != NULL) {
-                    m->marioObj->header.gfx.pos[1] = top;
-                }
-                break;
+            m->pos[1] = top;
+            m->vel[1] = 0.0f;
+            m->floorHeight = top;
+            m->floorAngle = 0;
+            if (m->marioObj != NULL) {
+                m->marioObj->header.gfx.pos[1] = top;
             }
+            break;
         }
     }
 
@@ -435,9 +492,11 @@ void boxphys_render(void) {
     gDPSetCombineMode(gDisplayListHead++, G_CC_SHADE, G_CC_SHADE);
     gDPSetRenderMode(gDisplayListHead++, G_RM_AA_ZB_OPA_SURF, G_RM_AA_ZB_OPA_SURF2);
 
+    if (gfx_splat_target == 3) gfx_sp_splat_marker(1);
     for (i = 0; i < s_boxCount; i++) {
         bp_draw_box(s_boxes[i], i / 8);
     }
+    if (gfx_splat_target == 3) gfx_sp_splat_marker(0);
     for (i = 0; i < s_ballCount; i++) {
         bp_draw_ball(s_balls[i]);
     }

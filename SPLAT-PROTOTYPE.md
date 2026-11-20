@@ -29,6 +29,7 @@ sorting.
 | `61` | splat footprint in eye-buffer pixels | `14` |
 | `62` | opacity % | `100` |
 | `63` | softness % (`0` crisp disc → `100` soft Gaussian) | `70` |
+| `64` | density % (interpolated interior points on large triangles) | `35` |
 
 `SPLAT` adb toggle cycles target `0 → 1 → 2 → 3 → 0`.
 
@@ -61,8 +62,9 @@ Suggested test: Bob-omb Battlefield (`target=2`, trees), or the castle lobby
 ## Known limits / next steps
 
 - Fixed pixel size: no distance attenuation or per-splat anisotropy yet.
-- One splat per triangle, round-robin corner: density follows the source
-  tessellation; sparse meshes look sparse.
+- One base splat per triangle, round-robin corner. Density adds low-discrepancy
+  interior samples on large triangles (walls/floors fill in), capped per
+  triangle and per batch.
 - `target=1` (Mario) is verified on device. `target=2` (trees) currently removes
   the trees without visible flecks at distance — their master-list blend/depth
   state is not reproduced by the point pass. Next step: capture per-list blend
@@ -72,7 +74,8 @@ Suggested test: Bob-omb Battlefield (`target=2`, trees), or the castle lobby
 - Alpha blending relies on the object draw's blend state; splat alpha is forced
   from the footprint so cutout/leaf textures still show, but their RGB is the
   centre-sample colour.
-- Level geometry, HUD, skybox and particles are not splatted.
+- Level geometry splats when target is "everything" (3); use Density to fill
+  the large wall/floor triangles. HUD, skybox and particles are not splatted.
 - Knobs are session-only; no config persistence or debug-panel widgets yet.
 - `SM64SPLAT` logcat tag reports marker emission/execution and draw counts for
   debugging.

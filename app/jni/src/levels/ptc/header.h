@@ -29,6 +29,8 @@ extern const Gfx ptc_dl_p6[];
 extern const Gfx ptc_dl_p6_fade[];
 extern const Gfx ptc_dl_p7[];
 extern const Gfx ptc_dl_p7_fade[];
+extern const Gfx ptc_dl_p8[];
+extern const Gfx ptc_dl_p8_fade[];
 extern const Gfx ptc_dl_p9[];
 extern const Gfx ptc_dl_p9_fade[];
 extern const Gfx ptc_dl_ramp[];

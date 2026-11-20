@@ -3255,7 +3255,25 @@ void update_camera(struct Camera *c) {
 #endif
     camera_course_processing(c);
     stub_camera_3(c);
-    sCButtonsPressed = find_c_buttons_pressed(sCButtonsPressed, gPlayer1Controller->buttonPressed,gPlayer1Controller->buttonDown);
+    {
+        /* The on-screen right stick is an analog C-stick.  In analog camera
+         * mode, feed it into the vanilla camera's C-button rotation state. */
+        static u16 sOverlayCStick;
+        u16 camPressed = gPlayer1Controller->buttonPressed;
+        u16 camDown = gPlayer1Controller->buttonDown;
+        u16 overlay = 0;
+
+        if (gfx_ovl_analog && gfx_ovl_right_active) {
+            if (gfx_ovl_right_x > 30) overlay |= R_CBUTTONS;
+            else if (gfx_ovl_right_x < -30) overlay |= L_CBUTTONS;
+            if (gfx_ovl_right_y > 30) overlay |= U_CBUTTONS;
+            else if (gfx_ovl_right_y < -30) overlay |= D_CBUTTONS;
+        }
+        camDown |= overlay;
+        camPressed |= overlay & ~sOverlayCStick;
+        sOverlayCStick = overlay;
+        sCButtonsPressed = find_c_buttons_pressed(sCButtonsPressed, camPressed, camDown);
+    }
 #ifdef BETTERCAMERA
     }
 

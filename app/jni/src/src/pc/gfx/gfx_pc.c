@@ -233,6 +233,7 @@ int gfx_splat_target = 0;
 int gfx_splat_size_px = 14;
 int gfx_splat_opacity = 100;
 int gfx_splat_softness = 70;
+int gfx_splat_density = 35;
 int gfx_splat_active = 0;
 
 void gfx_sp_splat_marker(int on) {
@@ -294,7 +295,7 @@ int gfx_stereo_eye_width_override = 0;    // 0 = derive from window width / 2
 int gfx_stereo_swap_eyes = 0;             // render right eye first / mirrored
 int gfx_stereo_flip_y = 0;                // vertical flip of the eye image
 int gfx_stereo_same_both = 0;             // eye 1 reuses eye 0's view (mapping test)
-float gfx_stereo_ipd_px = 140.0f;         // separation at infinity
+float gfx_stereo_ipd_px = 150.0f;         // separation at infinity (300 px @ 50%)
 float gfx_stereo_convergence_px = 0.0f;   // moves the zero-parallax plane
 float gfx_stereo_shear = 0.0f;   // clip-space shear, used by culling too
 // Per-eye stereo projection adjustments, needed by the post pass to invert the

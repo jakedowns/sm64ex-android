@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "app/jni/src/levels/ptc"
 
 # ---- world-space layout (N64 units) -------------------------------------
-ROOM = dict(x0=-1200, x1=2400, y0=0, y1=1400, z0=-2600, z1=1200)
+ROOM = dict(x0=-1200, x1=2450, y0=0, y1=1400, z0=-2600, z1=1250)
 
 # name: (x0, z0, x1, z1, top_y, top_rgb, side_rgb)
 PLATFORMS = [
@@ -34,6 +34,8 @@ PLATFORMS = [
     ("P6",  -750, -400, -450, -300, 260, (150, 150, 160), (90, 90, 100)),
     # Momentum test: high drop platform, launch ramp target and second star.
     ("P7",  -300, -1500, 300, -1100, 1100, (120, 150, 210), (70, 90, 140)),
+    # Green "reset" pad: landing on it rebuilds the Box3D pyramid.
+    ("P8",  1150,   650, 1350,   850,   40, (110, 250, 140), (55, 150, 85)),
     ("P9",  -300,   150, 300,   560,  950, (230, 190, 90), (140, 110, 45)),
 ]
 
@@ -438,8 +440,6 @@ def emit_solid():
             "    gsDPSetRenderMode(G_RM_AA_ZB_XLU_SURF, G_RM_AA_ZB_XLU_SURF2)," if fade
                 else "    gsDPSetRenderMode(G_RM_AA_ZB_OPA_SURF, G_RM_AA_ZB_OPA_SURF2),",
         ]
-        if fade:
-            lines.append("    gsDPSetPrimColor(0, 0, 190, 190, 200, 90),")
         lines += body
         lines += [
             "    gsDPPipeSync(),",

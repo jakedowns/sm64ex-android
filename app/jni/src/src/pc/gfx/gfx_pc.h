@@ -29,6 +29,7 @@ extern int gfx_splat_target;    // 0 off, 1 Mario, 2 trees, 3 every object
 extern int gfx_splat_size_px;   // splat footprint (eye-buffer pixels)
 extern int gfx_splat_opacity;   // 0..100
 extern int gfx_splat_softness;  // 0..100, 0 = crisp disc, 100 = soft Gaussian
+extern int gfx_splat_density;   // 0..100, interpolated splats on large triangles
 extern int gfx_splat_active;    // set while executing a marked batch
 
 void gfx_sp_splat_marker(int on);

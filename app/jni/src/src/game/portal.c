@@ -1055,9 +1055,9 @@ int portal_test_walls(void) {
     };
     static const Vec3f wallTarget[4] = {
         { 0.0f, 400.0f, -2599.0f },
-        { 0.0f, 400.0f,  1199.0f },
+        { 0.0f, 400.0f,  1249.0f },
         {-1199.0f, 400.0f, -700.0f },
-        { 1199.0f, 400.0f, -700.0f },
+        { 2449.0f, 400.0f, -700.0f },
     };
     int mask = 0;
     int hadGun = s_hasGun;

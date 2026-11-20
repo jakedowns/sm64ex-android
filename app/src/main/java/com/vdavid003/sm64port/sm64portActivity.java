@@ -60,7 +60,7 @@ import org.libsdl.app.SDLActivity;
  */
 public class sm64portActivity extends SDLActivity implements SensorEventListener {
     private static final String TAG = "SM64Leia";
-    private static final String BUILD_NAME = "v1.0-alpha2";
+    private static final String BUILD_NAME = "v1.0-alpha3";
     private static final String PREFS_NAME = "sm64port";
     private static final String PREF_OVERLAY_OPACITY = "overlay_opacity";
     private static final int REQ_EXPORT_LOG = 0x5A64;
@@ -189,7 +189,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     private float panelDownY = -1;
     private static final int PANEL_BG = 0xCC101010;
     private static final String CHANGELOG =
-            "v1.0-alpha2 - what is new\n"
+            "v1.0-alpha3 - what is new\n"
           + "Portal gun: spinning pickup, held decimated model, LB/RB fire,\n"
           + "  ENH EQUIP/DROP toggle, P1/P2 touch buttons, portal sounds.\n"
           + "Aim reticle: now a small thin crosshair at the real raycast hit\n"
@@ -201,9 +201,15 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
           + "  jetpack, with fuel-tank and refill-pump upgrades. L = use.\n"
           + "PTC annex: widened chamber with a 30-cube Box3D pyramid and a\n"
           + "  ball blaster (ENH) that fires physics spheres (Z to fire);\n"
-          + "  punches/kicks shove cubes, Mario can stand on them, cube and\n"
-          + "  platform faces use height gradients. SPLAT EVERYTHING now\n"
-          + "  includes the chamber geometry, not just objects.\n"
+          + "  punches/kicks shove cubes, Mario lands and stands on upward\n"
+          + "  cube faces, cube and platform faces use height gradients.\n"
+          + "  A green reset pad near the pyramid rebuilds the stack. Jump\n"
+          + "  on it. SPLAT EVERYTHING now includes the chamber geometry.\n"
+          + "  Occluding platforms fade smoothly, and the on-screen analog\n"
+          + "  C-stick rotates the vanilla camera too.\n"
+          + "Splat: opacity/softness now apply (blending fix), and a Density\n"
+          + "  slider fills large wall/floor triangles with interpolated points.\n"
+          + "Stereo defaults: IPD 300 px and depth 50% (previously 0 px / 10%).\n"
           + "Splat prototype: point-sprite rendering for Mario/trees/all\n"
           + "  objects (SPLAT toggle or adb); merged from feat/splat-prototype.\n"
           + "Camera: CAMERA-tab distance/height affect vanilla and custom;\n"
@@ -832,9 +838,9 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         grid.setColumnCount(2);
         grid.setOrientation(android.widget.GridLayout.HORIZONTAL);
         controls.addView(grid);
-        addSlider("IPD / baseline", -300, 300, 0, " px", 0);
+        addSlider("IPD / baseline", -300, 300, 300, " px", 0);
         addSlider("Zero parallax", -100, 100, 40, " px", 1);
-        addSlider("Depth", -200, 200, 10, " %", 2);
+        addSlider("Depth", -200, 200, 50, " %", 2);
         addSlider("UI depth", -60, 60, 0, " px", 38);
         addSlider("UI size", 50, 160, 100, " %", 58);
         addSlider("Toe in/out", -100, 100, 0, " %", 17);
@@ -1333,6 +1339,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         });
         addEnhButton("RESET CUBES", () -> nativePtcCommand("ballreset"));
         addEnhButton("WARP TO CUBES", () -> nativePtcCommand("annex"));
+        addEnhButton("WARP TO RESET PAD", () -> nativePtcCommand("resetpad"));
         addEnhButton("FIRE TEST BALL", () -> nativePtcCommand("balltest"));
         pauseLoopToggle = new TextView(this);
         pauseLoopToggle.setText("PAUSE GAME LOOP: OFF");
@@ -1397,18 +1404,21 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addSlider("Splat size", 1, 64, 14, " px", 61);
         addSlider("Opacity", 0, 100, 100, " %", 62);
         addSlider("Softness", 0, 100, 70, " %", 63);
+        addSlider("Density", 0, 100, 35, " %", 64);
         TextView splatHint = new TextView(this);
         splatHint.setTextSize(13);
         splatHint.setTextColor(0xFFAACCFF);
         splatHint.setPadding(dp(4), dp(10), dp(4), dp(4));
         splatHint.setText("Point-sprite pass over tagged object geometry."
                 + " Mario is the verified target; trees currently disappear"
-                + " at distance (see SPLAT-PROTOTYPE.md). Knobs 60-63.");
+                + " at distance (see SPLAT-PROTOTYPE.md). Knobs 60-64;"
+                + " Density interpolates points across large walls/floors.");
         controls.addView(splatHint);
         nativeSetStereoInt(60, splatMode);
         nativeSetStereoInt(61, 14);
         nativeSetStereoInt(62, 100);
         nativeSetStereoInt(63, 70);
+        nativeSetStereoInt(64, 35);
 
         // --- Changelog ---
         beginTab();
@@ -3175,9 +3185,9 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             line.setColor(0xFFFF2FA8);
             c.drawRect(0.5f, 0.5f, w - 1f, h - 1f, line);
 
-            int ipd = stereoValues.containsKey(0) ? stereoValues.get(0) : 0;
+            int ipd = stereoValues.containsKey(0) ? stereoValues.get(0) : 300;
             int zero = stereoValues.containsKey(1) ? stereoValues.get(1) : 40;
-            int depthPct = stereoValues.containsKey(2) ? stereoValues.get(2) : 10;
+            int depthPct = stereoValues.containsKey(2) ? stereoValues.get(2) : 50;
             int fov = stereoValues.containsKey(20) ? stereoValues.get(20) : 100;
             int dof = nativeGetSSFX(17);
             if (dof < 50) dof = 970;

@@ -75,6 +75,7 @@ extern int gfx_splat_target;
 extern int gfx_splat_size_px;
 extern int gfx_splat_opacity;
 extern int gfx_splat_softness;
+extern int gfx_splat_density;
 extern float gfx_stereo_fps;
 extern int gfx_stereo_perf;
 extern int gfx_stereo_out_w;
@@ -121,9 +122,9 @@ extern int gfx_opengl_ssfx_get(int which);
 
 #include <jni.h>
 
-static float s_base_ipd = 140.0f;
+static float s_base_ipd = 300.0f;
 static float s_base_convergence = 10.0f;   // matches the slider default
-static float s_depth_scale = 1.0f;
+static float s_depth_scale = 0.5f;
 
 JNIEXPORT void JNICALL
 Java_com_vdavid003_sm64port_sm64portActivity_nativeSetStereo(JNIEnv *env, jobject thiz,
@@ -218,6 +219,7 @@ Java_com_vdavid003_sm64port_sm64portActivity_nativeSetStereoInt(JNIEnv *env, job
         case 61: gfx_splat_size_px = value; break;
         case 62: gfx_splat_opacity = value; break;
         case 63: gfx_splat_softness = value; break;
+        case 64: gfx_splat_density = value; break;
     }
 }
 
