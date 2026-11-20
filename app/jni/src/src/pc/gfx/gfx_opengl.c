@@ -61,6 +61,7 @@ extern int gfx_splat_size_px;
 extern int gfx_splat_opacity;
 extern int gfx_splat_softness;
 extern int gfx_splat_density;
+extern int gfx_splat_shape;
 
 struct ShaderProgram {
     uint32_t shader_id;
@@ -74,6 +75,7 @@ struct ShaderProgram {
     GLint splat_on_loc;
     GLint splat_opacity_loc;
     GLint splat_softness_loc;
+    GLint splat_shape_loc;
     uint8_t attrib_sizes[7];
     uint8_t num_attribs;
     bool used_noise;
@@ -125,6 +127,8 @@ static inline void gfx_opengl_set_shader_uniforms(struct ShaderProgram *prg) {
         glUniform1f(prg->splat_opacity_loc, gfx_splat_opacity / 100.0f);
     if (prg->splat_softness_loc >= 0)
         glUniform1f(prg->splat_softness_loc, gfx_splat_softness / 100.0f);
+    if (prg->splat_shape_loc >= 0)
+        glUniform1f(prg->splat_shape_loc, gfx_splat_shape ? 1.0f : 0.0f);
 }
 
 static inline void gfx_opengl_set_texture_uniforms(struct ShaderProgram *prg, const int tile) {
@@ -280,6 +284,8 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint32_t shad
 #endif
     append_line(vs_buf, &vs_len, "attribute vec4 aVtxPos;");
     append_line(vs_buf, &vs_len, "uniform float uSplatSize;");
+    append_line(vs_buf, &vs_len, "uniform float uSplatShape;");
+    append_line(vs_buf, &vs_len, "varying float vSplatSeed;");
     if (used_textures[0] || used_textures[1]) {
         append_line(vs_buf, &vs_len, "attribute vec2 aTexCoord;");
         append_line(vs_buf, &vs_len, "varying vec2 vTexCoord;");
@@ -305,8 +311,9 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint32_t shad
     for (int i = 0; i < num_inputs; i++) {
         vs_len += sprintf(vs_buf + vs_len, "vInput%d = aInput%d;\n", i + 1, i + 1);
     }
+    append_line(vs_buf, &vs_len, "vSplatSeed = fract(sin(dot(aVtxPos.xy, vec2(12.9898, 78.233))) * 43758.5453);");
     append_line(vs_buf, &vs_len, "gl_Position = aVtxPos;");
-    append_line(vs_buf, &vs_len, "gl_PointSize = uSplatSize;");
+    append_line(vs_buf, &vs_len, "gl_PointSize = uSplatSize * (1.0 + 0.35 * uSplatShape);");
     append_line(vs_buf, &vs_len, "}");
 
     // Fragment shader
@@ -318,7 +325,9 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint32_t shad
 #endif
     append_line(fs_buf, &fs_len, "uniform float uSplatOn;\n"
                                   "uniform float uSplatOpacity;\n"
-                                  "uniform float uSplatSoftness;");
+                                  "uniform float uSplatSoftness;\n"
+                                  "uniform float uSplatShape;");
+    append_line(fs_buf, &fs_len, "varying float vSplatSeed;");
 
     if (used_textures[0] || used_textures[1]) {
         append_line(fs_buf, &fs_len, "varying vec2 vTexCoord;");
@@ -426,7 +435,26 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint32_t shad
     // uSplatOn is 0 for every normal triangle batch.
     append_line(fs_buf, &fs_len, "if (uSplatOn > 0.5) {");
     append_line(fs_buf, &fs_len, "vec2 sp = gl_PointCoord - 0.5;");
-    append_line(fs_buf, &fs_len, "float r2 = dot(sp, sp) * 4.0;");
+    append_line(fs_buf, &fs_len, "float r2;");
+    append_line(fs_buf, &fs_len, "if (uSplatShape < 0.5) {");
+    append_line(fs_buf, &fs_len, "r2 = dot(sp, sp) * 4.0;");
+    append_line(fs_buf, &fs_len, "} else {");
+    // Paint-stroke brush: randomly rotate and stretch each splat, then carve a
+    // ragged edge with layered sine noise.  Three aspect variants read as a
+    // small brush set rather than one repeated stamp.
+    append_line(fs_buf, &fs_len, "float ang = vSplatSeed * 6.2831853;");
+    append_line(fs_buf, &fs_len, "float ca = cos(ang), sa = sin(ang);");
+    append_line(fs_buf, &fs_len, "vec2 q = vec2(ca * sp.x - sa * sp.y, sa * sp.x + ca * sp.y);");
+    append_line(fs_buf, &fs_len, "float variant = floor(vSplatSeed * 3.0);");
+    append_line(fs_buf, &fs_len, "if (variant < 1.0) { q.x *= 2.2; q.y *= 0.42; }");
+    append_line(fs_buf, &fs_len, "else if (variant < 2.0) { q.x *= 1.6; q.y *= 0.62; }");
+    append_line(fs_buf, &fs_len, "else { q.x *= 2.8; q.y *= 0.32; }");
+    append_line(fs_buf, &fs_len, "q.y *= 1.0 - 0.35 * abs(q.x);");
+    append_line(fs_buf, &fs_len, "float ragged = 0.10 * sin(q.x * 23.0 + vSplatSeed * 41.0)");
+    append_line(fs_buf, &fs_len, "             + 0.07 * sin(q.y * 31.0 - vSplatSeed * 17.0)");
+    append_line(fs_buf, &fs_len, "             + 0.04 * sin((q.x + q.y) * 57.0 + vSplatSeed * 7.0);");
+    append_line(fs_buf, &fs_len, "r2 = dot(q, q) * (1.0 + ragged * 2.5);");
+    append_line(fs_buf, &fs_len, "}");
     append_line(fs_buf, &fs_len, "if (r2 > 1.0) discard;");
     append_line(fs_buf, &fs_len, "float edge = 1.0 - r2;");
     append_line(fs_buf, &fs_len, "outColor.a = uSplatOpacity * edge * exp(-r2 * (0.5 + 5.0 * uSplatSoftness));");
@@ -518,6 +546,7 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint32_t shad
     prg->splat_on_loc = glGetUniformLocation(shader_program, "uSplatOn");
     prg->splat_opacity_loc = glGetUniformLocation(shader_program, "uSplatOpacity");
     prg->splat_softness_loc = glGetUniformLocation(shader_program, "uSplatSoftness");
+    prg->splat_shape_loc = glGetUniformLocation(shader_program, "uSplatShape");
 
     gfx_opengl_load_shader(prg);
 
@@ -745,6 +774,7 @@ extern int gfx_splat_size_px;
 extern int gfx_splat_opacity;
 extern int gfx_splat_softness;
 extern int gfx_splat_density;
+extern int gfx_splat_shape;
 static int s_shadow_map_valid = 0;    // set by gfx_opengl_shadow_end()
 
 /* Shadow map FBO: RGBA8 colour with packed depth + a depth renderbuffer. */
@@ -1989,6 +2019,8 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
                 glUniform1f(opengl_prg->splat_opacity_loc, gfx_splat_opacity / 100.0f);
             if (opengl_prg->splat_softness_loc >= 0)
                 glUniform1f(opengl_prg->splat_softness_loc, gfx_splat_softness / 100.0f);
+            if (opengl_prg->splat_shape_loc >= 0)
+                glUniform1f(opengl_prg->splat_shape_loc, gfx_splat_shape ? 1.0f : 0.0f);
 
 #ifndef USE_GLES
             glEnable(GL_POINT_SPRITE);
@@ -2120,6 +2152,7 @@ static void gfx_opengl_start_frame(void) {
 #include "game/portal.h"
 extern float gfx_eye_shear[2];
 extern int gfx_get_portal_view_proj(float out[4][4]);
+extern int gfx_portal_debug_blit;
 
 static GLuint s_portal_fbo = 0, s_portal_tex = 0, s_portal_depth = 0;
 static int s_portal_w = 0, s_portal_h = 0;
@@ -2222,6 +2255,32 @@ void gfx_opengl_portal_overlay(int eye) {
     if (!g_portal_view.active || s_portal_tex == 0 || s_portal_prog == 0) {
         return;
     }
+    if (gfx_portal_debug_blit) {
+        static const float q[20] = {
+            -1.0f, -1.0f, 0.0f, 0.0f, 0.0f,
+             1.0f, -1.0f, 0.0f, 1.0f, 0.0f,
+            -1.0f,  1.0f, 0.0f, 0.0f, 1.0f,
+             1.0f,  1.0f, 0.0f, 1.0f, 1.0f,
+        };
+        glUseProgram(s_portal_prog);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, s_portal_tex);
+        glUniform1i(s_portal_utex, 0);
+        glDisable(GL_CULL_FACE);
+        glDisable(GL_BLEND);
+        glDisable(GL_SCISSOR_TEST);
+        glDisable(GL_DEPTH_TEST);
+        glVertexAttribPointer(s_portal_apos, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), q);
+        glVertexAttribPointer(s_portal_auv, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), q + 3);
+        glEnableVertexAttribArray(s_portal_apos);
+        glEnableVertexAttribArray(s_portal_auv);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glDisableVertexAttribArray(s_portal_apos);
+        glDisableVertexAttribArray(s_portal_auv);
+        glEnable(GL_DEPTH_TEST);
+        glUseProgram(0);
+        return;
+    }
     if (!gfx_get_portal_view_proj(vp)) {
         return;
     }
@@ -2242,7 +2301,7 @@ void gfx_opengl_portal_overlay(int eye) {
         }
         u = nx * 0.5f + 0.5f;
         v = ny * 0.5f + 0.5f;
-        nx += gfx_eye_shear[eye & 1];
+        nx += (gfx_stereo_enabled && eye >= 0) ? gfx_eye_shear[eye & 1] : 0.0f;
         buf[n++] = nx;
         buf[n++] = ny;
         buf[n++] = nz;
@@ -2261,8 +2320,13 @@ void gfx_opengl_portal_overlay(int eye) {
     glUniform1i(s_portal_utex, 0);
     glDisable(GL_CULL_FACE);
     glDisable(GL_BLEND);
-    glEnable(GL_DEPTH_TEST);
-    glDepthFunc(GL_LEQUAL);
+    glDisable(GL_SCISSOR_TEST);
+    if (eye < 0) {
+        glDisable(GL_DEPTH_TEST);
+    } else {
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_LEQUAL);
+    }
     glDepthMask(GL_FALSE);
     glVertexAttribPointer(s_portal_apos, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), buf);
     glVertexAttribPointer(s_portal_auv, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), buf + 3);

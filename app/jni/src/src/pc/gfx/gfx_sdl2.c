@@ -76,6 +76,7 @@ extern int gfx_splat_size_px;
 extern int gfx_splat_opacity;
 extern int gfx_splat_softness;
 extern int gfx_splat_density;
+extern int gfx_splat_shape;
 extern float gfx_stereo_fps;
 extern int gfx_stereo_perf;
 extern int gfx_stereo_out_w;
@@ -220,6 +221,7 @@ Java_com_vdavid003_sm64port_sm64portActivity_nativeSetStereoInt(JNIEnv *env, job
         case 62: gfx_splat_opacity = value; break;
         case 63: gfx_splat_softness = value; break;
         case 64: gfx_splat_density = value; break;
+        case 65: gfx_splat_shape = value ? 1 : 0; break;
     }
 }
 

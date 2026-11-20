@@ -30,9 +30,11 @@ extern int gfx_splat_size_px;   // splat footprint (eye-buffer pixels)
 extern int gfx_splat_opacity;   // 0..100
 extern int gfx_splat_softness;  // 0..100, 0 = crisp disc, 100 = soft Gaussian
 extern int gfx_splat_density;   // 0..100, interpolated splats on large triangles
+extern int gfx_splat_shape;     // 0 radial gradient, 1 ragged paint strokes
 extern int gfx_splat_active;    // set while executing a marked batch
 
 void gfx_sp_splat_marker(int on);
+extern int gfx_portal_debug_blit;   /* debug: full-screen portal FBO */
 
 void gfx_init(struct GfxWindowManagerAPI *wapi, struct GfxRenderingAPI *rapi, const char *window_title);
 void gfx_start_frame(void);

@@ -62,6 +62,7 @@ static int s_lastPlaced = 1;
 int g_portal_debug = 0;
 PortalViewState g_portal_view;
 static int s_portal_view_enabled = 1;
+static int s_forceView = -1;   /* debug: -1 auto, 0/1 force that source */
 static int s_hasGun = 0;
 static int s_gunSpawned = 0;
 static Vec3f s_gunPos = {0.0f, 0.0f, 0.0f};
@@ -664,23 +665,26 @@ void portal_view_toggle(void) {
     }
 }
 
+void portal_view_force(int src) {
+    s_forceView = (src < 0) ? -1 : (src & 1);
+}
+
+/* Column-vector local -> world: columns are the portal axes, column 3 is the
+ * origin, matching mtxf_lookat()'s convention. */
 static void mat4_local_to_world(float out[4][4], const Vec3f pos, const Vec3f tan,
                                 const Vec3f bitan, const Vec3f n) {
-    out[0][0] = tan[0];   out[0][1] = tan[1];   out[0][2] = tan[2];   out[0][3] = 0.0f;
-    out[1][0] = bitan[0]; out[1][1] = bitan[1]; out[1][2] = bitan[2]; out[1][3] = 0.0f;
-    out[2][0] = n[0];     out[2][1] = n[1];     out[2][2] = n[2];     out[2][3] = 0.0f;
-    out[3][0] = pos[0];   out[3][1] = pos[1];   out[3][2] = pos[2];   out[3][3] = 1.0f;
+    out[0][0] = tan[0];   out[0][1] = bitan[0]; out[0][2] = n[0];     out[0][3] = pos[0];
+    out[1][0] = tan[1];   out[1][1] = bitan[1]; out[1][2] = n[1];     out[1][3] = pos[1];
+    out[2][0] = tan[2];   out[2][1] = bitan[2]; out[2][2] = n[2];     out[2][3] = pos[2];
+    out[3][0] = 0.0f;     out[3][1] = 0.0f;     out[3][2] = 0.0f;     out[3][3] = 1.0f;
 }
 
 static void mat4_world_to_local(float out[4][4], const Vec3f pos, const Vec3f tan,
                                 const Vec3f bitan, const Vec3f n) {
-    out[0][0] = tan[0];   out[0][1] = bitan[0]; out[0][2] = n[0];     out[0][3] = 0.0f;
-    out[1][0] = tan[1];   out[1][1] = bitan[1]; out[1][2] = n[1];     out[1][3] = 0.0f;
-    out[2][0] = tan[2];   out[2][1] = bitan[2]; out[2][2] = n[2];     out[2][3] = 0.0f;
-    out[3][0] = -vdot3(pos, tan);
-    out[3][1] = -vdot3(pos, bitan);
-    out[3][2] = -vdot3(pos, n);
-    out[3][3] = 1.0f;
+    out[0][0] = tan[0];   out[0][1] = tan[1];   out[0][2] = tan[2];   out[0][3] = -vdot3(pos, tan);
+    out[1][0] = bitan[0]; out[1][1] = bitan[1]; out[1][2] = bitan[2]; out[1][3] = -vdot3(pos, bitan);
+    out[2][0] = n[0];     out[2][1] = n[1];     out[2][2] = n[2];     out[2][3] = -vdot3(pos, n);
+    out[3][0] = 0.0f;     out[3][1] = 0.0f;     out[3][2] = 0.0f;     out[3][3] = 1.0f;
 }
 
 /* Build the camera-space portal transform and the source fan geometry. */
@@ -693,29 +697,28 @@ static void portal_view_update(const Mat4 view) {
         return;
     }
 
-    /* Show the portal only when the view ray actually passes through its
-     * ellipse.  The old "camera in front of the plane" test picked the
-     * farthest portal, so the one being looked at stayed a solid fan. */
-    {
-        Vec3f look, hit, rel;
-        float bestT = 1e30f;
-        vec3f_copy(look, gLakituState.focus);
-        vec3f_sub(look, gLakituState.pos);
+    /* Pick the visible portal nearest the view centre.  The old test traced
+     * the camera-to-Mario ray and required it to pass through the ellipse, so
+     * a portal the player was looking at but standing off-centre from stayed a
+     * flat fan.  Projecting the portal centre into view space matches what is
+     * actually on screen. */
+    if (s_forceView >= 0) {
+        best = s_forceView;
+        if (!s_portal[best].active) best = -1;
+    } else {
+        float bestScore = 1.2f;   /* roughly tan(50 deg): ignore far off-screen */
         for (i = 0; i < 2; i++) {
-            float denom, t;
+            Vec3f p;
+            float vx, vy, vz, score;
             if (!s_portal[i].active) continue;
-            denom = vdot3(look, s_portal[i].normal);
-            if (fabsf(denom) < 1e-5f) continue;
-            rel[0] = s_portal[i].pos[0] - gLakituState.pos[0];
-            rel[1] = s_portal[i].pos[1] - gLakituState.pos[1];
-            rel[2] = s_portal[i].pos[2] - gLakituState.pos[2];
-            t = vdot3(rel, s_portal[i].normal) / denom;
-            if (t <= 0.0f) continue;
-            hit[0] = gLakituState.pos[0] + look[0] * t;
-            hit[1] = gLakituState.pos[1] + look[1] * t;
-            hit[2] = gLakituState.pos[2] + look[2] * t;
-            if (portal_point_inside(&s_portal[i], hit) && t < bestT) {
-                bestT = t;
+            vec3f_copy(p, s_portal[i].pos);
+            vx = view[0][0] * p[0] + view[0][1] * p[1] + view[0][2] * p[2] + view[0][3];
+            vy = view[1][0] * p[0] + view[1][1] * p[1] + view[1][2] * p[2] + view[1][3];
+            vz = view[2][0] * p[0] + view[2][1] * p[1] + view[2][2] * p[2] + view[2][3];
+            if (vz > -10.0f) continue;   /* behind the camera / too close */
+            score = (vx * vx + vy * vy) / (vz * vz);
+            if (score < bestScore) {
+                bestScore = score;
                 best = i;
             }
         }
@@ -745,27 +748,28 @@ static void portal_view_update(const Mat4 view) {
         r[2][2] = -1.0f;
         r[3][3] = 1.0f;
 
-        /* view^-1 (rigid): R^T and -t*R^T. */
+        /* view^-1 (rigid, column vectors): R^T and -R^T*t in column 3. */
         for (y = 0; y < 3; y++) {
             for (x = 0; x < 3; x++) {
                 vinv[y][x] = view[x][y];
             }
-            vinv[y][3] = 0.0f;
         }
         for (x = 0; x < 3; x++) {
-            vinv[3][x] = -(view[3][0] * view[x][0] + view[3][1] * view[x][1]
-                         + view[3][2] * view[x][2]);
+            vinv[x][3] = -(view[0][x] * view[0][3] + view[1][x] * view[1][3]
+                         + view[2][x] * view[2][3]);
+            vinv[3][x] = 0.0f;
         }
         vinv[3][3] = 1.0f;
 
-        /* p_dst = p_src * worldToLocal(src) * R * localToWorld(dst) */
-        mat4_mul_rm(m1, tsrc_inv, r);
-        mat4_mul_rm(m, m1, tdst);
-        /* C = view * M * view^-1 */
-        mat4_mul_rm(m1, view, m);
-        mat4_mul_rm(c, m1, vinv);
+        /* Column-vector world transform: M = localToWorld(dst) * R *
+         * worldToLocal(src), then C = view * M * view^-1. */
+        mat4_mul_rm(m, tdst, r);
+        mat4_mul_rm(m1, m, tsrc_inv);
+        mat4_mul_rm(m, view, m1);
+        mat4_mul_rm(c, m, vinv);
 
         memcpy(g_portal_view.c_matrix, c, sizeof(c));
+
     }
 
     memcpy(g_portal_view.view, view, sizeof(Mat4));

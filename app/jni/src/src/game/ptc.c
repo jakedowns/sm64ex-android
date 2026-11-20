@@ -477,6 +477,7 @@ void ptc_reset(void) {
 }
 
 void ptc_place_portals(void) {
+    portal_give_gun();
     Vec3f originA = { PTC_PORTAL_A_X, PTC_PORTAL_A_Y, -700.0f };
     Vec3f targetA = { PTC_PORTAL_A_X, PTC_PORTAL_A_Y, PTC_PORTAL_A_Z };
     Vec3f originB = { PTC_PORTAL_B_X, PTC_PORTAL_B_Y, 700.0f };
@@ -977,6 +978,13 @@ static void ptc_apply_command(const char *action) {
         ptc_place_portals();
     } else if (strcmp(action, "portalview") == 0) {
         portal_view_toggle();
+    } else if (strcmp(action, "portalforce") == 0) {
+        portal_view_force(0);
+    } else if (strcmp(action, "portalauto") == 0) {
+        portal_view_force(-1);
+    } else if (strcmp(action, "portalblit") == 0) {
+        extern int gfx_portal_debug_blit;
+        gfx_portal_debug_blit = !gfx_portal_debug_blit;
     } else if (strcmp(action, "camblend") == 0) {
         camera_portal_blend_toggle();
     } else if (strcmp(action, "rumble") == 0) {
@@ -984,7 +992,7 @@ static void ptc_apply_command(const char *action) {
     } else if (strcmp(action, "annex") == 0) {
         if (gMarioState != NULL) {
             struct Camera *cam = gCurrentArea != NULL ? gCurrentArea->camera : NULL;
-            gMarioState->pos[0] = 1200.0f;
+            gMarioState->pos[0] = 1500.0f;
             gMarioState->pos[1] = 0.0f;
             gMarioState->pos[2] = 400.0f;
             gMarioState->vel[0] = gMarioState->vel[1] = gMarioState->vel[2] = 0.0f;
@@ -993,18 +1001,10 @@ static void ptc_apply_command(const char *action) {
             if (gMarioState->marioObj != NULL) {
                 vec3f_copy(gMarioState->marioObj->header.gfx.pos, gMarioState->pos);
             }
-            /* Put the camera west of Mario looking at the cube pyramid so the
-             * debug warp always produces a useful view. */
-            if (cam != NULL) {
-                /* South-west of the pyramid, clear of every platform, so the
-                 * whole stack and the green reset pad are in frame. */
-                cam->pos[0] = 1400.0f; cam->pos[1] = 330.0f; cam->pos[2] = 0.0f;
-                cam->focus[0] = 1800.0f; cam->focus[1] = 150.0f; cam->focus[2] = 400.0f;
-                cam->yaw = calculate_yaw(cam->pos, cam->focus);
-                vec3f_copy(gLakituState.pos, cam->pos);
-                vec3f_copy(gLakituState.focus, cam->focus);
-                gLakituState.yaw = cam->yaw;
-            }
+            /* Mario stops west of the pyramid, facing it.  The chase camera
+             * settles behind him around x=1200, clear of platform P4, so the
+             * whole stack is visible instead of the camera clipping a slab. */
+            (void) cam;
         }
     } else if (strcmp(action, "balltest") == 0) {
         boxphys_test_fire();

@@ -33,6 +33,7 @@
 /* Through-portal view: the portal pass is a second execution of the scene
  * display list with a camera-space transform. */
 int gfx_portal_pass = 0;
+int gfx_portal_debug_blit = 0;   /* debug: show the portal FBO full-screen */
 /* Last camera perspective projection, for the portal overlay: by the time the
  * overlay runs, rsp.P_matrix may hold the skybox/HUD ortho. */
 float gfx_last_persp_proj[4][4];
@@ -234,6 +235,7 @@ int gfx_splat_size_px = 14;
 int gfx_splat_opacity = 100;
 int gfx_splat_softness = 70;
 int gfx_splat_density = 35;
+int gfx_splat_shape = 0;   /* 0 radial, 1 paint strokes */
 int gfx_splat_active = 0;
 
 void gfx_sp_splat_marker(int on) {
@@ -2452,9 +2454,6 @@ void gfx_run(Gfx *commands) {
             gfx_run_dl_range(commands, ui_sep ? gGfxUiStart : NULL);
             gfx_flush();
 #ifdef __ANDROID__
-            if (g_portal_view.active) {
-                gfx_opengl_portal_overlay(eye);
-            }
             if (ui_sep) {
                 if (split) {
                     gfx_opengl_ui_begin(eye, gfx_stereo_eye_width, gfx_stereo_full_h,
@@ -2480,6 +2479,11 @@ void gfx_run(Gfx *commands) {
         }
 #ifdef __ANDROID__
         gfx_opengl_stereo_composite(0, 0, gfx_stereo_full_w, gfx_stereo_full_h, split);
+        if (g_portal_view.active) {
+            /* The per-eye scene FBO is consumed by the post/composite pass, so
+             * draw the portal fan once over the finished stereo image. */
+            gfx_opengl_portal_overlay(-1);
+        }
 #endif
         gfx_stereo_eye = gfx_single_eye >= 0 ? gfx_single_eye : 0;
         gfx_invalidate_state();
@@ -2491,7 +2495,28 @@ void gfx_run(Gfx *commands) {
     for (int i = 0; i < ((configWindow.vsync == 3) ? render_multiplier : 1); i++) {
         double t0 = gfx_wapi->get_time();
         gfx_rapi->start_frame();
-        gfx_run_dl(commands);
+        gfx_sp_reset();
+        /* Flat path: run the scene, composite the portal POV ellipse, then the
+         * UI.  Previously the overlay only ran inside the stereo eye loop, so
+         * portal surfaces stayed flat whenever stereo was off. */
+        if (gGfxHasScene && gGfxUiStart != NULL) {
+            gfx_run_dl_range(commands, gGfxUiStart);
+            gfx_flush();
+            if (g_portal_view.active) {
+                gfx_opengl_portal_overlay(0);
+                gfx_rapi->unload_shader(rendering_state.shader_program);
+                rendering_state.shader_program = NULL;
+            }
+            gfx_run_dl_range(gGfxUiStart, NULL);
+        } else {
+            gfx_run_dl(commands);
+            gfx_flush();
+            if (g_portal_view.active) {
+                gfx_opengl_portal_overlay(0);
+                gfx_rapi->unload_shader(rendering_state.shader_program);
+                rendering_state.shader_program = NULL;
+            }
+        }
         gfx_flush();
         double t1 = gfx_wapi->get_time();
         //printf("Process %f %f\n", t1, t1 - t0);
@@ -2502,6 +2527,9 @@ void gfx_run(Gfx *commands) {
     gfx_rapi->start_frame();
     gfx_run_dl(commands);
     gfx_flush();
+    if (g_portal_view.active) {
+        gfx_opengl_portal_overlay(0);
+    }
     double t1 = gfx_wapi->get_time();
     //printf("Process %f %f\n", t1, t1 - t0);
     gfx_wapi->swap_buffers_begin();

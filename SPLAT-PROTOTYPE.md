@@ -30,11 +30,13 @@ sorting.
 | `62` | opacity % | `100` |
 | `63` | softness % (`0` crisp disc → `100` soft Gaussian) | `70` |
 | `64` | density % (interpolated interior points on large triangles) | `35` |
+| `65` | shape: `0` radial droplet, `1` ragged directional paint strokes | `0` |
 
 `SPLAT` adb toggle cycles target `0 → 1 → 2 → 3 → 0`.
 
 The same controls are available in the on-screen debug panel under the
-**SPLAT** tab: a target cycle button plus size / opacity / softness sliders.
+**SPLAT** tab: target and shape cycle buttons plus size / opacity / softness /
+density sliders.
 `RESET` returns the target to OFF and the sliders to their defaults.
 
 ```bash

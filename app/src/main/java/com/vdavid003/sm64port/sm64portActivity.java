@@ -148,7 +148,9 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     private boolean testOn = false;
     private boolean tintOn, zbufOn, wireOn, perfOn, swapOn, sameOn, nocullOn, flatOn, analogOn;
     private int splatMode;  // 0 off, 1 Mario, 2 trees, 3 all objects
+    private int splatShape; // 0 radial gradient, 1 ragged paint strokes
     private TextView splatTargetButton;
+    private TextView splatShapeButton;
     private boolean stayOn = true, uiParallaxOn, uiBufOn;
     private boolean toeAutoOn = true;
     // Camera tracking (Leia eye/face tracking + tablet gyro).
@@ -208,8 +210,13 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
           + "  Occluding platforms fade smoothly, and the on-screen analog\n"
           + "  C-stick rotates the vanilla camera too.\n"
           + "Splat: opacity/softness now apply (blending fix), and a Density\n"
-          + "  slider fills large wall/floor triangles with interpolated points.\n"
+          + "  slider fills large wall/floor triangles with interpolated points;\n"
+          + "  a SHAPE toggle swaps the radial dab for ragged directional\n"
+          + "  paint-stroke brushes (three procedural variants).\n"
           + "Stereo defaults: IPD 300 px and depth 50% (previously 0 px / 10%).\n"
+          + "Portal POV: corrected the portal camera transform (column-vector\n"
+          + "  matrices) and added flat-mode overlay + visibility selection;\n"
+          + "  the Leia composite pass still needs the overlay wired in.\n"
           + "Splat prototype: point-sprite rendering for Mario/trees/all\n"
           + "  objects (SPLAT toggle or adb); merged from feat/splat-prototype.\n"
           + "Camera: CAMERA-tab distance/height affect vanilla and custom;\n"
@@ -966,6 +973,12 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                     splatTargetButton.setTextColor(0xFF888888);
                     refreshTabStyles();
                 }
+                if (splatShapeButton != null) {
+                    splatShape = 0;
+                    nativeSetStereoInt(65, 0);
+                    splatShapeButton.setText(splatShapeLabel());
+                    splatShapeButton.setTextColor(0xFF888888);
+                }
                 leiaView.setScaleX(1f); leiaView.setScaleY(1f);
                 leiaView.setTranslationX(0); leiaView.setTranslationY(0);
             }
@@ -1147,6 +1160,11 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         grid.setOrientation(android.widget.GridLayout.HORIZONTAL);
         content.addView(grid);
         return content;
+    }
+
+    private String splatShapeLabel() {
+        return splatShape == 1 ? "SPLAT SHAPE: PAINT STROKES"
+                               : "SPLAT SHAPE: RADIAL";
     }
 
     private String splatTargetLabel() {
@@ -1401,6 +1419,19 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             Log.i(TAG, "SPLAT target=" + splatMode);
         });
         controls.addView(splatTargetButton);
+        splatShapeButton = new TextView(this);
+        splatShapeButton.setText(splatShapeLabel());
+        splatShapeButton.setTextSize(16);
+        splatShapeButton.setTextColor(splatShape != 0 ? 0xFF66FF99 : 0xFF888888);
+        splatShapeButton.setPadding(dp(4), dp(10), dp(4), dp(10));
+        splatShapeButton.setOnClickListener(v -> {
+            splatShape ^= 1;
+            nativeSetStereoInt(65, splatShape);
+            splatShapeButton.setText(splatShapeLabel());
+            splatShapeButton.setTextColor(splatShape != 0 ? 0xFF66FF99 : 0xFF888888);
+            Log.i(TAG, "SPLAT shape=" + splatShape);
+        });
+        controls.addView(splatShapeButton);
         addSlider("Splat size", 1, 64, 14, " px", 61);
         addSlider("Opacity", 0, 100, 100, " %", 62);
         addSlider("Softness", 0, 100, 70, " %", 63);
@@ -1419,6 +1450,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         nativeSetStereoInt(62, 100);
         nativeSetStereoInt(63, 70);
         nativeSetStereoInt(64, 35);
+        nativeSetStereoInt(65, splatShape);
 
         // --- Changelog ---
         beginTab();

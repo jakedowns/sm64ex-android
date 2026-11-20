@@ -22,6 +22,7 @@ typedef struct {
 
 extern PortalViewState g_portal_view;
 void portal_view_toggle(void);
+void portal_view_force(int src);
 
 /** Portal gun state: pickup prop, two portals, hitscan placement, teleport. */
 extern int g_portal_debug;       // last placement result (1 = ok, 2..4 = failure)
