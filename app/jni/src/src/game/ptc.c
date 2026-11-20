@@ -1001,6 +1001,33 @@ static void ptc_apply_command(const char *action) {
         g_portal_debug_color = 1;   /* stage 1: solid green relay */
         gfx_stereo_2d = 1;
         gfx_stereo_same_both = 1;
+    } else if (strcmp(action, "emptytest") == 0) {
+        extern int gfx_stereo_2d;
+        extern int gfx_stereo_same_both;
+        Vec3f aOrig = { 0.0f, 200.0f, -100.0f };
+        Vec3f aTarget = { 0.0f, 200.0f, -280.0f };
+        Vec3f bOrig = { 0.0f, 200.0f, 400.0f };
+        Vec3f bTarget = { 0.0f, 200.0f, 599.0f };
+        portal_reset();
+        portal_give_gun();
+        portal_shoot_at(0, aOrig, aTarget);
+        portal_shoot_at(1, bOrig, bTarget);
+        portal_view_force(0);
+        if (gMarioState != NULL) {
+            gMarioState->pos[0] = 0.0f;
+            gMarioState->pos[1] = 0.0f;
+            gMarioState->pos[2] = 0.0f;
+            gMarioState->vel[0] = gMarioState->vel[1] = gMarioState->vel[2] = 0.0f;
+            gMarioState->faceAngle[1] = 0x8000;   /* face -Z, toward portal A */
+            set_mario_action(gMarioState, ACT_IDLE, 0);
+            if (gMarioState->marioObj != NULL) {
+                vec3f_copy(gMarioState->marioObj->header.gfx.pos, gMarioState->pos);
+            }
+        }
+        g_portal_debug_color = 1;
+        gfx_stereo_2d = 1;
+        gfx_stereo_same_both = 1;
+        gCameraMovementFlags |= CAM_MOVE_INIT_CAMERA;
     } else if (strcmp(action, "portalcolor") == 0) {
         g_portal_debug_color = !g_portal_debug_color;
     } else if (strcmp(action, "portalcam") == 0) {

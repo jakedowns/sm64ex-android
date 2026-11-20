@@ -14,9 +14,15 @@ adb shell am force-stop com.vdavid003.sm64port >/dev/null 2>&1
 adb shell am start -n com.vdavid003.sm64port/.sm64portActivity >/dev/null 2>&1
 sleep 2
 B="am broadcast -n com.vdavid003.sm64port/.DebugReceiver -a com.vdavid003.sm64port.CMD"
-adb shell \$B --es cmd level --ei n 38 >/dev/null 2>&1
-sleep 4
-adb shell \$B --es cmd ptc --es action portaltest >/dev/null 2>&1
+if [ "${STAGE}" = "empty" ]; then
+  adb shell \$B --es cmd level --ei n 37 >/dev/null 2>&1
+  sleep 4
+  adb shell \$B --es cmd ptc --es action emptytest >/dev/null 2>&1
+else
+  adb shell \$B --es cmd level --ei n 38 >/dev/null 2>&1
+  sleep 4
+  adb shell \$B --es cmd ptc --es action portaltest >/dev/null 2>&1
+fi
 sleep 2
 if [ "${STAGE}" = "scene" ]; then
   adb shell \$B --es cmd ptc --es action portalcolor >/dev/null 2>&1

@@ -53,5 +53,5 @@ DEFINE_LEVEL("KUPPA2",         LEVEL_BOWSER_2,         COURSE_BITFS,    bowser_2
 DEFINE_LEVEL("KUPPA3",         LEVEL_BOWSER_3,         COURSE_BITS,     bowser_3,         generic,  VAL_DIFF, 0x40, 0x40, 0x40, _,         _)
 STUB_LEVEL(  "",               LEVEL_UNKNOWN_35,       COURSE_NONE,                                 20000,    0x00, 0x00, 0x00, _,         _)
 DEFINE_LEVEL("DONKEY % SLID2", LEVEL_TTM,              COURSE_TTM,      ttm,              mountain, 15000,    0x08, 0x08, 0x08, _,         _)
-STUB_LEVEL(  "",               LEVEL_UNKNOWN_37,       COURSE_NONE,                                 20000,    0x00, 0x00, 0x00, _,         _)
+DEFINE_LEVEL("PORTAL TEST EMPTY", LEVEL_UNKNOWN_37, COURSE_NONE, ptctest, generic, 20000, 0x08, 0x08, 0x08, _,         _)
 DEFINE_LEVEL("PORTAL TEST CHAMBER", LEVEL_UNKNOWN_38, COURSE_NONE, ptc, generic, 20000, 0x08, 0x08, 0x08, sDynUnk38, _)
