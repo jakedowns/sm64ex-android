@@ -13,6 +13,10 @@
 #include "memory.h"
 #include "game_init.h"
 #include "rendering_graph_node.h"
+#include "behavior_data.h"
+#include "mario.h"
+#include "memory.h"
+#include "../pc/gfx/gfx_pc.h"
 
 /**
  * This file contains the code that processes the scene graph for rendering.
@@ -223,6 +227,11 @@ struct GraphNodeObject *gCurGraphNodeObject = NULL;
 struct GraphNodeHeldObject *gCurGraphNodeHeldObject = NULL;
 u16 gAreaUpdateCounter = 0;
 
+// Splat slice: true while traversing an object selected for splatting. The
+// object's display list is deferred into the master list, so this is copied
+// onto each DisplayListNode and emitted as a marker when the list is drawn.
+static u8 gSplatCurrentObject = 0;
+
 #ifdef F3DEX_GBI_2
 LookAt lookAt;
 #endif
@@ -254,9 +263,11 @@ static void geo_process_master_list_sub(struct GraphNodeMasterList *node) {
         if ((currList = node->listHeads[i]) != NULL) {
             gDPSetRenderMode(gDisplayListHead++, modeList->modes[i], mode2List->modes[i]);
             while (currList != NULL) {
+                if (currList->splat) gfx_sp_splat_marker(1);
                 gSPMatrix(gDisplayListHead++, VIRTUAL_TO_PHYSICAL(currList->transform),
                           G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);
                 gSPDisplayList(gDisplayListHead++, currList->displayList);
+                if (currList->splat) gfx_sp_splat_marker(0);
                 currList = currList->next;
             }
         }
@@ -286,6 +297,7 @@ static void geo_append_display_list(void *displayList, s16 layer) {
         // interpolation together with the previous tick's transform.
         hfr_record(listNode->transform, gMatStackPrev[gMatStackIndex]);
         listNode->displayList = displayList;
+        listNode->splat = gSplatCurrentObject;
         listNode->next = 0;
         if (gCurGraphNodeMasterList->listHeads[layer] == 0) {
             gCurGraphNodeMasterList->listHeads[layer] = listNode;
@@ -1162,6 +1174,19 @@ static int obj_is_in_view(struct GraphNodeObject *node, Mat4 matrix) {
 /**
  * Process an object node.
  */
+static int splat_object_selected(struct Object *node) {
+    switch (gfx_splat_target) {
+        case 1:  // Mario's model
+            return node == gMarioObject;
+        case 2:  // any tree object
+            return node->behavior == segmented_to_virtual(bhvTree);
+        case 3:  // every object (level geometry untouched)
+            return 1;
+        default:
+            return 0;
+    }
+}
+
 static void geo_process_object(struct Object *node) {
     Mat4 mtxf;
     s32 hasAnimation = (node->header.gfx.node.flags & GRAPH_RENDER_HAS_ANIMATION) != 0;
@@ -1244,9 +1269,13 @@ static void geo_process_object(struct Object *node) {
             mtxf_to_mtx(mtx, gMatStack[gMatStackIndex]);
             gMatStackFixed[gMatStackIndex] = mtx;
             if (node->header.gfx.sharedChild != NULL) {
+                int splat = splat_object_selected(node);
+                u8 prevSplat = gSplatCurrentObject;
                 gCurGraphNodeObject = (struct GraphNodeObject *) node;
                 node->header.gfx.sharedChild->parent = &node->header.gfx.node;
+                if (splat) gSplatCurrentObject = 1;
                 geo_process_node_and_siblings(node->header.gfx.sharedChild);
+                gSplatCurrentObject = prevSplat;
                 node->header.gfx.sharedChild->parent = NULL;
                 gCurGraphNodeObject = NULL;
             }

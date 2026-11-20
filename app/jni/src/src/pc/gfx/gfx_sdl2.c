@@ -68,6 +68,11 @@ extern int gfx_stereo_fov_pct;
 extern int gfx_stereo_2d;
 extern int gfx_stereo_zbuf;
 extern int gfx_stereo_wire;
+// Splat mode config (gfx_pc.c)
+extern int gfx_splat_target;
+extern int gfx_splat_size_px;
+extern int gfx_splat_opacity;
+extern int gfx_splat_softness;
 extern float gfx_stereo_fps;
 extern int gfx_stereo_perf;
 extern int gfx_stereo_out_w;
@@ -203,6 +208,12 @@ Java_com_vdavid003_sm64port_sm64portActivity_nativeSetStereoInt(JNIEnv *env, job
         case 8: gfx_touch_dx = (float) value * 4.0f; break;    // percent -> px (approx)
         case 9: gfx_touch_dy = (float) value * 4.0f; break;
         case 10: gfx_touch_scale = (float) value / 100.0f; break;
+        // Splat mode (first slice): target, size px, opacity %, softness %.
+        // Keys 60-63 so we do not collide with the geo-calibration keys 50/51.
+        case 60: gfx_splat_target = value; break;
+        case 61: gfx_splat_size_px = value; break;
+        case 62: gfx_splat_opacity = value; break;
+        case 63: gfx_splat_softness = value; break;
     }
 }
 

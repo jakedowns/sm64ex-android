@@ -139,6 +139,7 @@ struct DisplayListNode
     void *transform;
     void *displayList;
     struct DisplayListNode *next;
+    u8 splat;  /* draw this list as point-sprite splats (first-slice prototype) */
 };
 
 /** GraphNode that manages the 8 top-level display lists that will be drawn

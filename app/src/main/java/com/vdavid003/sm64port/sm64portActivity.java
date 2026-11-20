@@ -144,6 +144,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     private boolean stereoOn = true;
     private boolean testOn = false;
     private boolean tintOn, zbufOn, wireOn, perfOn, swapOn, sameOn, nocullOn, flatOn, analogOn;
+    private int splatMode;  // 0 off, 1 Mario, 2 trees, 3 all objects
     private boolean stayOn = true, uiParallaxOn, uiBufOn;
     private boolean toeAutoOn = true;
     // Camera tracking (Leia eye/face tracking + tablet gyro).
@@ -2751,6 +2752,16 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             case "SWAP": nativeSetStereoInt(4, swapOn ? 0 : 1); swapOn = !swapOn; break;
             case "SAME": nativeSetStereoInt(6, sameOn ? 0 : 1); sameOn = !sameOn; break;
             case "NOCULL": nativeSetStereoInt(19, nocullOn ? 0 : 1); nocullOn = !nocullOn; break;
+            case "SPLAT":
+                runOnUiThread(() -> {
+                    splatMode = (splatMode + 1) % 4;
+                    nativeSetStereoInt(60, splatMode);
+                    Log.i(TAG, "SPLAT mode=" + splatMode
+                            + (splatMode == 0 ? " off"
+                               : splatMode == 1 ? " mario"
+                               : splatMode == 2 ? " trees" : " all objects"));
+                });
+                break;
             case "ANALOG":
                 analogOn = !analogOn;
                 if (touchOverlay != null) touchOverlay.setAnalogMode(analogOn);
