@@ -60,7 +60,7 @@ import org.libsdl.app.SDLActivity;
  */
 public class sm64portActivity extends SDLActivity implements SensorEventListener {
     private static final String TAG = "SM64Leia";
-    private static final String BUILD_NAME = "v1.0-alpha1";
+    private static final String BUILD_NAME = "v1.0-alpha2";
     private static final String PREFS_NAME = "sm64port";
     private static final String PREF_OVERLAY_OPACITY = "overlay_opacity";
     private static final int REQ_EXPORT_LOG = 0x5A64;
@@ -185,37 +185,32 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     private float panelDownY = -1;
     private static final int PANEL_BG = 0xCC101010;
     private static final String CHANGELOG =
-            "Portal gun: walk into the gun in the castle grounds; it equips in\n"
-          + "  Mario's hand. LB/RB place blue/orange portals (also P1/P2).\n"
-          + "  The aim reticle is drawn in the game UI with its own stereo depth\n"
-          + "  from the target distance; portals keep momentum on exit.\n"
-          + "Portal Test Chamber (ENH): portal camera blend, momentum launch\n"
-          + "  demo and a second debug star; occluder fade only fades the\n"
-          + "  platform/wall actually blocking the camera-to-Mario view.\n"
-          + "Through-portal view is on by default (portalview still toggles).\n"
-          + "Camera: CAMERA tab distance/height apply to vanilla + custom;\n"
-          + "  custom orbit and first person (Y-invertible). C-up twice enters\n"
-          + "  first person; C-up or Select/Back exits. No cam SFX in FPV;\n"
-          + "  TOEAUTO converges on a forward raycast there.\n"
-          + "ENH: EQUIP PORTAL GUN changes to DROP PORTAL GUN while holding it.\n"
-          + "Camera tracking: Leia head-tracked parallax + gyro canting, now\n"
-          + "  grouped under their enable toggles (CAMERA tab).\n"
-          + "Stereo: live debug pictogram with depth-range gauge, cam->Mario\n"
-          + "  distance and the UI-depth plane; IPD/baseline label.\n"
-          + "Aspect % (in) defaults to 84% and shows the mapped ratio; 3D\n"
-          + "  geometry keeps square pixels at every aspect (perspective fix).\n"
-          + "HFR: 120 Hz interpolated rendering, simulation stays at 30 Hz.\n"
-          + "UI after post: HUD/menus composited after MXAO/DOF/SSGI/SSRTX.\n"
-          + "DOF auto focus on Mario; TOEAUTO aims both eyes at that distance.\n"
-          + "Free camera (X toggle, Y recentre, ANA stick), Ctl opacity.\n"
-          + "Stay in level after stars; debug level select; cheats menu.\n"
-          + "Ragdolls (death + hit), puppycam+, dynamic shadows, SSRTX.\n"
-          + "Touch: two-finger pinch = FOV, drag Y = cam distance, drag X = cam height.\n"
-          + "Gamepad: LB/RB portals, RT = Z, drag-through on-screen buttons.\n"
-          + "Debug: tabs (underline = selected, green = effect on), slider\n"
-          + "  drag mode, changelog, adb channel (dump/set/toggle/fx/portal).\n"
-          + "Debug log export (EXPORT tab): save/share Android + Leia boot logs.\n"
-          + "About tab: fork feature list and upstream repo credits.";
+            "v1.0-alpha2 - what is new\n"
+          + "Portal gun: spinning pickup, held decimated model, LB/RB fire,\n"
+          + "  ENH EQUIP/DROP toggle, P1/P2 touch buttons, portal sounds.\n"
+          + "Aim reticle: now a small thin crosshair at the real raycast hit\n"
+          + "  point in the world, so its stereo depth is the surface depth.\n"
+          + "Portal Test Chamber (ENH): momentum launch + second debug star,\n"
+          + "  through-portal view on by default, smooth portal camera blend,\n"
+          + "  per-object occluder fade (only the blocking platform/wall fades).\n"
+          + "Movement kit (ENH): Titanfall-style wall-run, grapple and a fuel\n"
+          + "  jetpack, with fuel-tank and refill-pump upgrades. L = use.\n"
+          + "Splat prototype: point-sprite rendering for Mario/trees/all\n"
+          + "  objects (SPLAT toggle or adb); merged from feat/splat-prototype.\n"
+          + "Camera: CAMERA-tab distance/height affect vanilla and custom;\n"
+          + "  custom orbit Y-invert; FPV X-invert; FOV up to 400%.\n"
+          + "  C-up twice enters first person; C-up or Select/Back exits;\n"
+          + "  no standard camera SFX in FPV; TOEAUTO raycasts forward there.\n"
+          + "Camera gestures (opt-in, CAMERA tab): two-finger pinch = FOV,\n"
+          + "  drag Y = camera distance, drag X = camera height.\n"
+          + "Stereo: Aspect % in 0.1 steps, default 84% (21:25) with a live\n"
+          + "  ratio label; 3D width/height calibration and a magenta ASPECT\n"
+          + "  TEST square; 3D height defaults to 50% for the Leia panel.\n"
+          + "Debug: inline -/+ buttons on every slider; ASPECT TEST; branch\n"
+          + "  name shown in About, Changelog and the bottom status line.\n"
+          + "Existing: 120 Hz interpolated rendering (30 Hz sim), UI after\n"
+          + "  post, MXAO/DOF/SSGI/SSRTX/shadows, head-track + gyro, free cam,\n"
+          + "  stay in level, level select, cheats, log export, about/credits.";
 
     /** Cycle render rate: 30 -> 60 -> 120 -> uncapped, and match panel refresh. */
     private void cycleFpsMode() {
@@ -755,7 +750,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
 
         TextView camBtn = new TextView(this);
         camCycleButton = camBtn;
-        camBtn.setText("CAM " + CAM_MODE_SHORT[Math.min(camMode2, CAM_MODE_SHORT.length - 1)]);
+        camBtn.setText("CAM " + camModeLetter(camMode2));
         camBtn.setTextColor(0xFFCCCCCC);
         camBtn.setTextSize(16);
         camBtn.setPadding(pad, pad / 2, pad, pad / 2);
@@ -833,7 +828,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addSlider("Depth", -200, 200, 10, " %", 2);
         addSlider("UI depth", -60, 60, 0, " px", 38);
         addSlider("Toe in/out", -100, 100, 0, " %", 17);
-        addSlider("Aspect % (in)", 10, 400, 84, " %", 18);
+        addSlider("Aspect % (in)", 10, 4000, 840, "", 57);
         addSlider("Eye margin%", 50, 100, 100, " %", 14);
         addIntSlider("Ctl opacity", 0, 100, overlayAlphaPct, new java.util.function.IntConsumer() {
             @Override public void accept(int v) { applyOverlayAlpha(v); }
@@ -1196,6 +1191,20 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         controls.addView(camTop, 0);
 
+        final TextView pinchTgl = new TextView(this);
+        pinchTgl.setText("PINCH CAM: " + (TouchOverlay.camGesturesEnabled ? "ON" : "OFF"));
+        pinchTgl.setTextSize(15);
+        pinchTgl.setGravity(Gravity.CENTER);
+        pinchTgl.setPadding(dp(4), dp(8), dp(4), dp(8));
+        pinchTgl.setTextColor(TouchOverlay.camGesturesEnabled ? 0xFF66FF99 : 0xFF888888);
+        pinchTgl.setOnClickListener(v -> {
+            TouchOverlay.camGesturesEnabled = !TouchOverlay.camGesturesEnabled;
+            pinchTgl.setText("PINCH CAM: " + (TouchOverlay.camGesturesEnabled ? "ON" : "OFF"));
+            pinchTgl.setTextColor(TouchOverlay.camGesturesEnabled ? 0xFF66FF99 : 0xFF888888);
+            Log.i(TAG, "PINCH_CAM=" + TouchOverlay.camGesturesEnabled);
+        });
+        controls.addView(pinchTgl, 3);
+
         addCamSlider("Cam distance", 1, 1500, 700, " u", 46);
         addCamSlider("FOV %", 1, 400, 100, " %", 20);
         addCamSlider("3D height", 50, 150, 50, " %", 50);
@@ -1344,6 +1353,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         }
         log.setText("sm64ex-android - Lume Pad 2 fork\n"
                 + "version " + BUILD_NAME + "\n"
+                + "branch  " + buildBranch() + "\n"
                 + "built   " + stamp + "\n"
                 + "------------------------------------------\n"
                 + CHANGELOG);
@@ -1392,6 +1402,15 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         controls.addView(aboutEnv);
     }
 
+    private String buildBranch() {
+        try {
+            String b = com.vdavid003.sm64port.BuildConfig.GIT_BRANCH;
+            return (b == null || b.isEmpty()) ? "unknown" : b;
+        } catch (Throwable t) {
+            return "unknown";
+        }
+    }
+
     private String aboutHtml() {
         String stamp = "?";
         try {
@@ -1399,7 +1418,8 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         } catch (Throwable ignored) {
         }
         return "<b>sm64ex-android &mdash; Lume Pad 2 fork</b><br>"
-                + "version " + BUILD_NAME + " &middot; built " + stamp + "<br><br>"
+                + "version " + BUILD_NAME + " &middot; branch " + buildBranch()
+                + " &middot; built " + stamp + "<br><br>"
                 + "<b>Features added by this fork</b><br>"
                 + "&bull; Leia Lume Pad 2 glasses-free 3D output: SDL renders a 2x1 SBS"
                 + " frame into a Leia surface, the CNSDK interlacer/weaver shows it on the"
@@ -1609,12 +1629,17 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         setCamMode2((camMode2 + 1) % CAM_MODE_SHORT.length);
     }
 
+    private static String camModeLetter(int mode) {
+        int m = Math.max(0, Math.min(CAM_MODE_SHORT.length - 1, mode));
+        return String.valueOf((char) ('A' + m));
+    }
+
     private void updateCamModePills() {
         if (camModePills == null) {
             return;
         }
         if (camCycleButton != null && camMode2 >= 0 && camMode2 < CAM_MODE_SHORT.length) {
-            camCycleButton.setText("CAM " + CAM_MODE_SHORT[camMode2]);
+            camCycleButton.setText("CAM " + camModeLetter(camMode2));
         }
         for (int i = 0; i < camModePills.length; i++) {
             TextView pill = camModePills[i];
@@ -2146,31 +2171,34 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         v.setTranslationY(outVal[4]);
     }
 
-    /** Human-readable ratio for the Aspect % slider (100% = 1:1). */
-    private static String aspectLabel(int pct) {
-        double r = pct / 100.0;
+    /** Ratio + decimal percent for the Aspect slider, which is in 0.1% steps. */
+    private static String aspectLabelTenths(int tenths) {
+        double r = tenths / 1000.0;
         double[] vals = {1.0, 16.0 / 9.0, 4.0 / 3.0, 3.0 / 2.0, 21.0 / 9.0,
                          9.0 / 16.0, 3.0 / 4.0, 0.84};
         String[] names = {"1:1", "16:9", "4:3", "3:2", "21:9",
                           "9:16", "3:4", "21:25"};
+        String ratio = null;
         for (int i = 0; i < vals.length; i++) {
             if (Math.abs(r - vals[i]) < 0.005) {
-                return names[i];
+                ratio = names[i];
+                break;
             }
         }
-        int w = pct, h = 100;
-        int a = w, b = h;
-        while (b != 0) {
-            int t = a % b;
-            a = b;
-            b = t;
+        if (ratio == null) {
+            int w = tenths, h = 1000;
+            int a = w, b = h;
+            while (b != 0) {
+                int t = a % b;
+                a = b;
+                b = t;
+            }
+            w /= a;
+            h /= a;
+            ratio = (w <= 200 && h <= 200) ? (w + ":" + h)
+                    : String.format(java.util.Locale.US, "%.2f:1", r);
         }
-        w /= a;
-        h /= a;
-        if (w <= 64 && h <= 64) {
-            return w + ":" + h;
-        }
-        return String.format(java.util.Locale.US, "%.2f:1", r);
+        return String.format(java.util.Locale.US, "%.1f%% (%s)", tenths / 10.0, ratio);
     }
 
     private void addSlider(String name, int min, int max, int initial, String unit,
@@ -2178,8 +2206,9 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         final TextView label = new TextView(this);
         label.setTextColor(Color.WHITE);
         label.setTextSize(14);
-        label.setText(name + ": " + initial + unit
-                + (which == 18 ? "  (" + aspectLabel(initial) + ")" : ""));
+        label.setText(which == 57
+                ? name + ": " + aspectLabelTenths(initial)
+                : name + ": " + initial + unit);
 
         SeekBar bar = new SeekBar(this);
         bar.setMax(max - min);
@@ -2188,8 +2217,9 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             @Override
             public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
                 int value = progress + min;
-                label.setText(name + ": " + value + unit
-                        + (which == 18 ? "  (" + aspectLabel(value) + ")" : ""));
+                label.setText(which == 57
+                        ? name + ": " + aspectLabelTenths(value)
+                        : name + ": " + value + unit);
                 if (which == 17) toeValuePct = value;
                 stereoValues.put(which, value);
                 if (stereoPictogram != null) stereoPictogram.invalidate();
@@ -2301,12 +2331,41 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         animatePanelBg(0x00000000, PANEL_BG);
     }
 
+    /** Inline - / + buttons for precise one-step slider changes. */
+    private TextView stepButton(String text, final SeekBar bar, final int dir) {
+        TextView b = new TextView(this);
+        b.setText(text);
+        b.setTextSize(20);
+        b.setGravity(Gravity.CENTER);
+        b.setTextColor(0xFFCCDDFF);
+        b.setPadding(0, 0, 0, 0);
+        b.setOnClickListener(v -> {
+            int p = bar.getProgress() + dir;
+            if (p < 0) p = 0;
+            if (p > bar.getMax()) p = bar.getMax();
+            bar.setProgress(p);
+        });
+        return b;
+    }
+
     private void addToGrid(TextView label, SeekBar bar) {
         android.widget.LinearLayout col = new android.widget.LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
         col.setPadding(0, 0, dp(8), 0);
         col.addView(label);
-        col.addView(bar);
+
+        LinearLayout barRow = new LinearLayout(this);
+        barRow.setOrientation(LinearLayout.HORIZONTAL);
+        barRow.setGravity(Gravity.CENTER_VERTICAL);
+        TextView minus = stepButton("-", bar, -1);
+        TextView plus = stepButton("+", bar, +1);
+        barRow.addView(minus, new LinearLayout.LayoutParams(dp(34),
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+        barRow.addView(bar, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        barRow.addView(plus, new LinearLayout.LayoutParams(dp(34),
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+        col.addView(barRow);
         sliderRows.add(col);
         // While a slider is being dragged, hide every other slider row and make
         // the panel background transparent so the scene stays visible.
@@ -2469,7 +2528,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                 }
                 debugView.setTextColor(busyOn ? 0xFFFF5555 : 0xFFAAFFAA);
                 debugView.setText((busyOn ? "BUSY - hands off  |  " : "FREE  |  ")
-                        + BUILD_NAME);
+                        + BUILD_NAME + "  " + buildBranch());
                 h.postDelayed(this, 500);
             }
         });

@@ -72,7 +72,14 @@ void first_person_camera_update(struct Camera *c) {
         }
     }
     if (inX <= 12 && inX >= -12) {
-        s_fpYaw = approach_s16_cam(s_fpYaw, gMarioState->faceAngle[1], 0x0200);
+        /* Only recentre while standing still.  Chasing Mario's face angle
+         * while walking forms a feedback loop (facing is camera-relative), so
+         * each step re-aimed the view by the stick angle and looked like
+         * ~90-degree snapping.  A fixed camera + camera-relative left stick
+         * gives smooth continuous turning. */
+        if (gMarioState->forwardVel <= 1.0f) {
+            s_fpYaw = approach_s16_cam(s_fpYaw, gMarioState->faceAngle[1], 0x0080);
+        }
     }
 
     dir[0] = sins(s_fpYaw) * coss(s_fpPitch);

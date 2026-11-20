@@ -275,6 +275,7 @@ int gfx_stereo_out_h = 0;
 int gfx_stereo_perf = 0;   // 1 = render each eye at half resolution
 int gfx_stereo_fit = 2;    // 0 = fill eye, 1 = 4:3 fit, 2 = 16:9 fit (best)
 int gfx_stereo_aspect_pct = 0;
+int gfx_stereo_aspect_tenths = 0;   // key 57: tenths of a percent (0.1% steps)
 /* Debug calibration for panel/weave pixel aspect: scales 3D Y only. */
 float gfx_geo_y_scale = 0.5f;   // calibrated for the Leia panel/weave
 float gfx_geo_x_scale = 1.0f;
@@ -2257,7 +2258,9 @@ void gfx_start_frame(void) {
         }
         // Decide the canvas aspect inside the eye buffer.
         float eye_ar = (float)gfx_stereo_eye_width / (float)gfx_current_dimensions.height;
-        float target_ar = gfx_stereo_aspect_pct > 0
+        float target_ar = gfx_stereo_aspect_tenths > 0
+                        ? (float)gfx_stereo_aspect_tenths / 1000.0f
+                        : gfx_stereo_aspect_pct > 0
                         ? (float)gfx_stereo_aspect_pct / 100.0f
                         : gfx_stereo_fit == 1 ? 4.0f / 3.0f
                         : gfx_stereo_fit == 2 ? 16.0f / 9.0f

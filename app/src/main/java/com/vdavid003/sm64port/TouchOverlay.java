@@ -40,6 +40,8 @@ public class TouchOverlay extends View {
     private int stickPointer = -1;
 
     // Two-finger camera gestures: pinch = FOV, drag Y = cam distance, drag X = cam height.
+    // Disabled by default; the CAMERA tab has the enable toggle.
+    public static boolean camGesturesEnabled = false;
     private boolean camGesture;
     private int camPtr1 = -1, camPtr2 = -1;
     private float gSpan0, gCx0, gCy0;
@@ -592,6 +594,9 @@ public class TouchOverlay extends View {
     }
 
     private boolean startCamGesture(MotionEvent e) {
+        if (!camGesturesEnabled) {
+            return false;
+        }
         float x0 = e.getX(0), y0 = e.getY(0);
         float x1 = e.getX(1), y1 = e.getY(1);
         if (overControl(x0, y0) || overControl(x1, y1)) {

@@ -751,6 +751,8 @@ static void portal_view_update(const Mat4 view) {
     g_portal_view.active = 1;
 }
 
+static void portal_draw_reticle(const Mat4 view);
+
 void portal_render(void) {
     Mat4 view;
 
@@ -788,44 +790,29 @@ void portal_render(void) {
         draw_gun(view);
     }
     draw_held_gun(view);
+    portal_draw_reticle(view);
 
     gSPClearGeometryMode(gDisplayListHead++, G_ZBUFFER);
 }
 
 /* ------------------------------------------------------- aiming reticle */
 
-/* The reticle is part of the game UI pass, not the Java overlay: that gives it
- * per-eye stereo (and keeps it crisp after the FX pass).  Its own depth shift
- * comes from the aim-surface distance, so it does not inherit the UI-depth
- * slider. */
-float g_portal_reticle_depth_px = 0.0f;
-
-extern float gfx_stereo_ipd_px;
-extern float gfx_dof_focus_auto;
-
-ALIGNED8 static const u16 s_reticle_white[16] = {
-    0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
-    0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
-    0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
-    0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
-};
-
-/* Distance to the surface behind the reticle.  The ray is nudged up by the
- * same amount the crosshair sits above screen centre. */
-static float portal_reticle_distance(void) {
+/* Raycast for the reticle.  The ray is nudged up by the same amount the
+ * crosshair sits above screen centre.  Fills `out` with the hit point. */
+static int portal_reticle_hit(Vec3f out) {
     Vec3f orig, fwd, right, up, dir, hit;
     struct Surface *surf = NULL;
     float len;
 
     if (gMarioState == NULL) {
-        return 700.0f;
+        return 0;
     }
     vec3f_copy(orig, gLakituState.pos);
     vec3f_copy(fwd, gLakituState.focus);
     vec3f_sub(fwd, orig);
     len = sqrtf(vdot3(fwd, fwd));
     if (len < 0.001f) {
-        return 700.0f;
+        return 0;
     }
     fwd[0] /= len;
     fwd[1] /= len;
@@ -840,7 +827,6 @@ static float portal_reticle_distance(void) {
     vcross3(up, right, fwd);
     vnorm3(up);
 
-    /* 45%-of-screen-height reticle => ~5% above the centre ray. */
     dir[0] = fwd[0] + up[0] * 0.055f;
     dir[1] = fwd[1] + up[1] * 0.055f;
     dir[2] = fwd[2] + up[2] * 0.055f;
@@ -851,74 +837,102 @@ static float portal_reticle_distance(void) {
 
     find_surface_on_ray(orig, dir, &surf, hit);
     if (surf == NULL) {
-        return 700.0f;
-    }
-    len = sqrtf((hit[0] - orig[0]) * (hit[0] - orig[0])
-              + (hit[1] - orig[1]) * (hit[1] - orig[1])
-              + (hit[2] - orig[2]) * (hit[2] - orig[2]));
-    return len < 50.0f ? 50.0f : len;
-}
-
-static void portal_reticle_rect(s16 x0, s16 y0, s16 x1, s16 y1) {
-    gSPTextureRectangle(gDisplayListHead++, x0 << 2, y0 << 2, x1 << 2, y1 << 2,
-                        G_TX_RENDERTILE, 0, 0, 4 << 10, 1 << 10);
-}
-
-/* Appends the crosshair to the UI display list.  Returns 1 when it drew. */
-int portal_render_reticle(void) {
-    static const s16 bars[5][4] = {
-        { 118, 106, 138, 109 },   /* left  */
-        { 182, 106, 202, 109 },   /* right */
-        { 159,  86, 161, 106 },   /* up    */
-        { 159, 110, 161, 130 },   /* down  */
-        { 157, 105, 163, 111 },   /* dot   */
-    };
-    float dist, half, z;
-
-    if (!s_hasGun || gMarioState == NULL) {
-        g_portal_reticle_depth_px = 0.0f;
         return 0;
     }
+    vec3f_copy(out, hit);
+    return 1;
+}
 
-    dist = portal_reticle_distance();
-    half = 0.5f * gfx_stereo_ipd_px;
-    /* Positive shift = in front of the display plane.  Relative to the
-     * autofocus plane (Mario), a target behind him needs a negative shift. */
-    z = half * (gfx_dof_focus_auto / dist - 1.0f);
-    if (z > half) z = half;
-    if (z < -half) z = -half;
-    g_portal_reticle_depth_px = z;
+/* World-space crosshair at the actual aim-ray hit point: true per-eye depth
+ * (no UI-depth slider), small and thin.  Sized in world units proportional to
+ * distance so it stays roughly constant on screen. */
+static void portal_draw_reticle(const Mat4 view) {
+    Vec3f hit, fwd, right, up, pos;
+    float d, arm, thick, inner;
+    Vtx *v;
+    int b;
 
-    gDPPipeSync(gDisplayListHead++);
-    gDPSetCycleType(gDisplayListHead++, G_CYC_1CYCLE);
-    gDPSetAlphaCompare(gDisplayListHead++, G_AC_NONE);
-    gDPSetCombineMode(gDisplayListHead++, G_CC_MODULATEIA_PRIM, G_CC_MODULATEIA_PRIM);
-    gDPSetTextureFilter(gDisplayListHead++, G_TF_POINT);
-    gDPSetTexturePersp(gDisplayListHead++, G_TP_NONE);
-    gDPSetTextureLUT(gDisplayListHead++, G_TT_NONE);
-    gDPSetTextureImage(gDisplayListHead++, G_IM_FMT_RGBA, G_IM_SIZ_16b, 1, s_reticle_white);
-    gDPLoadSync(gDisplayListHead++);
-    gDPLoadBlock(gDisplayListHead++, G_TX_LOADTILE, 0, 0, 16 - 1,
-                 CALC_DXT(4, G_IM_SIZ_16b_BYTES));
-    gDPPipeSync(gDisplayListHead++);
-    gDPSetTile(gDisplayListHead++, G_IM_FMT_RGBA, G_IM_SIZ_16b, 1, 0,
-               G_TX_RENDERTILE, 0, G_TX_CLAMP, 2, G_TX_NOLOD,
-               G_TX_CLAMP, 2, G_TX_NOLOD);
-    gDPSetTileSize(gDisplayListHead++, G_TX_RENDERTILE, 0, 0,
-                   3 << G_TEXTURE_IMAGE_FRAC, 3 << G_TEXTURE_IMAGE_FRAC);
-    gDPSetPrimColor(gDisplayListHead++, 0, 0, 255, 255, 255, 220);
-    gDPSetRenderMode(gDisplayListHead++, G_RM_AA_XLU_SURF, G_RM_AA_XLU_SURF2);
-
-    for (int i = 0; i < 5; i++) {
-        portal_reticle_rect(bars[i][0], bars[i][1], bars[i][2], bars[i][3]);
+    if (!s_hasGun || gMarioState == NULL || !portal_reticle_hit(hit)) {
+        return;
     }
 
+    vec3f_copy(fwd, gLakituState.focus);
+    vec3f_sub(fwd, gLakituState.pos);
+    if (vdot3(fwd, fwd) < 0.001f) {
+        return;
+    }
+    vnorm3(fwd);
+    up[0] = 0.0f; up[1] = 1.0f; up[2] = 0.0f;
+    vcross3(right, fwd, up);
+    if (vdot3(right, right) < 0.001f) {
+        right[0] = 1.0f; right[1] = 0.0f; right[2] = 0.0f;
+    }
+    vnorm3(right);
+    vcross3(up, right, fwd);
+    vnorm3(up);
+
+    d = sqrtf((hit[0] - gLakituState.pos[0]) * (hit[0] - gLakituState.pos[0])
+            + (hit[1] - gLakituState.pos[1]) * (hit[1] - gLakituState.pos[1])
+            + (hit[2] - gLakituState.pos[2]) * (hit[2] - gLakituState.pos[2]));
+    if (d < 80.0f) d = 80.0f;
+    arm = d * 0.0040f;
+    thick = d * 0.0012f;
+    inner = arm * 0.35f;
+
+    /* Pull a couple of units towards the camera so it does not z-fight. */
+    pos[0] = hit[0] - fwd[0] * 2.5f;
+    pos[1] = hit[1] - fwd[1] * 2.5f;
+    pos[2] = hit[2] - fwd[2] * 2.5f;
+
+    v = alloc_display_list(sizeof(Vtx) * 16);
+    if (v == NULL) {
+        return;
+    }
+    b = 0;
+    /* left */
+    fill_vtx(&v[b++], -arm, -thick, 0, 255, 255, 255, 210);
+    fill_vtx(&v[b++], -inner, -thick, 0, 255, 255, 255, 210);
+    fill_vtx(&v[b++], -inner, thick, 0, 255, 255, 255, 210);
+    fill_vtx(&v[b++], -arm, thick, 0, 255, 255, 255, 210);
+    /* right */
+    fill_vtx(&v[b++], inner, -thick, 0, 255, 255, 255, 210);
+    fill_vtx(&v[b++], arm, -thick, 0, 255, 255, 255, 210);
+    fill_vtx(&v[b++], arm, thick, 0, 255, 255, 255, 210);
+    fill_vtx(&v[b++], inner, thick, 0, 255, 255, 255, 210);
+    /* top */
+    fill_vtx(&v[b++], -thick, inner, 0, 255, 255, 255, 210);
+    fill_vtx(&v[b++], thick, inner, 0, 255, 255, 255, 210);
+    fill_vtx(&v[b++], thick, arm, 0, 255, 255, 255, 210);
+    fill_vtx(&v[b++], -thick, arm, 0, 255, 255, 255, 210);
+    /* bottom */
+    fill_vtx(&v[b++], -thick, -arm, 0, 255, 255, 255, 210);
+    fill_vtx(&v[b++], thick, -arm, 0, 255, 255, 255, 210);
+    fill_vtx(&v[b++], thick, -inner, 0, 255, 255, 255, 210);
+    fill_vtx(&v[b++], -thick, -inner, 0, 255, 255, 255, 210);
+
+    emit_model_matrix(pos, right, up, fwd, view);
+
+    gSPSetGeometryMode(gDisplayListHead++, G_ZBUFFER | G_SHADE | G_CULL_BACK);
+    gSPClearGeometryMode(gDisplayListHead++, G_LIGHTING);
+    gDPSetCombineMode(gDisplayListHead++, G_CC_SHADE, G_CC_SHADE);
+    gDPSetRenderMode(gDisplayListHead++, G_RM_AA_ZB_XLU_SURF, G_RM_AA_ZB_XLU_SURF2);
+    gSPVertex(gDisplayListHead++, VIRTUAL_TO_PHYSICAL(v), 16, 0);
+    for (int q = 0; q < 4; q++) {
+        int vb = q * 4;
+        gSP1Triangle(gDisplayListHead++, vb, vb + 1, vb + 2, 0);
+        gSP1Triangle(gDisplayListHead++, vb, vb + 2, vb + 3, 0);
+    }
     gDPPipeSync(gDisplayListHead++);
     gDPSetRenderMode(gDisplayListHead++, G_RM_AA_ZB_OPA_SURF, G_RM_AA_ZB_OPA_SURF2);
     gDPSetCombineMode(gDisplayListHead++, G_CC_MODULATERGB, G_CC_MODULATERGB);
-    gDPSetTexturePersp(gDisplayListHead++, G_TP_PERSP);
-    gDPSetPrimColor(gDisplayListHead++, 0, 0, 255, 255, 255, 255);
-    return 1;
+    gSPSetGeometryMode(gDisplayListHead++, G_LIGHTING);
+}
+
+/* UI reticle retired: it could only fake depth with a parallax shift. */
+float g_portal_reticle_depth_px = 0.0f;
+int portal_render_reticle(void) {
+    g_portal_reticle_depth_px = 0.0f;
+    return 0;
 }
 
 extern int g_ptc_aspect_calib;

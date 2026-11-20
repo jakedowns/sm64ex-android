@@ -61,6 +61,7 @@ extern int gfx_stereo_debug_tint;
 extern int gfx_stereo_in_scale_pct;
 extern int gfx_stereo_toe_pct;
 extern int gfx_stereo_aspect_pct;
+extern int gfx_stereo_aspect_tenths;
 extern float gfx_geo_y_scale;
 extern float gfx_geo_x_scale;
 extern int gfx_stereo_nocull;
@@ -186,6 +187,7 @@ Java_com_vdavid003_sm64port_sm64portActivity_nativeSetStereoInt(JNIEnv *env, job
         case 37: gfx_ui_buf = value; break;
         case 38: gfx_ui_depth_px = (float) value; break;
         case 50: gfx_geo_y_scale = (float) value / 100.0f; break;
+        case 57: gfx_stereo_aspect_tenths = value; break;
         case 51: gfx_geo_x_scale = (float) value / 100.0f; break;
         case 40: gfx_toe_auto = value != 0; break;
         case 41: gfx_hdt_enabled = value != 0; break;
