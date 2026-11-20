@@ -101,6 +101,7 @@ device_app_busy() {
 }
 
 device_sleep() {
+    [[ "${AGENT_NO_SLEEP:-0}" == "1" ]] && return 0
     local adb_bin="${ADB:-adb}"
     export LD_LIBRARY_PATH="/home/ubuntu/.local/lib/android-tools${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
     command -v "$adb_bin" >/dev/null 2>&1 || return 0
