@@ -24,7 +24,7 @@
 #define BP_CUBE_HALF   0.60f          /* 120-unit cube */
 #define BP_CUBE_GAP    0.61f
 #define BP_BALL_R      0.25f
-#define BP_BALL_SPEED  18.0f
+#define BP_BALL_SPEED  26.0f
 #define BP_MAX_BALLS   24
 #define BP_MAX_BOXES   40
 #define BP_PYRAMID_X   18.0f          /* 1800 units */
@@ -32,6 +32,7 @@
 
 static b3WorldId s_world;
 static b3BodyId s_boxes[BP_MAX_BOXES];
+static b3BodyId s_marioBody;
 static int s_boxCount;
 static b3BodyId s_balls[BP_MAX_BALLS];
 static u32 s_ballTime[BP_MAX_BALLS];
@@ -56,8 +57,8 @@ static void bp_add_box(float x, float y, float z) {
     bd.angularDamping = 0.05f;
     b3BodyId body = b3CreateBody(s_world, &bd);
     bp_box_half(&hull);
-    sd.density = 500.0f;
-    sd.baseMaterial.friction = 0.7f;
+    sd.density = 120.0f;          /* light enough for a ball to topple */
+    sd.baseMaterial.friction = 0.6f;
     sd.baseMaterial.restitution = 0.05f;
     b3CreateHullShape(body, &sd, &hull.base);
     s_boxes[s_boxCount++] = body;
@@ -106,6 +107,19 @@ void boxphys_reset(void) {
         sd.density = 0.0f;
         sd.baseMaterial.friction = 0.9f;
         b3CreateHullShape(ground, &sd, &hull.base);
+    }
+    {
+        /* Kinematic proxy so Mario pushes cubes when he runs into them. */
+        static b3BoxHull mhull;
+        b3BodyDef bd = b3DefaultBodyDef();
+        b3ShapeDef sd = b3DefaultShapeDef();
+        bd.type = b3_kinematicBody;
+        bd.position = (b3Pos){ 0.0f, 1.0f, 0.0f };
+        s_marioBody = b3CreateBody(s_world, &bd);
+        mhull = b3MakeBoxHull(0.30f, 0.80f, 0.30f);
+        sd.density = 0.0f;
+        sd.baseMaterial.friction = 0.4f;
+        b3CreateHullShape(s_marioBody, &sd, &mhull.base);
     }
     bp_pyramid();
     s_inited = 1;
@@ -156,9 +170,9 @@ static void boxphys_fire_dir(Vec3f orig, Vec3f dir) {
     body = b3CreateBody(s_world, &bd);
 
     sd = b3DefaultShapeDef();
-    sd.density = 800.0f;
+    sd.density = 3000.0f;         /* heavy projectile: ~196 kg */
     sd.baseMaterial.friction = 0.4f;
-    sd.baseMaterial.restitution = 0.35f;
+    sd.baseMaterial.restitution = 0.3f;
     sphere.center = (b3Vec3){ 0.0f, 0.0f, 0.0f };
     sphere.radius = BP_BALL_R;
     b3CreateSphereShape(body, &sd, &sphere);
@@ -202,8 +216,62 @@ void boxphys_update(void) {
     if (gCurrLevelNum != 38) return;
     boxphys_init();
     if (s_world.index1 == 0) return;
+
+    if (gMarioState != NULL && s_marioBody.index1 != 0) {
+        b3Body_SetTransform(s_marioBody, (b3Pos){
+            gMarioState->pos[0] * BP_SCALE,
+            (gMarioState->pos[1] + 80.0f) * BP_SCALE,
+            gMarioState->pos[2] * BP_SCALE,
+        }, b3Quat_identity);
+        b3Body_SetLinearVelocity(s_marioBody, (b3Vec3){
+            gMarioState->vel[0] * BP_SCALE,
+            gMarioState->vel[1] * BP_SCALE,
+            gMarioState->vel[2] * BP_SCALE,
+        });
+    }
+
     s_tick++;
     b3World_Step(s_world, 1.0f / 30.0f, 6);
+
+    /* Simple platform support: land/stand on the top of any cube. */
+    if (gMarioState != NULL) {
+        struct MarioState *m = gMarioState;
+        float feet = m->pos[1];
+        int b;
+        for (b = 0; b < s_boxCount; b++) {
+            b3Pos p = b3Body_GetPosition(s_boxes[b]);
+            b3Quat q = b3Body_GetRotation(s_boxes[b]);
+            float minx = 1e9f, maxx = -1e9f, minz = 1e9f, maxz = -1e9f, top = -1e9f;
+            int c;
+            for (c = 0; c < 8; c++) {
+                static const float lx[8] = { -1, 1, 1, -1, -1, 1, 1, -1 };
+                static const float ly[8] = { -1, -1, 1, 1, -1, -1, 1, 1 };
+                static const float lz[8] = { -1, -1, -1, -1, 1, 1, 1, 1 };
+                b3Vec3 w = b3RotateVector(q, (b3Vec3){
+                    lx[c] * BP_CUBE_HALF, ly[c] * BP_CUBE_HALF, lz[c] * BP_CUBE_HALF });
+                float x = (p.x + w.x) / BP_SCALE;
+                float y = (p.y + w.y) / BP_SCALE;
+                float z = (p.z + w.z) / BP_SCALE;
+                if (x < minx) minx = x;
+                if (x > maxx) maxx = x;
+                if (z < minz) minz = z;
+                if (z > maxz) maxz = z;
+                if (y > top) top = y;
+            }
+            if (m->pos[0] > minx - 12.0f && m->pos[0] < maxx + 12.0f
+                && m->pos[2] > minz - 12.0f && m->pos[2] < maxz + 12.0f
+                && feet <= top + 12.0f && feet >= top - 60.0f
+                && m->vel[1] <= 5.0f) {
+                m->pos[1] = top;
+                m->vel[1] = 0.0f;
+                m->floorHeight = top;
+                if (m->marioObj != NULL) {
+                    m->marioObj->header.gfx.pos[1] = top;
+                }
+                break;
+            }
+        }
+    }
 
     /* Expire old balls. */
     for (i = 0; i < s_ballCount; ) {
@@ -239,15 +307,6 @@ static void bp_fill(Vtx *v, float x, float y, float z, u8 r, u8 g, u8 b) {
     v->v.cn[3] = 255;
 }
 
-static void bp_quad(Vtx *v, int *idx, const float *a, const float *b,
-                    const float *c, const float *d, u8 r, u8 g, u8 bl) {
-    bp_fill(&v[*idx + 0], a[0], a[1], a[2], r, g, bl);
-    bp_fill(&v[*idx + 1], b[0], b[1], b[2], r, g, bl);
-    bp_fill(&v[*idx + 2], c[0], c[1], c[2], r, g, bl);
-    bp_fill(&v[*idx + 3], d[0], d[1], d[2], r, g, bl);
-    *idx += 4;
-}
-
 static void bp_draw_box(b3BodyId id, int layer) {
     static const u8 cols[4][3] = {
         { 235, 140, 60 }, { 80, 190, 110 }, { 90, 140, 230 }, { 230, 205, 80 },
@@ -273,21 +332,28 @@ static void bp_draw_box(b3BodyId id, int layer) {
         z[i] = (pos.z + p.z) / BP_SCALE;
         cx[i] = x[i]; cy[i] = y[i]; cz[i] = z[i];
     }
-    /* Six faces with the outward winding of the unit cube. */
+    /* Six faces with the outward winding of the unit cube.  Per-corner
+     * shading gives a bottom-to-top gradient so the faces are not flat. */
     {
         static const int f[6][4] = {
             {0,3,2,1}, {4,5,6,7}, {0,1,5,4}, {3,7,6,2}, {0,4,7,3}, {1,2,6,5},
         };
-        float p[4][3];
+        float top = -1e9f, bottom = 1e9f;
+        for (i = 0; i < 8; i++) {
+            if (cy[i] > top) top = cy[i];
+            if (cy[i] < bottom) bottom = cy[i];
+        }
         for (i = 0; i < 6; i++) {
             int k;
             for (k = 0; k < 4; k++) {
-                p[k][0] = cx[f[i][k]];
-                p[k][1] = cy[f[i][k]];
-                p[k][2] = cz[f[i][k]];
+                int ci = f[i][k];
+                float t = (cy[ci] - bottom) / (top - bottom + 0.001f);
+                float shade = 0.55f + 0.45f * t;
+                bp_fill(&v[idx++], cx[ci], cy[ci], cz[ci],
+                        (u8)(cols[layer & 3][0] * shade),
+                        (u8)(cols[layer & 3][1] * shade),
+                        (u8)(cols[layer & 3][2] * shade));
             }
-            bp_quad(v, &idx, p[0], p[1], p[2], p[3],
-                    cols[layer & 3][0], cols[layer & 3][1], cols[layer & 3][2]);
         }
     }
     gSPVertex(gDisplayListHead++, VIRTUAL_TO_PHYSICAL(v), 24, 0);

@@ -1036,6 +1036,7 @@ s32 play_mode_normal(void) {
     portal_update();
     ptc_update();
     ptc_hud_update();
+    boxphys_update();
     update_hud_values();
 
     if (gCurrentArea != NULL) {

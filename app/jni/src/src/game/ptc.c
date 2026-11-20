@@ -948,7 +948,8 @@ static void ptc_apply_command(const char *action) {
         controller_rumble_play(1.0f, 0.8f);
     } else if (strcmp(action, "annex") == 0) {
         if (gMarioState != NULL) {
-            gMarioState->pos[0] = 1000.0f;
+            struct Camera *cam = gCurrentArea != NULL ? gCurrentArea->camera : NULL;
+            gMarioState->pos[0] = 1200.0f;
             gMarioState->pos[1] = 0.0f;
             gMarioState->pos[2] = 400.0f;
             gMarioState->vel[0] = gMarioState->vel[1] = gMarioState->vel[2] = 0.0f;
@@ -957,7 +958,16 @@ static void ptc_apply_command(const char *action) {
             if (gMarioState->marioObj != NULL) {
                 vec3f_copy(gMarioState->marioObj->header.gfx.pos, gMarioState->pos);
             }
-            gCameraMovementFlags |= CAM_MOVE_INIT_CAMERA;
+            /* Put the camera west of Mario looking at the cube pyramid so the
+             * debug warp always produces a useful view. */
+            if (cam != NULL) {
+                cam->pos[0] = 900.0f; cam->pos[1] = 300.0f; cam->pos[2] = 400.0f;
+                cam->focus[0] = 1700.0f; cam->focus[1] = 220.0f; cam->focus[2] = 400.0f;
+                cam->yaw = calculate_yaw(cam->pos, cam->focus);
+                vec3f_copy(gLakituState.pos, cam->pos);
+                vec3f_copy(gLakituState.focus, cam->focus);
+                gLakituState.yaw = cam->yaw;
+            }
         }
     } else if (strcmp(action, "balltest") == 0) {
         boxphys_test_fire();
