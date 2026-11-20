@@ -87,6 +87,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     private boolean testOn = false;
     private boolean tintOn, zbufOn, wireOn, perfOn, swapOn, sameOn, nocullOn, flatOn, analogOn;
     private int splatMode;  // 0 off, 1 Mario, 2 trees, 3 all objects
+    private TextView splatTargetButton;
     private boolean stayOn = true, uiParallaxOn, uiBufOn;
     private boolean toeAutoOn = true;
     // Camera tracking (Leia eye/face tracking + tablet gyro).
@@ -586,6 +587,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addTabButton(tabBar, "CAMERA");
         addTabButton(tabBar, "ENH");
         addTabButton(tabBar, "SHADOW");
+        addTabButton(tabBar, "SPLAT");
         addTabButton(tabBar, "LOG");
         panel.addView(tabBar);
 
@@ -740,6 +742,13 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                 for (int i = 0; i < 6; i++) {
                     if (outBars[i] != null) outBars[i].setProgress(outDefs[i]);
                 }
+                if (splatTargetButton != null) {
+                    splatMode = 0;
+                    nativeSetStereoInt(60, 0);
+                    splatTargetButton.setText(splatTargetLabel());
+                    splatTargetButton.setTextColor(0xFF888888);
+                    refreshTabStyles();
+                }
                 leiaView.setScaleX(1f); leiaView.setScaleY(1f);
                 leiaView.setTranslationX(0); leiaView.setTranslationY(0);
             }
@@ -793,6 +802,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             case 4: return ssrtxOn;   // SSRTX
             case 5: return hdtOn || gyroOn;   // CAMERA
             case 7: return shadowOn;          // SHADOW
+            case 8: return splatMode != 0;    // SPLAT
             default: return false;
         }
     }
@@ -832,6 +842,15 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         grid.setOrientation(android.widget.GridLayout.HORIZONTAL);
         content.addView(grid);
         return content;
+    }
+
+    private String splatTargetLabel() {
+        switch (splatMode) {
+            case 1: return "SPLAT TARGET: MARIO";
+            case 2: return "SPLAT TARGET: TREES";
+            case 3: return "SPLAT TARGET: ALL OBJECTS";
+            default: return "SPLAT TARGET: OFF";
+        }
     }
 
     private void buildFxTabs() {
@@ -975,6 +994,38 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         });
         // Push the current values once so the native defaults match the labels.
         nativeSetShadow(1, shadowRes);
+
+        // --- Splat rendering (first slice, plan-cool-additions §5.6) ---
+        beginTab();
+        splatTargetButton = new TextView(this);
+        splatTargetButton.setText(splatTargetLabel());
+        splatTargetButton.setTextSize(16);
+        splatTargetButton.setTextColor(splatMode != 0 ? 0xFF66FF99 : 0xFF888888);
+        splatTargetButton.setPadding(dp(4), dp(10), dp(4), dp(10));
+        splatTargetButton.setOnClickListener(v -> {
+            splatMode = (splatMode + 1) % 4;
+            nativeSetStereoInt(60, splatMode);
+            splatTargetButton.setText(splatTargetLabel());
+            splatTargetButton.setTextColor(splatMode != 0 ? 0xFF66FF99 : 0xFF888888);
+            refreshTabStyles();
+            Log.i(TAG, "SPLAT target=" + splatMode);
+        });
+        controls.addView(splatTargetButton);
+        addSlider("Splat size", 1, 64, 14, " px", 61);
+        addSlider("Opacity", 0, 100, 100, " %", 62);
+        addSlider("Softness", 0, 100, 70, " %", 63);
+        TextView splatHint = new TextView(this);
+        splatHint.setTextSize(13);
+        splatHint.setTextColor(0xFFAACCFF);
+        splatHint.setPadding(dp(4), dp(10), dp(4), dp(4));
+        splatHint.setText("Point-sprite pass over tagged object geometry."
+                + " Mario is the verified target; trees currently disappear"
+                + " at distance (see SPLAT-PROTOTYPE.md). Knobs 60-63.");
+        controls.addView(splatHint);
+        nativeSetStereoInt(60, splatMode);
+        nativeSetStereoInt(61, 14);
+        nativeSetStereoInt(62, 100);
+        nativeSetStereoInt(63, 70);
 
         // --- Changelog ---
         beginTab();
