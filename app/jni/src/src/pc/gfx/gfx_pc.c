@@ -2454,6 +2454,14 @@ void gfx_run(Gfx *commands) {
             gfx_run_dl_range(commands, ui_sep ? gGfxUiStart : NULL);
             gfx_flush();
 #ifdef __ANDROID__
+            if (g_portal_view.active) {
+                /* Draw into this eye's FBO, where the viewport/projection match
+                 * the portal mesh exactly.  (Post-composite drawing used the
+                 * second eye's viewport and made the decal float.) */
+                gfx_opengl_portal_overlay(eye);
+                gfx_rapi->unload_shader(rendering_state.shader_program);
+                rendering_state.shader_program = NULL;
+            }
             if (ui_sep) {
                 if (split) {
                     gfx_opengl_ui_begin(eye, gfx_stereo_eye_width, gfx_stereo_full_h,
@@ -2479,11 +2487,6 @@ void gfx_run(Gfx *commands) {
         }
 #ifdef __ANDROID__
         gfx_opengl_stereo_composite(0, 0, gfx_stereo_full_w, gfx_stereo_full_h, split);
-        if (g_portal_view.active) {
-            /* The per-eye scene FBO is consumed by the post/composite pass, so
-             * draw the portal fan once over the finished stereo image. */
-            gfx_opengl_portal_overlay(-1);
-        }
 #endif
         gfx_stereo_eye = gfx_single_eye >= 0 ? gfx_single_eye : 0;
         gfx_invalidate_state();

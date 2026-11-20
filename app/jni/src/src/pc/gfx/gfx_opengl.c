@@ -2319,6 +2319,28 @@ void gfx_opengl_portal_overlay(int eye) {
         n++;
     }
 
+    {
+        static int s_plog;
+        if ((s_plog++ % 120) == 0) {
+            GLint gvp[4] = { 0, 0, 0, 0 };
+            float mnx = 1e9f, mxx = -1e9f, mny = 1e9f, mxy = -1e9f;
+            glGetIntegerv(GL_VIEWPORT, gvp);
+            for (int i = -1; i < g_portal_view.count; i++) {
+                const float *p = (i < 0) ? g_portal_view.center : g_portal_view.rim[i];
+                float x = p[0]*vp[0][0] + p[1]*vp[1][0] + p[2]*vp[2][0] + vp[3][0];
+                float y = p[0]*vp[0][1] + p[1]*vp[1][1] + p[2]*vp[2][1] + vp[3][1];
+                float w = p[0]*vp[0][3] + p[1]*vp[1][3] + p[2]*vp[2][3] + vp[3][3];
+                if (w > 1e-5f) {
+                    float nx = x / w, ny = y / w;
+                    if (nx < mnx) mnx = nx; if (nx > mxx) mxx = nx;
+                    if (ny < mny) mny = ny; if (ny > mxy) mxy = ny;
+                }
+            }
+            __android_log_print(ANDROID_LOG_INFO, "SM64PORTAL",
+                "decal vp=%d,%d %dx%d ndc=[%.3f..%.3f, %.3f..%.3f] err=0x%x",
+                gvp[0], gvp[1], gvp[2], gvp[3], mnx, mxx, mny, mxy, glGetError());
+        }
+    }
     glUseProgram(s_portal_prog);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, s_portal_tex);

@@ -88,6 +88,27 @@ agent_name() {
     printf '%s' "${AGENT_ID:-${OPENCODE_SESSION_ID:-$(id -un)@$(hostname)}}"
 }
 
+# Project-specific device housekeeping: mark the app BUSY while the device lock
+# is held, then clear it and sleep the tablet on release.
+device_app_busy() {
+    local value="$1"
+    local adb_bin="${ADB:-adb}"
+    export LD_LIBRARY_PATH="/home/ubuntu/.local/lib/android-tools${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    command -v "$adb_bin" >/dev/null 2>&1 || return 0
+    "$adb_bin" shell pidof com.vdavid003.sm64port >/dev/null 2>&1 || return 0
+    "$adb_bin" shell am broadcast -n com.vdavid003.sm64port/.DebugReceiver \
+        -a com.vdavid003.sm64port.CMD --es cmd busy --ei v "$value" >/dev/null 2>&1 || true
+}
+
+device_sleep() {
+    local adb_bin="${ADB:-adb}"
+    export LD_LIBRARY_PATH="/home/ubuntu/.local/lib/android-tools${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    command -v "$adb_bin" >/dev/null 2>&1 || return 0
+    if "$adb_bin" shell dumpsys power 2>/dev/null | grep -q "mWakefulness=Awake"; then
+        "$adb_bin" shell input keyevent 26 >/dev/null 2>&1 || true
+    fi
+}
+
 lock_file_for() {
     case "$1" in
         build)  printf '%s' "$BUILD_LOCK" ;;
@@ -345,9 +366,17 @@ hold_start_ms="$(now_ms)"
 log_event acquire "$kind" "$lock_file" "${reason:-unspecified}" \
     "$timeout" "$waited_ms" 0 null
 
+if [[ "$kind" == "device" ]]; then
+    device_app_busy 1
+fi
+
 release_note() {
     local rc=$?
     local hold_ms=$(( $(now_ms) - hold_start_ms ))
+    if [[ "$kind" == "device" ]]; then
+        device_app_busy 0
+        device_sleep
+    fi
     # fd 9 is still open here, so we still own the lock.
     {
         echo "released_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"

@@ -1016,6 +1016,9 @@ static void ptc_apply_command(const char *action) {
     } else if (strcmp(action, "eyeOff") == 0) {
         extern int gfx_stereo_same_both;
         gfx_stereo_same_both = 0;
+    } else if (strcmp(action, "portalalign") == 0) {
+        g_portal_debug_align = !g_portal_debug_align;
+        portal_view_force(0);
     } else if (strcmp(action, "portalblit") == 0) {
         extern int gfx_portal_debug_blit;
         gfx_portal_debug_blit = !gfx_portal_debug_blit;

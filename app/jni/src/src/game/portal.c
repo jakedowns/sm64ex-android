@@ -60,6 +60,7 @@ static int s_lastPlaced = 1;
 // Last placement result, for headless debugging: 0 none, 1 placed, 2 bad
 // surface, 3 could not fit the ellipse, 4 no gun.
 int g_portal_debug = 0;
+int g_portal_debug_align = 0;   /* magenta source fan behind the relay decal */
 PortalViewState g_portal_view;
 static int s_portal_view_enabled = 1;
 static int s_forceView = -1;   /* debug: -1 auto, 0/1 force that source */
@@ -818,11 +819,17 @@ void portal_render(void) {
     for (int k = 0; k < 2; k++) {
         int i = (k == 0) ? (1 - s_lastPlaced) : s_lastPlaced;
         if (!s_portal[i].active) continue;
-        if (g_portal_view.active && g_portal_view.source == i) continue;
+        if (g_portal_view.active && g_portal_view.source == i && !g_portal_debug_align) continue;
         if (i == 0) {
-            draw_portal(&s_portal[0], 0x30, 0x60, 0xFF, view);   // blue
+            if (g_portal_view.active && g_portal_view.source == i)
+                draw_portal(&s_portal[0], 0xFF, 0x00, 0xFF, view);  // magenta alignment
+            else
+                draw_portal(&s_portal[0], 0x30, 0x60, 0xFF, view);  // blue
         } else {
-            draw_portal(&s_portal[1], 0xFF, 0x80, 0x20, view);   // orange
+            if (g_portal_view.active && g_portal_view.source == i)
+                draw_portal(&s_portal[1], 0xFF, 0x00, 0xFF, view);
+            else
+                draw_portal(&s_portal[1], 0xFF, 0x80, 0x20, view);  // orange
         }
     }
     if (s_gunSpawned) {
