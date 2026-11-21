@@ -1407,6 +1407,8 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addEnhButton("WALL-RUN ANNEX", () -> nativePtcCommand("wallrun"));
         addEnhButton("JETPACK ANNEX", () -> nativePtcCommand("jetpack"));
         addEnhButton("GRAPPLE SMOKE TEST", () -> nativePtcCommand("grapple"));
+        addEnhButton("CORNER PORTAL TEST (W)", () -> nativePtcCommand("cornerportal"));
+        addEnhButton("CORNER PORTAL TEST (S)", () -> nativePtcCommand("cornerportal2"));
 
         enhColumnTarget = enhPageColumns[2][0];
         addEnhSection("BALL / CUBES");

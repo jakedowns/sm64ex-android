@@ -24,6 +24,8 @@
 #include "ptc_scene.h"
 
 #include "game/area.h"
+#include "game/camera.h"
+#include "engine/math_util.h"
 #include "game/game_init.h"
 #include "game/level_update.h"
 #include "game/rendering_graph_node.h"
@@ -305,6 +307,15 @@ void ptc_scene_render(void) {
     }
 
     Gfx *h = gDisplayListHead;
+    {
+        /* Load the real camera view.  The scene is appended after the object
+         * graph, which leaves Mario's modelview current - without this the room
+         * (and its cubes) ride along with the camera and look parented to him. */
+        Mat4 view;
+        mtxf_lookat(view, gLakituState.pos, gLakituState.focus, 0);
+        gSPMatrix(h++, VIRTUAL_TO_PHYSICAL(&view),
+                  G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);
+    }
     /* G_ZBUFFER is essential: the scene is appended after the object graph, so
      * without it the room paints over Mario and the actors. */
     gSPSetGeometryMode(h++, G_ZBUFFER);

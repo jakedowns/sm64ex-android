@@ -488,7 +488,9 @@ void movekit_render(void) {
     if (mtx == NULL || s_mk_vtx == NULL) {
         return;
     }
-    mtxf_identity(ident);
+    /* Same as the test scene: the object graph leaves an object matrix on the
+     * stack, so load the camera view explicitly. */
+    mtxf_lookat(ident, gLakituState.pos, gLakituState.focus, 0);
     mtxf_to_mtx(mtx, ident);
     gSPMatrix(gDisplayListHead++, VIRTUAL_TO_PHYSICAL(mtx),
               G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);

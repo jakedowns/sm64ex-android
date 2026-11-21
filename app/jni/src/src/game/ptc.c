@@ -1207,6 +1207,49 @@ static void ptc_goomba_update(void) {
                      s_goombaDir < 0 ? 0x8000 : 0x0000);
 }
 
+/* ------------------------------------------------- corner portal test */
+
+/* Reproducible corner test: portals 20 units from the SW corner where the blue
+ * (west) and green (south) walls meet, Mario standing in the corner facing one
+ * at a time.  Used to debug the mirrored Mario seen inside a portal. */
+static void ptc_corner_portal(int face_b) {
+    /* The ellipse is 135 wide (rx 67.5), so a portal cannot literally sit 20
+     * units from the corner - the rim test rejects it.  100 units keeps the
+     * whole rim on its wall while still hugging the corner. */
+    Vec3f aOrig = { -2400.0f, 200.0f, -3100.0f };
+    Vec3f aTarget = { -2700.0f, 200.0f, -3100.0f };   /* west wall, normal +X */
+    Vec3f bOrig = { -2500.0f, 200.0f, -3000.0f };
+    Vec3f bTarget = { -2500.0f, 200.0f, -3300.0f };   /* south wall, normal +Z */
+
+    /* The vanilla camera fights corners, so this test uses the custom cam. */
+    {
+        extern void custom_camera_apply_mode(int mode);
+        custom_camera_apply_mode(3);   /* 3 = CUSTOM */
+    }
+
+    ptc_goomba_reset_state();
+    portal_reset();
+    portal_give_gun();
+    portal_shoot_at(0, aOrig, aTarget);
+    portal_shoot_at(1, bOrig, bTarget);
+    portal_view_force(face_b ? 1 : 0);
+
+    if (gMarioState != NULL) {
+        gMarioState->pos[0] = -2380.0f;
+        gMarioState->pos[1] = 0.0f;
+        gMarioState->pos[2] = -2950.0f;
+        gMarioState->vel[0] = gMarioState->vel[1] = gMarioState->vel[2] = 0.0f;
+        /* Face the west portal (-X) or the south portal (-Z). */
+        gMarioState->faceAngle[1] = face_b ? 0x8000 : 0xC000;
+        set_mario_action(gMarioState, ACT_IDLE, 0);
+        if (gMarioState->marioObj != NULL) {
+            vec3f_copy(gMarioState->marioObj->header.gfx.pos, gMarioState->pos);
+        }
+        gCameraMovementFlags |= CAM_MOVE_INIT_CAMERA;
+    }
+    g_portal_debug_color = 0;
+}
+
 /* ------------------------------------------------------- move annexes */
 
 /* Two purpose-built annexes in the chamber:
@@ -1512,6 +1555,8 @@ static void ptc_apply_command(const char *action) {
         ptc_annex_jetpack();
     } else if (strcmp(action, "grapple") == 0) {
         ptc_annex_grapple();
+    } else if (strncmp(action, "cornerportal", 12) == 0) {
+        ptc_corner_portal(action[12] == '2');
     } else if (strcmp(action, "walltest") == 0) {
         s_wallTest = portal_test_walls();
     } else if (strcmp(action, "stop") == 0) {
