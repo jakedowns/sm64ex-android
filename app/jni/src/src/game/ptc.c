@@ -1005,17 +1005,22 @@ static struct Object *s_goombaOut;
 static int s_goombaActive;
 static float s_goombaZ;
 static float s_goombaX;
-static float s_goombaMirrorDz;   /* exit Z for entry Z (portal A -> portal B) */
-static float s_goombaMirrorDx;   /* exit X for entry X (portal A -> portal B) */
+static float s_goombaPlaneZ;     /* portal plane the loop crosses */
+static float s_goombaTurnZ;      /* far turnaround line */
+static int   s_goombaDir;        /* -1 = walking into the wall, +1 = walking out */
+static int   s_goombaCrossings;
 
 static void ptc_goomba_reset_state(void) {
     s_goombaIn = NULL;
     s_goombaOut = NULL;
     s_goombaActive = 0;
     s_goombaZ = PTC_GOOMBA_START_Z;
+    s_goombaX = -90.0f;
+    s_goombaDir = -1;
+    s_goombaCrossings = 0;
 }
 
-static void ptc_goomba_place(struct Object *o, float x, float z) {
+static void ptc_goomba_place(struct Object *o, float x, float z, s16 yaw) {
     if (o == NULL) {
         return;
     }
@@ -1025,8 +1030,8 @@ static void ptc_goomba_place(struct Object *o, float x, float z) {
     o->oHomeX = x;
     o->oHomeY = 0.0f;
     o->oHomeZ = z;
-    o->oMoveAngleYaw = 0x8000;      /* face -Z */
-    o->oFaceAngleYaw = 0x8000;
+    o->oMoveAngleYaw = yaw;
+    o->oFaceAngleYaw = yaw;
     o->oForwardVel = 0.0f;          /* position is driven here, not by AI */
     o->oVelY = 0.0f;
     o->oGravity = 0.0f;
@@ -1042,7 +1047,7 @@ static void ptc_goomba_place(struct Object *o, float x, float z) {
         o->header.gfx.pos[1] = o->oPosY;
         o->header.gfx.pos[2] = o->oPosZ;
     }
-    o->header.gfx.angle[1] = 0x8000;
+    o->header.gfx.angle[1] = yaw;
 }
 
 static void ptc_goomba_start(void) {
@@ -1060,20 +1065,15 @@ static void ptc_goomba_start(void) {
     portal_shoot_at(1, bOrig, bTarget);
     portal_view_force(0);
 
-    if (portal_get(0, pa, na) && portal_get(1, pb, nb)) {
-        /* Both mounts are parallel planes one behind the other, so the pair is
-         * a pure translation along Z. */
-        s_goombaMirrorDz = pb[2] - pa[2];
-    } else {
-        s_goombaMirrorDz = 892.0f;
+    s_goombaPlaneZ = -300.0f;
+    s_goombaTurnZ = PTC_GOOMBA_START_Z;
+    s_goombaZ = PTC_GOOMBA_START_Z;
+    if (portal_get(0, pa, na)) {
+        s_goombaPlaneZ = pa[2];
     }
-
     s_goombaIn = spawn_object_abs_with_rot(
         gMarioState != NULL ? gMarioState->marioObj : &gMacroObjectDefaultParent, 0,
-        MODEL_GOOMBA, bhvGoomba, 0, 0, (s16) s_goombaZ, 0, 0x8000, 0);
-    s_goombaOut = spawn_object_abs_with_rot(
-        gMarioState != NULL ? gMarioState->marioObj : &gMacroObjectDefaultParent, 0,
-        MODEL_GOOMBA, bhvGoomba, 0, 0, (s16)(s_goombaZ + s_goombaMirrorDz), 0, 0x8000, 0);
+        MODEL_GOOMBA, bhvGoomba, (s16) s_goombaX, 0, (s16) s_goombaZ, 0, 0x8000, 0);
     s_goombaActive = 1;
 
     if (gMarioState != NULL) {
@@ -1096,44 +1096,39 @@ static void ptc_goomba_start(void) {
 }
 
 static void ptc_goomba_update(void) {
-    float aZ;
+    struct MarioState *m = gMarioState;
+    Vec3f pa, na, pb, nb;
+    float planeZ = s_goombaPlaneZ;
 
-    if (!s_goombaActive) {
+    if (!s_goombaActive || s_goombaIn == NULL) {
         return;
     }
-    s_goombaZ -= PTC_GOOMBA_SPEED;
-
-    /* Entry/exit planes come from the placed portals; fall back to the known
-     * test layout if they were cleared. */
-    {
-        Vec3f pa, na;
-        aZ = portal_get(0, pa, na) ? pa[2] : -296.0f;
+    (void) m;
+    if (portal_get(0, pa, na) && portal_get(1, pb, nb)) {
+        planeZ = pa[2];
+        s_goombaPlaneZ = planeZ;
     }
 
-    if (s_goombaIn != NULL) {
-        if (s_goombaZ < aZ - PTC_GOOMBA_SIZE) {
-            /* Fully behind portal A: retire the entering copy. */
-            obj_mark_for_deletion(s_goombaIn);
-            s_goombaIn = NULL;
-        } else {
-            ptc_goomba_place(s_goombaIn, s_goombaX, s_goombaZ);
-        }
-    }
-    if (s_goombaOut != NULL) {
-        /* Mirror about the pair: for two portals on one plane with the same
-         * normal the map is (x, z) -> (Bx - (x - Ax), Bz - (z - Az)). */
-        Vec3f pa, na, pb, nb;
-        float mx = s_goombaX, mz = s_goombaZ + s_goombaMirrorDz;
+    s_goombaZ += (float) s_goombaDir * PTC_GOOMBA_SPEED;
+
+    if (s_goombaDir < 0 && s_goombaZ <= planeZ) {
+        /* Crossed the plane: appear at the other portal and walk back out.
+         * For two mounts on one plane the map is x -> (Bx - (x - Ax)). */
+        s_goombaZ = planeZ;
         if (portal_get(0, pa, na) && portal_get(1, pb, nb)) {
-            mx = pb[0] - (s_goombaX - pa[0]);
-            mz = pb[2] - (s_goombaZ - pa[2]);
+            s_goombaX = pb[0] - (s_goombaX - pa[0]);
+        } else {
+            s_goombaX = -s_goombaX;
         }
-        ptc_goomba_place(s_goombaOut, mx, mz);
+        s_goombaDir = 1;
+        s_goombaCrossings++;
+    } else if (s_goombaDir > 0 && s_goombaZ >= s_goombaTurnZ) {
+        s_goombaZ = s_goombaTurnZ;
+        s_goombaDir = -1;
     }
 
-    if (s_goombaZ < -1500.0f) {
-        ptc_goomba_reset_state();
-    }
+    ptc_goomba_place(s_goombaIn, s_goombaX, s_goombaZ,
+                     s_goombaDir < 0 ? 0x8000 : 0x0000);
 }
 
 /* ------------------------------------------------------- move annexes */
@@ -1483,7 +1478,7 @@ void ptc_format_status(char *buf, int len) {
              ptc_save_star_count(), s_realStarsBefore, s_saveStarsBefore,
              s_calSingle, s_calDouble, s_calTriple, s_calTriple + 100.0f,
              s_goombaActive, s_goombaZ,
-             (s_goombaOut != NULL) ? s_goombaOut->oPosZ : 0.0f,
+             (float) s_goombaCrossings,
              (gLoadedGraphNodes != NULL && gLoadedGraphNodes[MODEL_GOOMBA] != NULL) ? 1 : 0,
              s_goombaIn != NULL,
              s_goombaIn != NULL ? s_goombaIn->header.gfx.node.flags : 0,
