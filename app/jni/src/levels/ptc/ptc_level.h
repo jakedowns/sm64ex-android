@@ -8,7 +8,7 @@
 #define PTC_ROOM_X0 -2600
 #define PTC_ROOM_X1 3200
 #define PTC_ROOM_Y0 0
-#define PTC_ROOM_Y1 1400
+#define PTC_ROOM_Y1 2800
 #define PTC_ROOM_Z0 -3200
 #define PTC_ROOM_Z1 1250
 

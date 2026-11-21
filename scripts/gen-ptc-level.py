@@ -23,7 +23,7 @@ OUT = ROOT / "app/jni/src/levels/ptc"
 # ---- world-space layout (N64 units) -------------------------------------
 # The z1 wall carries test portal B, so it stays where the portal test expects
 # it; the other three walls move out to make room for the annexes.
-ROOM = dict(x0=-2600, x1=3200, y0=0, y1=1400, z0=-3200, z1=1250)
+ROOM = dict(x0=-2600, x1=3200, y0=0, y1=2800, z0=-3200, z1=1250)
 
 # name: (x0, z0, x1, z1, top_y, top_rgb, side_rgb)
 PLATFORMS = [
@@ -44,10 +44,11 @@ PLATFORMS = [
     ("WR_W", -2400, -600, -2340, 1200, 420, (170, 175, 190), (95, 100, 115)),
     ("WR_E", -2160, -600, -2100, 1200, 420, (170, 175, 190), (95, 100, 115)),
     # --- JETPACK ANNEX (east wing) --------------------------------------
-    ("JP_W",  2600, -400,  2660,    0, 1300, (150, 165, 205), (80, 90, 120)),
-    ("JP_E",  2940, -400,  3000,    0, 1300, (150, 165, 205), (80, 90, 120)),
-    ("JP_S",  2600, -460,  3000, -400, 1300, (150, 165, 205), (80, 90, 120)),
-    ("JP_N",  2600,    0,  3000,   60, 1300, (150, 165, 205), (80, 90, 120)),
+    # Walls stop level with the landing pad: a taller rim trapped Mario on top.
+    ("JP_W",  2600, -400,  2660,    0, 1200, (150, 165, 205), (80, 90, 120)),
+    ("JP_E",  2940, -400,  3000,    0, 1200, (150, 165, 205), (80, 90, 120)),
+    ("JP_S",  2600, -460,  3000, -400, 1200, (150, 165, 205), (80, 90, 120)),
+    ("JP_N",  2600,    0,  3000,   60, 1200, (150, 165, 205), (80, 90, 120)),
     ("JP_PAD",2650, -350,  2950,  -50, 1200, (120, 240, 150), (60, 140, 85)),
     ("P9",  -300,   150, 300,   560,  950, (230, 190, 90), (140, 110, 45)),
 ]
@@ -102,6 +103,36 @@ def face(points, normal):
     return points
 
 
+def subdiv_quad(pts, max_cell=256.0):
+    """Split a quad (p0,p1,p2,p3 loop) into a grid of same-winding quads."""
+    import math as _m
+    p0, p1, p2, p3 = pts
+
+    def d(a, b):
+        return _m.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2)
+
+    nu = max(1, int(_m.ceil(d(p0, p1) / max_cell)))
+    nv = max(1, int(_m.ceil(d(p0, p3) / max_cell)))
+
+    def lerp(a, b, t):
+        return (a[0] + (b[0] - a[0]) * t,
+                a[1] + (b[1] - a[1]) * t,
+                a[2] + (b[2] - a[2]) * t)
+
+    def at(u, v):
+        return lerp(lerp(p0, p1, u), lerp(p3, p2, u), v)
+
+    out = []
+    for iv in range(nv):
+        v0 = iv / nv
+        v1 = (iv + 1) / nv
+        for iu in range(nu):
+            u0 = iu / nu
+            u1 = (iu + 1) / nu
+            out.append([at(u0, v0), at(u1, v0), at(u1, v1), at(u0, v1)])
+    return out
+
+
 def ramp_faces():
     """45-degree solid ramp: surface y = -z - 50, with vertical ends/sides."""
     x0, x1 = RAMP["x0"], RAMP["x1"]
@@ -129,7 +160,7 @@ def box_faces(x0, y0, z0, x1, y1, z1):
     ]
 
 
-room_faces = [
+_room_quads = [
     ("floor",   face([v(ROOM["x1"], ROOM["y0"], ROOM["z0"]), v(ROOM["x0"], ROOM["y0"], ROOM["z0"]),
                       v(ROOM["x0"], ROOM["y0"], ROOM["z1"]), v(ROOM["x1"], ROOM["y0"], ROOM["z1"])], (0, 1, 0)), (0, 1, 0)),
     ("ceiling", face([v(ROOM["x1"], ROOM["y1"], ROOM["z0"]), v(ROOM["x1"], ROOM["y1"], ROOM["z1"]),
@@ -143,6 +174,14 @@ room_faces = [
     ("right",   face([v(ROOM["x1"], ROOM["y0"], ROOM["z0"]), v(ROOM["x1"], ROOM["y1"], ROOM["z0"]),
                       v(ROOM["x1"], ROOM["y1"], ROOM["z1"]), v(ROOM["x1"], ROOM["y0"], ROOM["z1"])], (-1, 0, 0)), (-1, 0, 0)),
 ]
+
+# Split the room into ~256-unit cells: the checker tiles cleanly instead of
+# being stretched across the whole wall, and Box3D/collision gets many more
+# triangles to work with.
+room_faces = []
+for _name, _pts, _n in _room_quads:
+    for _q in subdiv_quad(_pts):
+        room_faces.append((_name, _q, _n))
 
 # Checkerboard texture: 32x32 RGBA16, 8px blocks => one 8px check = one unit.
 # Low contrast + bilinear filtering keeps distant wall checks from turning into
@@ -170,7 +209,8 @@ def emit_collision():
     lines.append(f"    COL_VERTEX_INIT({len(faces) * 4}),")
     for _name, pts, _n in faces:
         for x, y, z in pts:
-            lines.append(f"    COL_VERTEX({x}, {y}, {z}),")
+            # Subdivided faces interpolate to floats; collision wants integers.
+            lines.append(f"    COL_VERTEX({int(round(x))}, {int(round(y))}, {int(round(z))}),")
     # Room surfaces participate in camera collision so the chase camera cannot
     # leave through the back wall after the portal exit.  Platform boxes are
     # excluded so the low debug camera is not shoved around by them.
@@ -233,13 +273,16 @@ def emit_walls():
     for name, p0, p1, p2, p3, normal, uv in walls:
         pts = face([p0, p1, p2, p3], normal)
         tint = wall_tint.get(name, (255, 255, 255))
-        for p in pts:
-            s, t = uv(p)
-            # 32-texel checker: wrap in 10.5 fixed point so the bigger room does
-            # not overflow the s16 texture coordinates.
-            s %= 1024
-            t %= 1024
-            lines.append(vtx(*p, s, t, tint))
+        # Subdivide so the checker tiles at a consistent size across the room
+        # instead of being stretched over one giant quad.
+        for cell in subdiv_quad(pts):
+            for p in [(int(round(v[0])), int(round(v[1])), int(round(v[2]))) for v in cell]:
+                s, t = uv(p)
+                # 32-texel checker: wrap in 10.5 fixed point so the bigger room
+                # does not overflow the s16 texture coordinates.
+                s %= 1024
+                t %= 1024
+                lines.append(vtx(*p, s, t, tint))
     lines += ["};", ""]
 
     wall_setup = [
@@ -384,10 +427,13 @@ def emit_label_vertices():
 def emit_solid():
     lines = []
     # Room floor + ceiling.
-    for label, pts, _n in (room_faces[0], room_faces[1]):
+    # Solid floor/ceiling visuals stay one quad each (the subdivided version is
+    # only needed for collision and for the textured walls).
+    for label, pts, _n in (_room_quads[0], _room_quads[1]):
         lines.append(f"static const Vtx ptc_vtx_room_{label}[] = {{")
         rgb = (112, 112, 112) if label == "floor" else (70, 70, 70)
         for p in pts:
+            p = (int(round(p[0])), int(round(p[1])), int(round(p[2])))
             lines.append(vtx(*p, 0, 0, rgb))
         lines += ["};", ""]
 

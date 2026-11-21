@@ -56,6 +56,8 @@ static int s_fuel_tier = 0;
 static int s_refill_tier = 0;
 
 static int s_attached = 0;
+static int s_thrusting;      /* jetpack fired this tick */
+static int s_fx_tick;
 static Vec3f s_anchor;
 static Vec3f s_from;
 
@@ -63,6 +65,12 @@ static Vec3f s_from;
 
 static f32 vdot(const Vec3f a, const Vec3f b) {
     return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
+static void vcross(Vec3f out, const Vec3f a, const Vec3f b) {
+    out[0] = a[1] * b[2] - a[2] * b[1];
+    out[1] = a[2] * b[0] - a[0] * b[2];
+    out[2] = a[0] * b[1] - a[1] * b[0];
 }
 
 static void vnorm(Vec3f v) {
@@ -208,7 +216,7 @@ s16 movekit_camera_roll(void) {
 
 /* --------------------------------------------------------- grapple/jetpack */
 
-static void grapple_update(struct MarioState *m, u32 pressed, u32 down) {
+static void grapple_update(struct MarioState *m, u32 pressed, u32 down, u32 retract) {
     if (!s_grapple_on) {
         s_attached = 0;
         return;
@@ -279,8 +287,10 @@ static void grapple_update(struct MarioState *m, u32 pressed, u32 down) {
             m->pos[1] += d[1] * k;
             m->pos[2] += d[2] * k;
         }
-        if (s_rope_len > GRAPPLE_MIN_DIST) {
-            s_rope_len -= 0.8f;
+        /* R reels the rope in; otherwise the length is fixed so Mario can
+         * actually swing instead of being dragged straight to the anchor. */
+        if (retract && s_rope_len > GRAPPLE_MIN_DIST) {
+            s_rope_len -= 2.5f;
             if (s_rope_len < GRAPPLE_MIN_DIST) {
                 s_rope_len = GRAPPLE_MIN_DIST;
             }
@@ -321,6 +331,7 @@ void movekit_force_trigger(int on) {
 #endif
 
 static void jetpack_update(struct MarioState *m, u32 down) {
+    s_thrusting = 0;
 #ifdef __ANDROID__
     {
         static int dbg;
@@ -335,7 +346,9 @@ static void jetpack_update(struct MarioState *m, u32 down) {
     }
     s_attached = 0;   // L is the jetpack when it is equipped
 
+    s_fx_tick++;
     if (down && s_fuel > 0.0f) {
+        s_thrusting = 1;
         /* Grounded actions zero vel[1] every tick, so a grounded Mario would
          * burn fuel without ever leaving the floor.  Kick him into the air
          * first, then let the thrust sustain the climb. */
@@ -403,7 +416,8 @@ void movekit_update(struct MarioState *m) {
     if (s_jetpack_on) {
         jetpack_update(m, down);
     } else {
-        grapple_update(m, pressed, down);
+        grapple_update(m, pressed, down,
+                       (gPlayer1Controller->buttonDown | s_force_down) & R_TRIG);
     }
 }
 
@@ -422,64 +436,213 @@ static void fill_vtx(Vtx *v, f32 x, f32 y, f32 z, u8 r, u8 g, u8 b, u8 a) {
     v->v.cn[3] = a;
 }
 
-void movekit_render(void) {
-    Mat4 view;
+/* ------------------------------------------------------------- rendering */
+
+#define MK_MAX_QUADS 64
+
+static Vtx *s_mk_vtx;
+static int s_mk_quads;
+
+static void mk_quad(const Vec3f a, const Vec3f b, const Vec3f c, const Vec3f d,
+                    u8 r, u8 g, u8 bl, u8 al) {
     Vtx *v;
-    Vec3f dir, right, a, b;
-
-    if (!s_attached || gCurrentArea == NULL) {
+    if (s_mk_vtx == NULL || s_mk_quads >= MK_MAX_QUADS) {
         return;
     }
-    v = alloc_display_list(sizeof(Vtx) * 4);
-    if (v == NULL) {
-        return;
-    }
-    mtxf_lookat(view, gLakituState.pos, gLakituState.focus, 0);
+    v = &s_mk_vtx[s_mk_quads * 4];
+    fill_vtx(&v[0], a[0], a[1], a[2], r, g, bl, al);
+    fill_vtx(&v[1], b[0], b[1], b[2], r, g, bl, al);
+    fill_vtx(&v[2], c[0], c[1], c[2], r, g, bl, al);
+    fill_vtx(&v[3], d[0], d[1], d[2], r, g, bl, al);
+    s_mk_quads++;
+}
 
-    dir[0] = s_anchor[0] - s_from[0];
-    dir[1] = s_anchor[1] - s_from[1];
-    dir[2] = s_anchor[2] - s_from[2];
-    vnorm(dir);
-    // camera right vector (row 0 of the look-at matrix in this convention)
-    right[0] = view[0][0];
-    right[1] = view[0][1];
-    right[2] = view[0][2];
-    // perpendicular to the rope in screen space
-    a[0] = dir[1] * right[2] - dir[2] * right[1];
-    a[1] = dir[2] * right[0] - dir[0] * right[2];
-    a[2] = dir[0] * right[1] - dir[1] * right[0];
-    vnorm(a);
-    b[0] = a[1] * dir[2] - a[2] * dir[1];
-    b[1] = a[2] * dir[0] - a[0] * dir[2];
-    b[2] = a[0] * dir[1] - a[1] * dir[0];
-    vnorm(b);
-
-    fill_vtx(&v[0], s_from[0] + b[0] * 2.0f, s_from[1] + b[1] * 2.0f, s_from[2] + b[2] * 2.0f,
-             0xE0, 0xE0, 0xF0, 0xFF);
-    fill_vtx(&v[1], s_from[0] - b[0] * 2.0f, s_from[1] - b[1] * 2.0f, s_from[2] - b[2] * 2.0f,
-             0xE0, 0xE0, 0xF0, 0xFF);
-    fill_vtx(&v[2], s_anchor[0] - b[0] * 2.0f, s_anchor[1] - b[1] * 2.0f, s_anchor[2] - b[2] * 2.0f,
-             0xE0, 0xE0, 0xF0, 0xFF);
-    fill_vtx(&v[3], s_anchor[0] + b[0] * 2.0f, s_anchor[1] + b[1] * 2.0f, s_anchor[2] + b[2] * 2.0f,
-             0xE0, 0xE0, 0xF0, 0xFF);
-
-    {
-        Mtx *mtx = alloc_display_list(sizeof(*mtx));
-        if (mtx == NULL) {
-            return;
+static void mk_flush(void) {
+    int i = 0;
+    while (i < s_mk_quads) {
+        int q = s_mk_quads - i;
+        if (q > 16) q = 16;
+        gSPVertex(gDisplayListHead++, VIRTUAL_TO_PHYSICAL(&s_mk_vtx[i * 4]), q * 4, 0);
+        for (int k = 0; k < q; k++) {
+            int b = k * 4;
+            gSP2Triangles(gDisplayListHead++, b, b + 1, b + 2, 0, b, b + 2, b + 3, 0);
         }
-        mtxf_to_mtx(mtx, view);
-        gSPMatrix(gDisplayListHead++, VIRTUAL_TO_PHYSICAL(mtx),
-                  G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);
+        i += q;
+    }
+    s_mk_quads = 0;
+    s_mk_vtx = NULL;
+}
+
+void movekit_render(void) {
+    Mat4 ident;
+    Mtx *mtx;
+    Vec3f camR, camU;
+    struct MarioState *m = gMarioState;
+
+    if (gCurrentArea == NULL) {
+        return;
     }
 
+    mtx = alloc_display_list(sizeof(*mtx));
+    s_mk_vtx = alloc_display_list(sizeof(Vtx) * MK_MAX_QUADS * 4);
+    if (mtx == NULL || s_mk_vtx == NULL) {
+        return;
+    }
+    mtxf_identity(ident);
+    mtxf_to_mtx(mtx, ident);
+    gSPMatrix(gDisplayListHead++, VIRTUAL_TO_PHYSICAL(mtx),
+              G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);
     gDPSetCombineMode(gDisplayListHead++, G_CC_SHADE, G_CC_SHADE);
     gDPSetRenderMode(gDisplayListHead++, G_RM_AA_ZB_XLU_SURF, G_RM_AA_ZB_XLU_SURF2);
     gSPClearGeometryMode(gDisplayListHead++, G_LIGHTING);
     gSPSetGeometryMode(gDisplayListHead++, G_ZBUFFER);
-    gSPVertex(gDisplayListHead++, VIRTUAL_TO_PHYSICAL(v), 4, 0);
-    gSP1Triangle(gDisplayListHead++, 0, 1, 2, 0);
-    gSP1Triangle(gDisplayListHead++, 0, 2, 3, 0);
+
+    camR[0] = gLakituState.pos[0] - gLakituState.focus[0];
+    camR[1] = 0.0f;
+    camR[2] = gLakituState.pos[2] - gLakituState.focus[2];
+    vnorm(camR);
+    camU[0] = 0.0f;
+    camU[1] = 1.0f;
+    camU[2] = 0.0f;
+
+    /* --- grapple rope: low-subdivision catenary ribbon ------------------ */
+    if (s_attached) {
+        Vec3f from, anchor, dir, perp, prev, p, a, b;
+        f32 len, sag;
+        int segs = 8;
+
+        from[0] = s_from[0];
+        from[1] = s_from[1];
+        from[2] = s_from[2];
+        anchor[0] = s_anchor[0];
+        anchor[1] = s_anchor[1];
+        anchor[2] = s_anchor[2];
+        dir[0] = anchor[0] - from[0];
+        dir[1] = anchor[1] - from[1];
+        dir[2] = anchor[2] - from[2];
+        len = sqrtf(vdot(dir, dir));
+        vnorm(dir);
+        vcross(perp, dir, camR);
+        vnorm(perp);
+        sag = len * 0.09f;
+        if (sag > 70.0f) sag = 70.0f;
+
+        for (int i = 0; i < segs; i++) {
+            f32 t0 = (f32) i / (f32) segs;
+            f32 t1 = (f32) (i + 1) / (f32) segs;
+            f32 s0 = sag * 4.0f * t0 * (1.0f - t0);
+            f32 s1 = sag * 4.0f * t1 * (1.0f - t1);
+            f32 w0 = 2.4f + 1.2f * (1.0f - t0);   /* thicker at the hand */
+            f32 w1 = 2.4f + 1.2f * (1.0f - t1);
+
+            p[0] = from[0] + dir[0] * len * t0;
+            p[1] = from[1] + dir[1] * len * t0 - s0;
+            p[2] = from[2] + dir[2] * len * t0;
+            a[0] = p[0] + perp[0] * w0; a[1] = p[1] + perp[1] * w0; a[2] = p[2] + perp[2] * w0;
+            b[0] = p[0] - perp[0] * w0; b[1] = p[1] - perp[1] * w0; b[2] = p[2] - perp[2] * w0;
+            prev[0] = a[0]; prev[1] = a[1]; prev[2] = a[2];
+
+            p[0] = from[0] + dir[0] * len * t1;
+            p[1] = from[1] + dir[1] * len * t1 - s1;
+            p[2] = from[2] + dir[2] * len * t1;
+            {
+                Vec3f a1, b1;
+                a1[0] = p[0] + perp[0] * w1; a1[1] = p[1] + perp[1] * w1; a1[2] = p[2] + perp[2] * w1;
+                b1[0] = p[0] - perp[0] * w1; b1[1] = p[1] - perp[1] * w1; b1[2] = p[2] - perp[2] * w1;
+                mk_quad(prev, a1, b1, b, 0xD8, 0xDC, 0xE8, 0xF0);
+            }
+        }
+    }
+
+    /* --- jetpack prop, exhaust and diagetic fuel gauge ------------------ */
+    if (s_jetpack_on && m != NULL) {
+        Vec3f fwd, right, up, c, p0, p1, p2, p3;
+        f32 yaw = (f32) m->faceAngle[1] / 65536.0f * 6.2831853f;
+        f32 cx = m->pos[0] + sins(m->faceAngle[1]) * -22.0f;
+        f32 cy = m->pos[1] + 96.0f;
+        f32 cz = m->pos[2] + coss(m->faceAngle[1]) * -22.0f;
+        (void) yaw;
+
+        fwd[0] = sins(m->faceAngle[1]);
+        fwd[1] = 0.0f;
+        fwd[2] = coss(m->faceAngle[1]);
+        right[0] = coss(m->faceAngle[1]);
+        right[1] = 0.0f;
+        right[2] = -sins(m->faceAngle[1]);
+        up[0] = 0.0f; up[1] = 1.0f; up[2] = 0.0f;
+        c[0] = cx; c[1] = cy; c[2] = cz;
+
+        /* body: a 36x52x24 steel box */
+        {
+            f32 hx = 18.0f, hy = 26.0f, hz = 12.0f;
+            Vec3f o;
+            /* six faces; corners built from the basis vectors */
+            for (int f = 0; f < 6; f++) {
+                Vec3f A, B, C, D;
+                f32 s1 = (f & 1) ? -1.0f : 1.0f;
+                if (f < 2) {          /* +/- right */
+                    o[0] = right[0] * hx * s1; o[1] = 0; o[2] = right[2] * hx * s1;
+                    A[0] = c[0] + o[0] - up[0] * hy - fwd[0] * hz;
+                    A[1] = c[1] - hy; A[2] = c[2] + o[2] - fwd[2] * hz;
+                    B[0] = A[0] + fwd[0] * 2 * hz; B[1] = A[1]; B[2] = A[2] + fwd[2] * 2 * hz;
+                    C[0] = B[0]; C[1] = B[1] + 2 * hy; C[2] = B[2];
+                    D[0] = A[0]; D[1] = A[1] + 2 * hy; D[2] = A[2];
+                } else if (f < 4) {   /* +/- up */
+                    o[0] = up[0] * hy * s1; o[1] = hy * s1; o[2] = up[2] * hy * s1;
+                    A[0] = c[0] - right[0] * hx + (f == 2 ? -hz * fwd[0] : hz * fwd[0]);
+                    A[1] = c[1] + o[1]; A[2] = c[2] - right[2] * hx + (f == 2 ? -hz * fwd[2] : hz * fwd[2]);
+                    B[0] = A[0] + right[0] * 2 * hx; B[1] = A[1]; B[2] = A[2] + right[2] * 2 * hx;
+                    C[0] = B[0]; C[1] = B[1]; C[2] = B[2] + (f == 2 ? -2 * hz * fwd[2] : 2 * hz * fwd[2]);
+                    D[0] = A[0]; D[1] = A[1]; D[2] = A[2] + (f == 2 ? -2 * hz * fwd[2] : 2 * hz * fwd[2]);
+                    C[1] = B[1]; D[1] = A[1];
+                } else {              /* +/- forward */
+                    f32 s2 = (f == 4) ? 1.0f : -1.0f;
+                    A[0] = c[0] + right[0] * -hx + fwd[0] * hz * s2;
+                    A[1] = c[1] - hy;
+                    A[2] = c[2] + right[2] * -hx + fwd[2] * hz * s2;
+                    B[0] = A[0] + right[0] * 2 * hx; B[1] = A[1]; B[2] = A[2] + right[2] * 2 * hx;
+                    C[0] = B[0]; C[1] = B[1] + 2 * hy; C[2] = B[2];
+                    D[0] = A[0]; D[1] = A[1] + 2 * hy; D[2] = A[2];
+                }
+                mk_quad(A, B, C, D, 0x8A, 0x92, 0xA0, 0xFF);
+            }
+        }
+
+        /* exhaust: three camera-facing sprites while thrusting */
+        if (s_fuel > 0.0f && s_thrusting) {
+            for (int i = 0; i < 3; i++) {
+                f32 jitter = (f32) ((s_fx_tick * (i + 3)) % 11) - 5.0f;
+                f32 w = 10.0f + (f32) i * 5.0f;
+                Vec3f A, B, C, D, o;
+                o[0] = c[0] + fwd[0] * 16.0f + camR[0] * jitter * 0.4f;
+                o[1] = c[1] - 34.0f - (f32) i * 14.0f;
+                o[2] = c[2] + fwd[2] * 16.0f + camR[2] * jitter * 0.4f;
+                A[0] = o[0] - camR[0] * w - camU[0] * w; A[1] = o[1] - w; A[2] = o[2] - camR[2] * w;
+                B[0] = o[0] + camR[0] * w - camU[0] * w; B[1] = o[1] - w; B[2] = o[2] + camR[2] * w;
+                C[0] = o[0] + camR[0] * w + camU[0] * w; C[1] = o[1] + w; C[2] = o[2] + camR[2] * w;
+                D[0] = o[0] - camR[0] * w + camU[0] * w; D[1] = o[1] + w; D[2] = o[2] - camR[2] * w;
+                mk_quad(A, B, C, D, 0xFF, (u8) (0x90 + i * 0x20), 0x30, 0xC0);
+            }
+        }
+
+        /* diagetic fuel bar on the back face */
+        {
+            f32 frac = s_fuel / s_fuel_max;
+            f32 w = 30.0f * (frac < 0.0f ? 0.0f : (frac > 1.0f ? 1.0f : frac));
+            Vec3f A, B, C, D;
+            f32 bx = c[0] - fwd[0] * 13.0f;
+            f32 by = c[1] + 8.0f;
+            f32 bz = c[2] - fwd[2] * 13.0f;
+            A[0] = bx - right[0] * 15.0f - up[0] * 4.0f; A[1] = by - 4.0f; A[2] = bz - right[2] * 15.0f;
+            B[0] = bx + right[0] * (w - 15.0f); B[1] = A[1]; B[2] = bz + right[2] * (w - 15.0f);
+            C[0] = B[0]; C[1] = by + 4.0f; C[2] = B[2];
+            D[0] = A[0]; D[1] = C[1]; D[2] = A[2];
+            mk_quad(A, B, C, D, (u8) (255 - (int) (w * 5)), (u8) (80 + (int) (w * 5)), 0x40, 0xFF);
+        }
+    }
+
+    mk_flush();
+
     gSPClearGeometryMode(gDisplayListHead++, G_ZBUFFER);
 }
 
