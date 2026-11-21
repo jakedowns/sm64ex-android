@@ -270,6 +270,9 @@ void ptc_scene_render(void) {
     }
 
     Gfx *h = gDisplayListHead;
+    /* G_ZBUFFER is essential: the scene is appended after the object graph, so
+     * without it the room paints over Mario and the actors. */
+    gSPSetGeometryMode(h++, G_ZBUFFER);
     gSPClearGeometryMode(h++, G_LIGHTING | G_TEXTURE_GEN | G_TEXTURE_GEN_LINEAR);
     gSPSetGeometryMode(h++, G_SHADE | G_CULL_BACK);
     gSPTexture(h++, 0xFFFF, 0xFFFF, 0, G_TX_RENDERTILE, G_OFF);
@@ -288,5 +291,10 @@ void ptc_scene_render(void) {
         }
         i += q;
     }
+    /* Restore texturing for whatever draws next (the portal fan, HUD, and the
+     * next pass).  Leaving G_TX_RENDERTILE off made Mario's model render with
+     * flat vertex colours. */
+    gSPTexture(h++, 0xFFFF, 0xFFFF, 0, G_TX_RENDERTILE, G_ON);
+    gSPSetGeometryMode(h++, G_LIGHTING);
     gDisplayListHead = h;
 }

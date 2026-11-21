@@ -29,6 +29,7 @@
 #include "game/memory.h"
 #include "game/object_helpers.h"
 #include "game/object_list_processor.h"
+#include "game/macro_special_objects.h"
 #include "game/portal.h"
 #include "pc/controller/controller_api.h"
 #include "game/print.h"
@@ -36,6 +37,7 @@
 #include "game/interaction.h"
 #include "engine/math_util.h"
 #include "engine/surface_collision.h"
+#include "engine/graph_node.h"
 #include "levels/ptc/header.h"
 #include "boxphys.h"
 #include "ptc_scene.h"
@@ -242,6 +244,7 @@ static int s_inputHookCalls;
 static char s_pendingCommand[24];
 static volatile int s_pendingCommandReady;
 static void ptc_apply_command(const char *action);
+static void ptc_goomba_update(void);
 static void ptc_finish_ok(void);
 static void ptc_record_teleport(void);
 
@@ -802,6 +805,8 @@ void ptc_update(void) {
         ptc_apply_command(s_pendingCommand);
     }
 
+    ptc_goomba_update();
+
     if (s_calActive) {
         ptc_calibrate_update();
         return;
@@ -961,6 +966,141 @@ void ptc_hud_update(void) {
      * and the labels stay in the recorded scene. */
 }
 
+/* ------------------------------------------------- goomba portal demo */
+
+/* A deterministic Goomba that walks into portal A while a mirrored copy walks
+ * out of portal B, so the crossing is seamless instead of a mid-air snap.
+ * Both objects are placed from one logical position; once the entering copy is
+ * fully behind portal A it is deleted and the exiting copy takes over. */
+#define PTC_GOOMBA_SPEED   9.0f
+#define PTC_GOOMBA_SIZE    70.0f
+#define PTC_GOOMBA_START_Z 520.0f
+
+static struct Object *s_goombaIn;
+static struct Object *s_goombaOut;
+static int s_goombaActive;
+static float s_goombaZ;
+static float s_goombaMirrorDz;   /* exit Z for entry Z (portal A -> portal B) */
+
+static void ptc_goomba_reset_state(void) {
+    s_goombaIn = NULL;
+    s_goombaOut = NULL;
+    s_goombaActive = 0;
+    s_goombaZ = PTC_GOOMBA_START_Z;
+}
+
+static void ptc_goomba_place(struct Object *o, float z) {
+    if (o == NULL) {
+        return;
+    }
+    o->oPosX = 0.0f;
+    o->oPosY = 0.0f;
+    o->oPosZ = z;
+    o->oHomeX = 0.0f;
+    o->oHomeY = 0.0f;
+    o->oHomeZ = z;
+    o->oMoveAngleYaw = 0x8000;      /* face -Z */
+    o->oFaceAngleYaw = 0x8000;
+    o->oForwardVel = 0.0f;          /* position is driven here, not by AI */
+    o->oVelY = 0.0f;
+    o->oGravity = 0.0f;
+    o->oFlags |= OBJ_FLAG_ACTIVE_FROM_AFAR;
+    /* The object processor hides anything whose drawing distance is smaller
+     * than the camera distance; a runtime-spawned actor never ran its init, so
+     * keep both the distance and the render flag under our control. */
+    o->oDrawingDistance = 12000.0f;
+    o->header.gfx.node.flags |= GRAPH_RENDER_ACTIVE;
+    o->header.gfx.node.flags &= ~GRAPH_RENDER_INVISIBLE;
+    if (o->header.gfx.node.parent == NULL) {
+        o->header.gfx.pos[0] = o->oPosX;
+        o->header.gfx.pos[1] = o->oPosY;
+        o->header.gfx.pos[2] = o->oPosZ;
+    }
+    o->header.gfx.angle[1] = 0x8000;
+}
+
+static void ptc_goomba_start(void) {
+    Vec3f aOrig = { 0.0f, 140.0f, 120.0f };
+    Vec3f aTarget = { 0.0f, 140.0f, -280.0f };
+    Vec3f bOrig = { 0.0f, 140.0f, 400.0f };
+    Vec3f bTarget = { 0.0f, 140.0f, 599.0f };
+    Vec3f pa, pb, na, nb;
+
+    ptc_goomba_reset_state();
+    portal_reset();
+    portal_give_gun();
+    portal_shoot_at(0, aOrig, aTarget);
+    portal_shoot_at(1, bOrig, bTarget);
+    portal_view_force(0);
+
+    if (portal_get(0, pa, na) && portal_get(1, pb, nb)) {
+        /* Both mounts are parallel planes one behind the other, so the pair is
+         * a pure translation along Z. */
+        s_goombaMirrorDz = pb[2] - pa[2];
+    } else {
+        s_goombaMirrorDz = 892.0f;
+    }
+
+    s_goombaIn = spawn_object_abs_with_rot(
+        gMarioState != NULL ? gMarioState->marioObj : &gMacroObjectDefaultParent, 0,
+        MODEL_GOOMBA, bhvGoomba, 0, 0, (s16) s_goombaZ, 0, 0x8000, 0);
+    s_goombaOut = spawn_object_abs_with_rot(
+        gMarioState != NULL ? gMarioState->marioObj : &gMacroObjectDefaultParent, 0,
+        MODEL_GOOMBA, bhvGoomba, 0, 0, (s16)(s_goombaZ + s_goombaMirrorDz), 0, 0x8000, 0);
+    s_goombaActive = 1;
+
+    if (gMarioState != NULL) {
+        gMarioState->pos[0] = 260.0f;
+        gMarioState->pos[1] = 0.0f;
+        gMarioState->pos[2] = 700.0f;
+        gMarioState->vel[0] = gMarioState->vel[1] = gMarioState->vel[2] = 0.0f;
+        gMarioState->faceAngle[1] = 0x8000;
+        set_mario_action(gMarioState, ACT_IDLE, 0);
+        if (gMarioState->marioObj != NULL) {
+            vec3f_copy(gMarioState->marioObj->header.gfx.pos, gMarioState->pos);
+        }
+    }
+    g_portal_debug_color = 0;
+    {
+        extern int gfx_stereo_same_both;
+        gfx_stereo_same_both = 0;
+    }
+    gCameraMovementFlags |= CAM_MOVE_INIT_CAMERA;
+}
+
+static void ptc_goomba_update(void) {
+    float aZ;
+
+    if (!s_goombaActive) {
+        return;
+    }
+    s_goombaZ -= PTC_GOOMBA_SPEED;
+
+    /* Entry/exit planes come from the placed portals; fall back to the known
+     * test layout if they were cleared. */
+    {
+        Vec3f pa, na;
+        aZ = portal_get(0, pa, na) ? pa[2] : -296.0f;
+    }
+
+    if (s_goombaIn != NULL) {
+        if (s_goombaZ < aZ - PTC_GOOMBA_SIZE) {
+            /* Fully behind portal A: retire the entering copy. */
+            obj_mark_for_deletion(s_goombaIn);
+            s_goombaIn = NULL;
+        } else {
+            ptc_goomba_place(s_goombaIn, s_goombaZ);
+        }
+    }
+    if (s_goombaOut != NULL) {
+        ptc_goomba_place(s_goombaOut, s_goombaZ + s_goombaMirrorDz);
+    }
+
+    if (s_goombaZ < -1500.0f) {
+        ptc_goomba_reset_state();
+    }
+}
+
 /* ------------------------------------------------------------ diagnostics */
 
 static void ptc_apply_command(const char *action) {
@@ -1013,6 +1153,8 @@ static void ptc_apply_command(const char *action) {
         }
     } else if (strcmp(action, "reload") == 0) {
         ptc_knob_reload();
+    } else if (strcmp(action, "goomba") == 0) {
+        ptc_goomba_start();
     } else if (strcmp(action, "scene") == 0) {
         ptc_scene_toggle();
     } else if (strcmp(action, "emptytest") == 0) {
@@ -1191,7 +1333,8 @@ void ptc_format_status(char *buf, int len) {
              "cam=%.1f,%.1f,%.1f focus=%.1f,%.1f,%.1f "
              "wall=%d ceil=%d ledge=%d "
              "coins=%d stars=%d save=%d before=%d/%d "
-             "cal=%.1f,%.1f,%.1f ledge_reach=%.1f",
+             "cal=%.1f,%.1f,%.1f ledge_reach=%.1f goomba=%d,%.1f,%.1f gmodel=%d "
+             "gobj=%d,0x%x,%d,%d",
              gCurrLevelNum, gCurrAreaIndex, s_phase, s_testMode, s_testActive, s_failed, s_failReason,
              s_starCollected[0], s_starCollected[1], ptc_star_visible(), portal_count(), s_shotA, s_shotB, g_portal_debug,
              g_portal_view.active, g_portal_view.source,
@@ -1212,7 +1355,14 @@ void ptc_format_status(char *buf, int len) {
              m && (m->action == ACT_LEDGE_GRAB || m->action == ACT_START_HANGING),
              m ? m->numCoins : 0, m ? m->numStars : 0,
              ptc_save_star_count(), s_realStarsBefore, s_saveStarsBefore,
-             s_calSingle, s_calDouble, s_calTriple, s_calTriple + 100.0f);
+             s_calSingle, s_calDouble, s_calTriple, s_calTriple + 100.0f,
+             s_goombaActive, s_goombaZ,
+             (s_goombaOut != NULL) ? s_goombaOut->oPosZ : 0.0f,
+             (gLoadedGraphNodes != NULL && gLoadedGraphNodes[MODEL_GOOMBA] != NULL) ? 1 : 0,
+             s_goombaIn != NULL,
+             s_goombaIn != NULL ? s_goombaIn->header.gfx.node.flags : 0,
+             s_goombaIn != NULL ? (s_goombaIn->header.gfx.sharedChild != NULL) : 0,
+             s_goombaIn != NULL ? (int) s_goombaIn->activeFlags : -1);
 
     {
         size_t used = strlen(buf);

@@ -156,18 +156,15 @@ for key, pts in all_faces:
     for p in pts:
         lines.append(v(*p, COL[key]))
 lines.append("};")
-lines += ["", "const Gfx ptctest_dl[] = {",
-          "    gsDPPipeSync(),",
-          "    gsDPSetCombineMode(G_CC_SHADE, G_CC_SHADE),",
-          "    gsSPClearGeometryMode(G_LIGHTING | G_TEXTURE_GEN | G_TEXTURE_GEN_LINEAR),",
-          "    gsSPSetGeometryMode(G_SHADE | G_CULL_BACK),",
-          "    gsSPTexture(0xFFFF, 0xFFFF, 0, G_TX_RENDERTILE, G_OFF),",
-          "    gsDPSetRenderMode(G_RM_AA_ZB_OPA_SURF, G_RM_AA_ZB_OPA_SURF2),"]
+# Leave RDP state alone: disabling texturing here (G_OFF / G_CC_SHADE) leaked
+# into Mario's model display lists and rendered him untextured.
+lines += ["", "const Gfx ptctest_dl[] = {", "    gsDPPipeSync(),"]
 
 for i in range(len(all_faces)):
     b = i * 4
     lines += [f"    gsSPVertex(ptctest_vtx + {b}, 4, 0),",
               "    gsSP2Triangles(0, 1, 2, 0x0, 0, 2, 3, 0x0),"]
+
 lines += ["    gsSPEndDisplayList(),", "};", ""]
 
 # ---------------- collision ----------------
@@ -245,12 +242,16 @@ script = """#include <ultra64.h>
 #include "game/level_update.h"
 #include "levels/scripts.h"
 #include "levels/ptctest/header.h"
+#include "actors/common0.h"
 #include "make_const_nonconst.h"
 
 const LevelScript level_ptctest_entry[] = {
     INIT_LEVEL(),
     LOAD_RAW(/*seg*/ 0x13, _behaviorSegmentRomStart, _behaviorSegmentRomEnd),
     ALLOC_LEVEL_POOL(),
+    /* The Goomba demo needs this model; loading it explicitly avoids relying
+     * on a cross-segment JUMP_LINK into script_func_global_1. */
+    LOAD_MODEL_FROM_GEO(MODEL_GOOMBA, goomba_geo),
     MARIO(/*model*/ MODEL_MARIO, /*behParam*/ 0x00000001, /*beh*/ bhvMario),
 
     AREA(/*index*/ 1, ptctest_geo),

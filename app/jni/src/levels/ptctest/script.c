@@ -8,12 +8,16 @@
 #include "game/level_update.h"
 #include "levels/scripts.h"
 #include "levels/ptctest/header.h"
+#include "actors/common0.h"
 #include "make_const_nonconst.h"
 
 const LevelScript level_ptctest_entry[] = {
     INIT_LEVEL(),
     LOAD_RAW(/*seg*/ 0x13, _behaviorSegmentRomStart, _behaviorSegmentRomEnd),
     ALLOC_LEVEL_POOL(),
+    /* The Goomba demo needs this model; loading it explicitly avoids relying
+     * on a cross-segment JUMP_LINK into script_func_global_1. */
+    LOAD_MODEL_FROM_GEO(MODEL_GOOMBA, goomba_geo),
     MARIO(/*model*/ MODEL_MARIO, /*behParam*/ 0x00000001, /*beh*/ bhvMario),
 
     AREA(/*index*/ 1, ptctest_geo),
