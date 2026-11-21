@@ -631,9 +631,19 @@ static void draw_gun(const Mat4 view) {
     gSPDisplayList(gDisplayListHead++, (Gfx *) ptc_gun_dl);
 }
 
+static int portal_reticle_hit(Vec3f out);
+
+/* Diagnostics for the test dump: how far the barrel is from the reticle aim
+ * (should be ~0) and how far the aim is from Mario's facing (shows the gun no
+ * longer just follows his yaw). */
+static float s_gunAimErrDeg = -1.0f;
+static float s_gunYawOffDeg = -1.0f;
+
 static void draw_held_gun(const Mat4 view) {
     struct MarioState *m = gMarioState;
-    Vec3f right, fwd, up, pos;
+    Vec3f right, fwd, up, pos, hit, aim;
+    float len = 0.0f;
+    int haveHit;
     s16 yaw;
 
     if (!s_hasGun || m == NULL || m->marioObj == NULL) {
@@ -642,27 +652,86 @@ static void draw_held_gun(const Mat4 view) {
 
     /* Keep the prop in Mario's right hand: follow the interpolated render
      * position/angle so it does not jitter against the 60 Hz model. */
-    pos[0] = m->pos[0];
-    pos[1] = m->pos[1];
-    pos[2] = m->pos[2];
     yaw = m->faceAngle[1];
-
     right[0] = coss(yaw);
     right[1] = 0.0f;
     right[2] = -sins(yaw);
     fwd[0] = sins(yaw);
     fwd[1] = 0.0f;
     fwd[2] = coss(yaw);
+
+    pos[0] = m->pos[0] + right[0] * 26.0f + fwd[0] * 8.0f;
+    pos[1] = m->pos[1] + 92.0f;
+    pos[2] = m->pos[2] + right[2] * 26.0f + fwd[2] * 8.0f;
+
+    /* Barrel (the prop's local +Z) points at the reticle's world-space hit,
+     * i.e. the same point the world-space crosshair is drawn on.  Falls back to
+     * Mario's facing when the ray hits nothing. */
+    haveHit = portal_reticle_hit(hit);
+    if (haveHit) {
+        aim[0] = hit[0] - pos[0];
+        aim[1] = hit[1] - pos[1];
+        aim[2] = hit[2] - pos[2];
+        len = sqrtf(vdot3(aim, aim));
+        if (len > 8.0f) {
+            fwd[0] = aim[0] / len;
+            fwd[1] = aim[1] / len;
+            fwd[2] = aim[2] / len;
+        }
+    }
+
+    /* Right-handed basis X=right, Y=up, Z=barrel, with Y as close to world up
+     * as the aim allows (so the gun rolls naturally when aiming up/down). */
     up[0] = 0.0f;
     up[1] = 1.0f;
     up[2] = 0.0f;
+    vcross3(right, up, fwd);
+    if (vdot3(right, right) < 0.0001f) {
+        /* Aiming straight up or down: keep Mario's horizontal right. */
+        yaw = m->faceAngle[1];
+        right[0] = coss(yaw);
+        right[1] = 0.0f;
+        right[2] = -sins(yaw);
+    }
+    vnorm3(right);
+    vcross3(up, fwd, right);
+    vnorm3(up);
 
-    pos[0] += right[0] * 26.0f + fwd[0] * 8.0f;
-    pos[1] += 92.0f;
-    pos[2] += right[2] * 26.0f + fwd[2] * 8.0f;
+    /* Diagnostics. */
+    {
+        Vec3f face;
+        float dot;
+        face[0] = sins(m->faceAngle[1]);
+        face[1] = 0.0f;
+        face[2] = coss(m->faceAngle[1]);
+        dot = vdot3(fwd, face);
+        if (dot > 1.0f) dot = 1.0f;
+        if (dot < -1.0f) dot = -1.0f;
+        s_gunYawOffDeg = acosf(dot) * 180.0f / 3.14159265f;
+        if (haveHit && len > 8.0f) {
+            aim[0] = hit[0] - pos[0];
+            aim[1] = hit[1] - pos[1];
+            aim[2] = hit[2] - pos[2];
+            vnorm3(aim);
+            dot = vdot3(fwd, aim);
+            if (dot > 1.0f) dot = 1.0f;
+            if (dot < -1.0f) dot = -1.0f;
+            s_gunAimErrDeg = acosf(dot) * 180.0f / 3.14159265f;
+        } else {
+            s_gunAimErrDeg = -1.0f;
+        }
+    }
 
     emit_model_matrix(pos, right, up, fwd, view);
     gSPDisplayList(gDisplayListHead++, ptc_gun_dl);
+}
+
+int portal_gun_aim_error_deg10(void) {
+    return s_gunAimErrDeg < 0.0f ? -1 : (int)(s_gunAimErrDeg * 10.0f + 0.5f);
+}
+
+int portal_gun_yaw_offset_deg10(void) {
+    return s_gunYawOffDeg < 0.0f ? -1 : (int)(s_gunYawOffDeg * 10.0f + 0.5f);
 }
 
 void portal_view_toggle(void) {
@@ -867,6 +936,19 @@ void portal_render(void) {
 
 /* ------------------------------------------------------- aiming reticle */
 
+/* Test hook: when set, the reticle (and therefore the held gun) aims at a
+ * fixed world point instead of the camera ray.  Lets a side camera show the
+ * barrel pointing at the marker. */
+static int s_aimOverride = 0;
+static Vec3f s_aimPoint;
+
+void portal_aim_override(int on, const Vec3f point) {
+    s_aimOverride = on ? 1 : 0;
+    if (on && point != NULL) {
+        vec3f_copy(s_aimPoint, point);
+    }
+}
+
 /* Raycast for the reticle.  The ray is nudged up by the same amount the
  * crosshair sits above screen centre.  Fills `out` with the hit point. */
 static int portal_reticle_hit(Vec3f out) {
@@ -876,6 +958,10 @@ static int portal_reticle_hit(Vec3f out) {
 
     if (gMarioState == NULL) {
         return 0;
+    }
+    if (s_aimOverride) {
+        vec3f_copy(out, s_aimPoint);
+        return 1;
     }
     vec3f_copy(orig, gLakituState.pos);
     vec3f_copy(fwd, gLakituState.focus);

@@ -122,6 +122,7 @@ Dump tokens worth grepping:
 | `cam=` / `focus=` | `gLakituState` position and focus |
 | `mario=` / `action=` | Mario's position / action id |
 | `pov=` | POV rig dist/height/mario/freeze/stereo |
+| `gun=` | held flag, barrel-vs-reticle error (0.1°), barrel-vs-facing offset (0.1°) |
 | `goomba=` | demo active,z,crossings |
 | `annex=` | wallrun/jetpack/grapple state |
 
@@ -236,6 +237,25 @@ inverted or exploded polygons. Files from the passing run:
 
 `scripts/ptc-knob.sh` takes the device lock itself. Do **not** wrap it in
 another `agent-lock.sh device` call — it will deadlock/time out.
+
+### Gun aim test
+
+```bash
+adb shell "$B --es cmd ptc --es action gunaim"     # side view + fixed marker
+adb shell "$B --es cmd ptc --es action gunaimoff"
+```
+
+`gunaim` pins Mario at `(-600, 0, -900)` facing +Z, gives him the gun, pins a
+side camera, and forces the reticle to a fixed marker at `(-560, 240, -700)`.
+The marker is drawn as the normal world-space crosshair and the barrel must
+point at it. The dump's `gun=held,aimerr,yaw` should read `gun=1,0,N` — aim
+error ~0, while `N` is large whenever the aim is not Mario's facing (that is
+the point: the gun no longer just follows his yaw). `povcam2` gives
+`gun=1,0,718`; `gunaim` gives `gun=1,0,377`.
+
+The reticle normally comes from the camera ray, so in normal play the gun is
+always seen roughly end-on. The fixed-marker hook exists so a spectator camera
+can show the barrel in profile.
 
 ## 8. Visual testing principles
 

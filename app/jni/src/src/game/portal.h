@@ -39,6 +39,9 @@ void portal_update(void);        // simulation tick: pickup + teleport checks
 void portal_render(void);        // append the portal / gun geometry to the dlist
 void portal_shoot(int which);    // 0 = blue (P1), 1 = orange (P2)
 int  portal_gun_has(void);       // 1 once Mario picked the gun up
+int  portal_gun_aim_error_deg10(void);   // barrel vs reticle hit, tenths of a degree
+int  portal_gun_yaw_offset_deg10(void);  // barrel vs Mario's facing, tenths
+void portal_aim_override(int on, const Vec3f point);  // test hook: fixed reticle target
 int  portal_count(void);         // number of placed portals (0..2)
 
 /* Debug / regression-test helpers.  These do not change normal gameplay. */

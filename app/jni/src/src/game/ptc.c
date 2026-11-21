@@ -1314,6 +1314,54 @@ static void ptc_pov_apply(void) {
     }
 }
 
+/* --------------------------------------------------- gun aim test */
+
+/* Side-on view of Mario with a fixed reticle marker: the held gun must point
+ * its barrel at the marker.  The override bypasses the camera-ray hitscan so a
+ * spectator camera can see the aim in profile. */
+static void ptc_gun_aim_test(void) {
+    Vec3f target = { -560.0f, 240.0f, -700.0f };
+    Vec3f camPos = { -220.0f, 260.0f, -1060.0f };
+    Vec3f camFocus = { -600.0f, 120.0f, -860.0f };
+    extern void custom_camera_set_freelook(int on, const Vec3f pos, const Vec3f focus);
+    extern void custom_camera_apply_mode(int mode);
+    extern int gfx_stereo_2d;
+    extern int gfx_stereo_same_both;
+
+    portal_reset();
+    portal_give_gun();
+    portal_aim_override(1, target);
+    g_portal_debug_color = 0;
+
+    if (gMarioState != NULL) {
+        gMarioState->pos[0] = -600.0f;
+        gMarioState->pos[1] = 0.0f;
+        gMarioState->pos[2] = -900.0f;
+        gMarioState->vel[0] = gMarioState->vel[1] = gMarioState->vel[2] = 0.0f;
+        gMarioState->faceAngle[1] = 0x0000;      /* face +Z */
+        set_mario_action(gMarioState, ACT_IDLE, 0);
+        if (gMarioState->marioObj != NULL) {
+            vec3f_copy(gMarioState->marioObj->header.gfx.pos, gMarioState->pos);
+            gMarioState->marioObj->header.gfx.unk38.animFrame = 0;
+        }
+    }
+    custom_camera_apply_mode(3);
+    custom_camera_set_freelook(1, camPos, camFocus);
+    gfx_stereo_2d = 1;
+    gfx_stereo_same_both = 1;
+}
+
+static void ptc_gun_aim_end(void) {
+    extern void custom_camera_set_freelook(int on, const Vec3f pos, const Vec3f focus);
+    extern int gfx_stereo_2d;
+    extern int gfx_stereo_same_both;
+
+    portal_aim_override(0, NULL);
+    custom_camera_set_freelook(0, NULL, NULL);
+    gfx_stereo_2d = 0;
+    gfx_stereo_same_both = 0;
+}
+
 /* ------------------------------------------------- corner portal test */
 
 /* Reproducible corner test: portals 20 units from the SW corner where the blue
@@ -1516,6 +1564,10 @@ static void ptc_apply_command(const char *action) {
         }
     } else if (strcmp(action, "reload") == 0) {
         ptc_knob_reload();
+    } else if (strcmp(action, "gunaim") == 0) {
+        ptc_gun_aim_test();
+    } else if (strcmp(action, "gunaimoff") == 0) {
+        ptc_gun_aim_end();
     } else if (strcmp(action, "goomba") == 0) {
         ptc_goomba_start();
     } else if (strcmp(action, "scene") == 0) {
@@ -1719,7 +1771,7 @@ void ptc_format_status(char *buf, int len) {
              "wall=%d ceil=%d ledge=%d "
              "coins=%d stars=%d save=%d before=%d/%d "
              "cal=%.1f,%.1f,%.1f ledge_reach=%.1f goomba=%d,%.1f,%.1f gmodel=%d "
-             "gobj=%d,0x%x,%d,%d annex=%d,%d,%d",
+             "gobj=%d,0x%x,%d,%d annex=%d,%d,%d gun=%d,%d,%d",
              gCurrLevelNum, gCurrAreaIndex, s_phase, s_testMode, s_testActive, s_failed, s_failReason,
              s_starCollected[0], s_starCollected[1], ptc_star_visible(), portal_count(), s_shotA, s_shotB, g_portal_debug,
              g_portal_view.active, g_portal_view.source,
@@ -1748,7 +1800,9 @@ void ptc_format_status(char *buf, int len) {
              s_goombaIn != NULL ? s_goombaIn->header.gfx.node.flags : 0,
              s_goombaIn != NULL ? (s_goombaIn->header.gfx.sharedChild != NULL) : 0,
              s_goombaIn != NULL ? (int) s_goombaIn->activeFlags : -1,
-             s_annexMode, s_annexSeen, s_annexTimer);
+             s_annexMode, s_annexSeen, s_annexTimer,
+             portal_gun_has(), portal_gun_aim_error_deg10(),
+             portal_gun_yaw_offset_deg10());
 
     {
         size_t used = strlen(buf);
