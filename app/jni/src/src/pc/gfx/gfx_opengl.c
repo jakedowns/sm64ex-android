@@ -2159,8 +2159,11 @@ extern int g_portal_debug_color;
 /* Two relay images: one per portal, so a side-by-side pair shows a window in
  * both surfaces instead of only the one being looked at. */
 #define PORTAL_VIEWS 2
-static GLuint s_portal_fbo[PORTAL_VIEWS], s_portal_tex[PORTAL_VIEWS], s_portal_depth[PORTAL_VIEWS];
-static int s_portal_w[PORTAL_VIEWS], s_portal_h[PORTAL_VIEWS];
+#define PORTAL_EYES  2
+static GLuint s_portal_fbo[PORTAL_VIEWS][PORTAL_EYES];
+static GLuint s_portal_tex[PORTAL_VIEWS][PORTAL_EYES];
+static GLuint s_portal_depth[PORTAL_VIEWS][PORTAL_EYES];
+static int s_portal_w[PORTAL_VIEWS][PORTAL_EYES], s_portal_h[PORTAL_VIEWS][PORTAL_EYES];
 static GLuint s_portal_prog = 0;
 static GLint s_portal_apos = -1, s_portal_auv = -1, s_portal_utex = -1;
 
@@ -2181,7 +2184,7 @@ static const char *s_portal_fs =
     "  gl_FragColor = texture2D(uTex, vUV);\n"
     "}\n";
 
-static int portal_ensure_resources(int index, int w, int h) {
+static int portal_ensure_resources(int index, int eye, int w, int h) {
     if (s_portal_prog == 0) {
         GLuint vs = compile_shader(GL_VERTEX_SHADER, s_portal_vs);
         GLuint fs = compile_shader(GL_FRAGMENT_SHADER, s_portal_fs);
@@ -2198,51 +2201,51 @@ static int portal_ensure_resources(int index, int w, int h) {
         s_portal_auv = glGetAttribLocation(s_portal_prog, "aUV");
         s_portal_utex = glGetUniformLocation(s_portal_prog, "uTex");
     }
-    if (s_portal_fbo[index] != 0 && w == s_portal_w[index] && h == s_portal_h[index]) {
+    if (s_portal_fbo[index][eye] != 0 && w == s_portal_w[index][eye] && h == s_portal_h[index][eye]) {
         return 1;
     }
-    if (s_portal_fbo[index]) glDeleteFramebuffers(1, &s_portal_fbo[index]);
-    if (s_portal_tex[index]) glDeleteTextures(1, &s_portal_tex[index]);
-    if (s_portal_depth[index]) glDeleteRenderbuffers(1, &s_portal_depth[index]);
-    s_portal_fbo[index] = s_portal_tex[index] = s_portal_depth[index] = 0;
-    s_portal_w[index] = s_portal_h[index] = 0;
+    if (s_portal_fbo[index][eye]) glDeleteFramebuffers(1, &s_portal_fbo[index][eye]);
+    if (s_portal_tex[index][eye]) glDeleteTextures(1, &s_portal_tex[index][eye]);
+    if (s_portal_depth[index][eye]) glDeleteRenderbuffers(1, &s_portal_depth[index][eye]);
+    s_portal_fbo[index][eye] = s_portal_tex[index][eye] = s_portal_depth[index][eye] = 0;
+    s_portal_w[index][eye] = s_portal_h[index][eye] = 0;
 
-    glGenTextures(1, &s_portal_tex[index]);
-    glBindTexture(GL_TEXTURE_2D, s_portal_tex[index]);
+    glGenTextures(1, &s_portal_tex[index][eye]);
+    glBindTexture(GL_TEXTURE_2D, s_portal_tex[index][eye]);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
-    glGenFramebuffers(1, &s_portal_fbo[index]);
-    glBindFramebuffer(GL_FRAMEBUFFER, s_portal_fbo[index]);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, s_portal_tex[index], 0);
-    glGenRenderbuffers(1, &s_portal_depth[index]);
-    glBindRenderbuffer(GL_RENDERBUFFER, s_portal_depth[index]);
+    glGenFramebuffers(1, &s_portal_fbo[index][eye]);
+    glBindFramebuffer(GL_FRAMEBUFFER, s_portal_fbo[index][eye]);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, s_portal_tex[index][eye], 0);
+    glGenRenderbuffers(1, &s_portal_depth[index][eye]);
+    glBindRenderbuffer(GL_RENDERBUFFER, s_portal_depth[index][eye]);
     glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT16, w, h);
-    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, s_portal_depth[index]);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, s_portal_depth[index][eye]);
 
     GLenum st = glCheckFramebufferStatus(GL_FRAMEBUFFER);
-    __android_log_print(ANDROID_LOG_INFO, "SM64PORTAL", "fbo%d=%u tex=%u %dx%d status=0x%x",
-                        index, s_portal_fbo[index], s_portal_tex[index], w, h, st);
+    __android_log_print(ANDROID_LOG_INFO, "SM64PORTAL", "fbo%d/%d=%u tex=%u %dx%d status=0x%x",
+                        index, eye, s_portal_fbo[index][eye], s_portal_tex[index][eye], w, h, st);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     if (st != GL_FRAMEBUFFER_COMPLETE) {
         return 0;
     }
-    s_portal_w[index] = w;
-    s_portal_h[index] = h;
+    s_portal_w[index][eye] = w;
+    s_portal_h[index][eye] = h;
     return 1;
 }
 
-int gfx_opengl_portal_begin(int index, int w, int h) {
-    if (index < 0 || index >= PORTAL_VIEWS) {
+int gfx_opengl_portal_begin(int index, int eye, int w, int h) {
+    if (index < 0 || index >= PORTAL_VIEWS || eye < 0 || eye >= PORTAL_EYES) {
         return 0;
     }
-    if (w < 1 || h < 1 || !portal_ensure_resources(index, w, h)) {
+    if (w < 1 || h < 1 || !portal_ensure_resources(index, eye, w, h)) {
         return 0;
     }
-    glBindFramebuffer(GL_FRAMEBUFFER, s_portal_fbo[index]);
+    glBindFramebuffer(GL_FRAMEBUFFER, s_portal_fbo[index][eye]);
     glDisable(GL_SCISSOR_TEST);
     glDepthMask(GL_TRUE);
     if (g_portal_debug_color) {
@@ -2280,7 +2283,7 @@ void gfx_opengl_portal_overlay(int eye, int index) {
         return;
     }
     vs = (index == 1) ? &g_portal_view2 : &g_portal_view;
-    if (!vs->active || s_portal_tex[index] == 0 || s_portal_prog == 0) {
+    if (!vs->active || s_portal_tex[index][eye & 1] == 0 || s_portal_prog == 0) {
         return;
     }
     if (gfx_portal_debug_blit) {
@@ -2292,7 +2295,7 @@ void gfx_opengl_portal_overlay(int eye, int index) {
         };
         glUseProgram(s_portal_prog);
         glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, s_portal_tex[index]);
+        glBindTexture(GL_TEXTURE_2D, s_portal_tex[index][eye & 1]);
         glUniform1i(s_portal_utex, 0);
         glDisable(GL_CULL_FACE);
         glDisable(GL_BLEND);
@@ -2334,8 +2337,10 @@ void gfx_opengl_portal_overlay(int eye, int index) {
         }
         nx *= gsx;
         ny *= gsy;
-        /* Texture coordinate comes from the un-offset vertex, so the relay
-         * window lines up even though the mesh is nudged off the wall. */
+        /* Per-eye relay: the image was rendered with this eye's shear already
+         * baked in, so the shear must be applied before the UV is derived and
+         * must not be added again below. */
+        nx += (gfx_stereo_enabled && eye >= 0) ? gfx_eye_shear[eye & 1] : 0.0f;
         u = nx * 0.5f + 0.5f;
         v = ny * 0.5f + 0.5f;
 
@@ -2359,7 +2364,6 @@ void gfx_opengl_portal_overlay(int eye, int index) {
             }
         }
 
-        nx += (gfx_stereo_enabled && eye >= 0) ? gfx_eye_shear[eye & 1] : 0.0f;
         buf[n++] = nx;
         buf[n++] = ny;
         buf[n++] = nz;
@@ -2396,7 +2400,7 @@ void gfx_opengl_portal_overlay(int eye, int index) {
     }
     glUseProgram(s_portal_prog);
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, s_portal_tex[index]);
+    glBindTexture(GL_TEXTURE_2D, s_portal_tex[index][eye & 1]);
     glUniform1i(s_portal_utex, 0);
     glDisable(GL_CULL_FACE);
     glDisable(GL_BLEND);

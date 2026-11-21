@@ -270,9 +270,12 @@ def emit_walls():
         "left":  (140, 175, 255),   # west
         "right": (255, 150, 140),   # east
     }
+    wall_ranges = []
+    vcount = 0
     for name, p0, p1, p2, p3, normal, uv in walls:
         pts = face([p0, p1, p2, p3], normal)
         tint = wall_tint.get(name, (255, 255, 255))
+        start = vcount
         # Subdivide so the checker tiles at a consistent size across the room
         # instead of being stretched over one giant quad.
         for cell in subdiv_quad(pts):
@@ -283,7 +286,8 @@ def emit_walls():
                 s %= 1024
                 t %= 1024
                 lines.append(vtx(*p, s, t, tint))
-    lines += ["};", ""]
+                vcount += 1
+        wall_ranges.append((start, vcount - start))
 
     wall_setup = [
         "    gsDPPipeSync(),",
@@ -315,12 +319,37 @@ def emit_walls():
 
     # One wall per display list so the occluder fade can target only the wall
     # that is actually between the camera and Mario.
-    for i in range(4):
-        vert = f"ptc_vtx_walls + {i * 4}"
-        tris = [
-            f"    gsSPVertex({vert}, 4, 0),",
-            "    gsSP2Triangles(0, 1, 2, 0x0, 0, 2, 3, 0x0),",
-        ]
+    # Mirror panel on the west wall: a pale, semi-reflective quad that the
+    # mirror-Mario node draws himself in front of (SM64 castle trick).
+    mirror_start = vcount
+    mir_pts = face([
+        (3190, 100, -200),
+        (3190, 100, 600),
+        (3190, 900, 600),
+        (3190, 900, -200),
+    ], (-1, 0, 0))
+    for cell in subdiv_quad(mir_pts):
+        for p in [(int(round(v[0])), int(round(v[1])), int(round(v[2]))) for v in cell]:
+            s_, t_ = ((p[2] + 200) * 4) % 1024, ((p[1] - 100) * 4) % 1024
+            lines.append(vtx(*p, s_, t_, (170, 180, 205)))
+            vcount += 1
+    lines += ["};", ""]
+    lines.append(f"#define PTC_MIRROR_VTX_START {mirror_start}")
+    lines.append(f"#define PTC_MIRROR_VTX_COUNT {vcount - mirror_start}")
+    lines.append("#define PTC_MIRROR_X (3190.0f)")
+    lines.append("")
+
+    for i, (vstart, vlen) in enumerate(wall_ranges):
+        # Convention: load up to 32 vertices (8 quads) per gSPVertex and draw
+        # the matching triangles, instead of one 4-vertex load per cell.
+        tris = []
+        for base in range(0, vlen, 32):
+            n = min(32, vlen - base)
+            tris.append(f"    gsSPVertex(ptc_vtx_walls + {vstart + base}, {n}, 0),")
+            for q in range(n // 4):
+                b = q * 4
+                tris.append(f"    gsSP2Triangles({b}, {b + 1}, {b + 2}, 0x0, "
+                            f"{b}, {b + 2}, {b + 3}, 0x0),")
         lines += [
             f"const Gfx ptc_dl_wall_{i}[] = {{",
             *wall_setup,
@@ -336,6 +365,25 @@ def emit_walls():
             *wall_restore,
             "",
         ]
+
+    # Mirror surface DL (same batched vertex loads as the walls).
+    mtris = []
+    mcount = vcount - mirror_start
+    for base in range(0, mcount, 32):
+        n = min(32, mcount - base)
+        mtris.append(f"    gsSPVertex(ptc_vtx_walls + {mirror_start + base}, {n}, 0),")
+        for q in range(n // 4):
+            b = q * 4
+            mtris.append(f"    gsSP2Triangles({b}, {b + 1}, {b + 2}, 0x0, "
+                         f"{b}, {b + 2}, {b + 3}, 0x0),")
+    lines += [
+        "const Gfx ptc_dl_mirror[] = {",
+        *wall_setup,
+        "    gsDPSetRenderMode(G_RM_AA_ZB_OPA_SURF, G_RM_AA_ZB_OPA_SURF2),",
+        *mtris,
+        *wall_restore,
+        "",
+    ]
     return "\n".join(lines)
 
 
@@ -625,6 +673,7 @@ def main():
 #define PTC_P9_Z0 150
 #define PTC_P9_Z1 560
 
+#define PTC_MIRROR_X (3190.0f)
 #define PTC_MARIO_START_X {MARIO_START[0]}
 #define PTC_MARIO_START_Y {MARIO_START[1]}
 #define PTC_MARIO_START_Z {MARIO_START[2]}
@@ -693,6 +742,7 @@ extern const Gfx ptc_dl_jp_n[];
 extern const Gfx ptc_dl_jp_n_fade[];
 extern const Gfx ptc_dl_jp_pad[];
 extern const Gfx ptc_dl_jp_pad_fade[];
+extern const Gfx ptc_dl_mirror[];
 extern const Gfx ptc_dl_p9[];
 extern const Gfx ptc_dl_p9_fade[];
 extern const Gfx ptc_dl_ramp[];
@@ -719,6 +769,7 @@ extern const LevelScript level_ptc_entry[];
 #include "levels/ptc/header.h"
 
 extern Gfx *ptc_geo_obj(s32 callContext, struct GraphNode *node, UNUSED void *context);
+extern Gfx *ptc_geo_mirror_mario(s32 callContext, struct GraphNode *node, UNUSED void *context);
 
 const GeoLayout ptc_geo[] = {
    GEO_NODE_SCREEN_AREA(10, SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2, SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2),
@@ -750,6 +801,8 @@ const GeoLayout ptc_geo[] = {
 """
     asm = "".join(f"               GEO_ASM({i}, ptc_geo_obj),\n"
                   for i in range(len(PLATFORMS) + 1 + 4))
+    asm += ("            GEO_ASM(21, ptc_geo_obj),\n"
+            "            GEO_ASM(22, ptc_geo_mirror_mario),\n")
     (OUT / "geo.c").write_text(geo.replace("{ASM_NODES}", asm))
 
     script = """#include <ultra64.h>

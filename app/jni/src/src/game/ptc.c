@@ -117,12 +117,58 @@ Gfx *ptc_geo_obj(s32 callContext, struct GraphNode *node, UNUSED void *context) 
         }
         return (Gfx *) s_ptc_solid_dl[id];
     }
+    if (id == 21) {
+        return (Gfx *) ptc_dl_mirror;
+    }
     id -= 17;
     if (id >= 0 && id < 4) {
         return (Gfx *)((g_ptc_fade_mask & (1u << (10 + id)))
                 ? s_ptc_wall_fade[id] : s_ptc_wall_dl[id]);
     }
     return (Gfx *) ptc_dl_room;
+}
+
+/* ------------------------------------------------------------ mirror wall */
+
+/* SM64's castle mirror is not a render-to-texture reflection: it draws a
+ * mirrored copy of Mario (position flipped about the mirror plane, yaw negated,
+ * X scale negated) in front of a plain mirror quad.  Same trick here, using the
+ * generated plane so the two agree. */
+static struct GraphNodeObject s_ptc_mirror_mario;
+
+Gfx *ptc_geo_mirror_mario(s32 callContext, struct GraphNode *node, UNUSED void *context) {
+    struct Object *mario = gMarioState != NULL ? gMarioState->marioObj : NULL;
+
+    switch (callContext) {
+        case GEO_CONTEXT_CREATE:
+            init_graph_node_object(NULL, &s_ptc_mirror_mario, NULL,
+                                   gVec3fZero, gVec3sZero, gVec3fOne);
+            break;
+        case GEO_CONTEXT_AREA_LOAD:
+            geo_add_child(node, &s_ptc_mirror_mario.node);
+            break;
+        case GEO_CONTEXT_AREA_UNLOAD:
+            geo_remove_child(&s_ptc_mirror_mario.node);
+            break;
+        case GEO_CONTEXT_RENDER:
+            if (mario != NULL && mario->header.gfx.pos[0] < PTC_MIRROR_X) {
+                s_ptc_mirror_mario.sharedChild = mario->header.gfx.sharedChild;
+                s_ptc_mirror_mario.unk18 = mario->header.gfx.unk18;
+                vec3s_copy(s_ptc_mirror_mario.angle, mario->header.gfx.angle);
+                vec3f_copy(s_ptc_mirror_mario.pos, mario->header.gfx.pos);
+                vec3f_copy(s_ptc_mirror_mario.scale, mario->header.gfx.scale);
+                s_ptc_mirror_mario.unk38 = *(struct GraphNodeObject_sub *)
+                        &mario->header.gfx.unk38.animID;
+                s_ptc_mirror_mario.pos[0] = 2.0f * PTC_MIRROR_X - s_ptc_mirror_mario.pos[0];
+                s_ptc_mirror_mario.angle[1] = -s_ptc_mirror_mario.angle[1];
+                s_ptc_mirror_mario.scale[0] *= -1.0f;
+                s_ptc_mirror_mario.node.flags |= GRAPH_RENDER_ACTIVE;
+            } else {
+                s_ptc_mirror_mario.node.flags &= ~GRAPH_RENDER_ACTIVE;
+            }
+            break;
+    }
+    return NULL;
 }
 
 /* Slab test for the camera -> Mario segment. */
@@ -1028,6 +1074,7 @@ static float s_goombaZ;
 static float s_goombaX;
 static float s_goombaPlaneZ;     /* portal plane the loop crosses */
 static float s_goombaTurnZ;      /* far turnaround line */
+static int   s_goombaTowards;    /* +1 walking toward the plane, -1 back */
 static int   s_goombaDir;        /* -1 = walking into the wall, +1 = walking out */
 static int   s_goombaCrossings;
 
@@ -1038,6 +1085,7 @@ static void ptc_goomba_reset_state(void) {
     s_goombaZ = PTC_GOOMBA_START_Z;
     s_goombaX = -90.0f;
     s_goombaDir = -1;
+    s_goombaTowards = -1;
     s_goombaCrossings = 0;
 }
 
@@ -1072,10 +1120,12 @@ static void ptc_goomba_place(struct Object *o, float x, float z, s16 yaw) {
 }
 
 static void ptc_goomba_start(void) {
-    Vec3f aOrig = { -90.0f, 140.0f, 120.0f };
-    Vec3f aTarget = { -90.0f, 140.0f, -280.0f };
-    Vec3f bOrig = { 90.0f, 140.0f, 120.0f };
-    Vec3f bTarget = { 90.0f, 140.0f, -280.0f };
+    /* Main chamber: both portals on the north (back) wall, Mario watching from
+     * the room side, Goomba marching in and out of them forever. */
+    Vec3f aOrig = { -90.0f, 140.0f, 500.0f };
+    Vec3f aTarget = { -90.0f, 140.0f, 1249.0f };
+    Vec3f bOrig = { 90.0f, 140.0f, 500.0f };
+    Vec3f bTarget = { 90.0f, 140.0f, 1249.0f };
     Vec3f pa, pb, na, nb;
 
     ptc_goomba_reset_state();
@@ -1086,12 +1136,15 @@ static void ptc_goomba_start(void) {
     portal_shoot_at(1, bOrig, bTarget);
     portal_view_force(0);
 
-    s_goombaPlaneZ = -300.0f;
-    s_goombaTurnZ = PTC_GOOMBA_START_Z;
-    s_goombaZ = PTC_GOOMBA_START_Z;
+    s_goombaPlaneZ = 1250.0f;
     if (portal_get(0, pa, na)) {
         s_goombaPlaneZ = pa[2];
     }
+    /* Start on the room side of the plane and walk toward it. */
+    s_goombaTowards = (s_goombaPlaneZ >= PTC_GOOMBA_START_Z) ? 1 : -1;
+    s_goombaTurnZ = s_goombaPlaneZ - (float) s_goombaTowards * 650.0f;
+    s_goombaZ = s_goombaTurnZ;
+    s_goombaDir = s_goombaTowards;
     s_goombaIn = spawn_object_abs_with_rot(
         gMarioState != NULL ? gMarioState->marioObj : &gMacroObjectDefaultParent, 0,
         MODEL_GOOMBA, bhvGoomba, (s16) s_goombaX, 0, (s16) s_goombaZ, 0, 0x8000, 0);
@@ -1132,7 +1185,8 @@ static void ptc_goomba_update(void) {
 
     s_goombaZ += (float) s_goombaDir * PTC_GOOMBA_SPEED;
 
-    if (s_goombaDir < 0 && s_goombaZ <= planeZ) {
+    if (s_goombaDir == s_goombaTowards
+        && (planeZ - s_goombaZ) * (float) s_goombaTowards <= 0.0f) {
         /* Crossed the plane: appear at the other portal and walk back out.
          * For two mounts on one plane the map is x -> (Bx - (x - Ax)). */
         s_goombaZ = planeZ;
@@ -1141,11 +1195,12 @@ static void ptc_goomba_update(void) {
         } else {
             s_goombaX = -s_goombaX;
         }
-        s_goombaDir = 1;
+        s_goombaDir = -s_goombaTowards;
         s_goombaCrossings++;
-    } else if (s_goombaDir > 0 && s_goombaZ >= s_goombaTurnZ) {
+    } else if (s_goombaDir == -s_goombaTowards
+               && (s_goombaZ - s_goombaTurnZ) * (float) s_goombaDir <= 0.0f) {
         s_goombaZ = s_goombaTurnZ;
-        s_goombaDir = -1;
+        s_goombaDir = s_goombaTowards;
     }
 
     ptc_goomba_place(s_goombaIn, s_goombaX, s_goombaZ,

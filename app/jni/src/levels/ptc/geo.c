@@ -13,6 +13,7 @@
 #include "levels/ptc/header.h"
 
 extern Gfx *ptc_geo_obj(s32 callContext, struct GraphNode *node, UNUSED void *context);
+extern Gfx *ptc_geo_mirror_mario(s32 callContext, struct GraphNode *node, UNUSED void *context);
 
 const GeoLayout ptc_geo[] = {
    GEO_NODE_SCREEN_AREA(10, SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2, SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2),
@@ -52,6 +53,8 @@ const GeoLayout ptc_geo[] = {
                GEO_ASM(18, ptc_geo_obj),
                GEO_ASM(19, ptc_geo_obj),
                GEO_ASM(20, ptc_geo_obj),
+            GEO_ASM(21, ptc_geo_obj),
+            GEO_ASM(22, ptc_geo_mirror_mario),
 
                GEO_DISPLAY_LIST(LAYER_OPAQUE, ptc_dl_panels),
                GEO_DISPLAY_LIST(LAYER_OPAQUE, ptc_dl_labels),

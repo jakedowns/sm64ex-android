@@ -45,6 +45,7 @@ extern const Gfx ptc_dl_jp_n[];
 extern const Gfx ptc_dl_jp_n_fade[];
 extern const Gfx ptc_dl_jp_pad[];
 extern const Gfx ptc_dl_jp_pad_fade[];
+extern const Gfx ptc_dl_mirror[];
 extern const Gfx ptc_dl_p9[];
 extern const Gfx ptc_dl_p9_fade[];
 extern const Gfx ptc_dl_ramp[];

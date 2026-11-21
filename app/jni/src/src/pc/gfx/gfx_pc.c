@@ -37,7 +37,7 @@ int gfx_portal_debug_blit = 0;   /* debug: show the portal FBO full-screen */
 /* Last camera perspective projection, for the portal overlay: by the time the
  * overlay runs, rsp.P_matrix may hold the skybox/HUD ortho. */
 float gfx_last_persp_proj[4][4];
-extern int gfx_opengl_portal_begin(int index, int w, int h);
+extern int gfx_opengl_portal_begin(int index, int eye, int w, int h);
 extern void gfx_opengl_portal_end(void);
 extern void gfx_opengl_portal_fill_green(void);
 extern void gfx_opengl_portal_overlay(int eye, int index);
@@ -361,9 +361,23 @@ static void gfx_apply_ui_depth(void) {
     }
 }
 
+int gfx_portal_eye = 0;   /* which eye the current portal pass is rendering */
+
 static void gfx_apply_stereo_shear(void) {
     if (gfx_portal_pass) {
-        return; // portal FBO is a mono image
+        /* Per-eye relay: bake this eye's shear into the destination view so the
+         * image inside a portal window carries real parallax. */
+        float half, off, shear;
+        if (!gfx_stereo_enabled || gfx_stereo_2d) {
+            return;
+        }
+        half = 0.5f * gfx_stereo_ipd_px - gfx_stereo_convergence_px;
+        off = (gfx_portal_eye == 0) ? half : -half;
+        shear = off * 2.0f / (float) gfx_stereo_eye_width;
+        for (int i = 0; i < 4; i++) {
+            rsp.MP_matrix[i][0] += shear * rsp.MP_matrix[i][3];
+        }
+        return;
     }
     if (!gfx_stereo_enabled) {
         return;
@@ -959,7 +973,7 @@ static void gfx_apply_portal_mp(void) {
     if (!gfx_portal_pass) {
         return;
     }
-    vs = (gfx_portal_pass == 2) ? &g_portal_view2 : &g_portal_view;
+    vs = ((gfx_portal_pass - 1) / 2) ? &g_portal_view2 : &g_portal_view;
     gfx_matrix_mul(tmp, vs->c_matrix, rsp.MP_matrix);
     memcpy(rsp.MP_matrix, tmp, sizeof(tmp));
 }
@@ -2386,16 +2400,21 @@ void gfx_run(Gfx *commands) {
      * a textured, depth-tested overlay per eye afterwards. */
     for (int pi = 0; pi < 2; pi++) {
         const PortalViewState *vs = (pi == 0) ? &g_portal_view : &g_portal_view2;
-        int pw, ph;
+        int pw, ph, eyes;
         if (!vs->active) {
             continue;
         }
         pw = gfx_stereo_enabled ? gfx_stereo_canvas[2] : gfx_current_dimensions.width;
         ph = gfx_stereo_enabled ? gfx_stereo_canvas[3] : gfx_current_dimensions.height;
-        if (gfx_opengl_portal_begin(pi, pw, ph)) {
-            gfx_stereo_eye = 0;
+        eyes = (gfx_stereo_enabled && !gfx_stereo_2d) ? 2 : 1;
+        for (int pe = 0; pe < eyes; pe++) {
+            if (!gfx_opengl_portal_begin(pi, pe, pw, ph)) {
+                continue;
+            }
+            gfx_stereo_eye = pe;
+            gfx_portal_eye = pe;
             gfx_sp_reset();
-            gfx_portal_pass = pi + 1;
+            gfx_portal_pass = 1 + pi * 2 + pe;
             gfx_run_dl_range(commands,
                     (gGfxHasScene && gGfxUiStart != NULL) ? gGfxUiStart : NULL);
             gfx_flush();

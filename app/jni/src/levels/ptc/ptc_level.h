@@ -59,6 +59,7 @@
 #define PTC_P9_Z0 150
 #define PTC_P9_Z1 560
 
+#define PTC_MIRROR_X (3190.0f)
 #define PTC_MARIO_START_X -600
 #define PTC_MARIO_START_Y 0
 #define PTC_MARIO_START_Z -950
