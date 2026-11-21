@@ -966,15 +966,144 @@ static void gfx_matrix_mul(float res[4][4], const float a[4][4], const float b[4
     memcpy(res, tmp, sizeof(tmp));
 }
 
-/* Portal pass: clip = p * (C * modelview) * projection. */
-static void gfx_apply_portal_mp(void) {
-    float tmp[4][4];
+
+/* General 4x4 inverse (row-vector convention, v' = v * M).  Used for the
+ * portal relay clip plane; the camera view is rigid, but this is robust. */
+static int gfx_mtx4_invert(float out[4][4], const float m[4][4]) {
+    float a[4][8];
+    int i, j, k;
+
+    for (i = 0; i < 4; i++) {
+        for (j = 0; j < 4; j++) {
+            a[i][j] = m[i][j];
+            a[i][j + 4] = (i == j) ? 1.0f : 0.0f;
+        }
+    }
+    for (i = 0; i < 4; i++) {
+        int piv = i;
+        for (k = i + 1; k < 4; k++) {
+            if (fabsf(a[k][i]) > fabsf(a[piv][i])) {
+                piv = k;
+            }
+        }
+        if (fabsf(a[piv][i]) < 1e-9f) {
+            return 0;
+        }
+        if (piv != i) {
+            for (j = 0; j < 8; j++) {
+                float t = a[i][j]; a[i][j] = a[piv][j]; a[piv][j] = t;
+            }
+        }
+        {
+            float d = a[i][i];
+            for (j = 0; j < 8; j++) {
+                a[i][j] /= d;
+            }
+        }
+        for (k = 0; k < 4; k++) {
+            if (k != i) {
+                float f = a[k][i];
+                for (j = 0; j < 8; j++) {
+                    a[k][j] -= f * a[i][j];
+                }
+            }
+        }
+    }
+    for (i = 0; i < 4; i++) {
+        for (j = 0; j < 4; j++) {
+            out[i][j] = a[i][j + 4];
+        }
+    }
+    return 1;
+}
+
+/* Relay pass clipping: keep only what is *behind* the source portal plane
+ * (the mapped destination space) and drop the mapped room, including the wall
+ * the portal is painted on.  Without this the destination wall is drawn over
+ * the relay image and the window shows nothing but wall.
+ *
+ * Classic oblique near plane: the engine's projection is row-vector
+ * (clip = eye * P), so z' = e * q with q = k*C - w_row makes C the near plane
+ * (C*e = 0  =>  z' = -w) and preserves the far plane when
+ * k = 2*w(e_far) / (C * e_far). */
+static void gfx_portal_apply_near_plane(float p[4][4]) {
     const PortalViewState *vs;
+    float inv[4][4];
+    float nw[3], dw;
+    float c[4], q[4];
+    float near, far, k, cfar, wfar;
+    int i;
+
     if (!gfx_portal_pass) {
         return;
     }
     vs = ((gfx_portal_pass - 1) / 2) ? &g_portal_view2 : &g_portal_view;
-    gfx_matrix_mul(tmp, vs->c_matrix, rsp.MP_matrix);
+    if (!vs->active || p[2][3] > -0.5f) {
+        return;
+    }
+    if (!gfx_mtx4_invert(inv, (const float (*)[4]) vs->view)) {
+        return;
+    }
+
+    /* Keep side = behind the portal (opposite its room-facing normal).  The
+     * 2-unit push keeps the wall itself off the plane. */
+    nw[0] = -vs->normal[0];
+    nw[1] = -vs->normal[1];
+    nw[2] = -vs->normal[2];
+    dw = -(nw[0] * vs->center[0] + nw[1] * vs->center[1] + nw[2] * vs->center[2]) - 2.0f;
+
+    /* Plane world -> eye (W = view^-1, affine). */
+    for (i = 0; i < 3; i++) {
+        c[i] = inv[i][0] * nw[0] + inv[i][1] * nw[1] + inv[i][2] * nw[2];
+    }
+    c[3] = inv[3][0] * nw[0] + inv[3][1] * nw[1] + inv[3][2] * nw[2] + dw;
+
+    /* near/far from the standard row-vector perspective:
+     * p[2][2] = (n+f)/(n-f), p[3][2] = 2nf/(n-f). */
+    near = p[3][2] / (p[2][2] - 1.0f);
+    far = p[3][2] / (p[2][2] + 1.0f);
+    if (!(far > near) || far <= 0.0f) {
+        return;
+    }
+    /* Far-plane point on the view axis is (0,0,-far,1) in eye space. */
+    cfar = -c[2] * far + c[3];
+    wfar = far;
+    if (fabsf(cfar) < 1e-4f) {
+        return;
+    }
+    k = 2.0f * wfar / cfar;
+
+    for (i = 0; i < 4; i++) {
+        q[i] = k * c[i] - p[i][3];
+        p[i][2] = q[i];
+    }
+}
+
+/* Portal pass: clip = p * (modelview * K) * projection where K is the portal
+ * transform conjugated into view space (K = V^-1 * C * V).  Multiplying MP on
+ * the left instead applied C in *object* space, which shredded any object with
+ * its own matrix (Mario).  Applied on the right it lands in world space, before
+ * the camera view, which is where it belongs. */
+static void gfx_apply_portal_mp(void) {
+    float tmp[4][4], k[4][4], m1[4][4], vinv[4][4];
+    const PortalViewState *vs;
+
+    if (!gfx_portal_pass) {
+        return;
+    }
+    vs = ((gfx_portal_pass - 1) / 2) ? &g_portal_view2 : &g_portal_view;
+    if (!vs->active) {
+        return;
+    }
+    if (!gfx_mtx4_invert(vinv, (const float (*)[4]) vs->view)) {
+        return;
+    }
+    /* K = V^-1 * C * V */
+    gfx_matrix_mul(m1, vs->c_matrix, vs->view);
+    gfx_matrix_mul(k, vinv, m1);
+    /* MP = (modelview * K) * projection */
+    gfx_matrix_mul(m1, rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1], k);
+    gfx_matrix_mul(tmp, m1, rsp.P_matrix);
     memcpy(rsp.MP_matrix, tmp, sizeof(tmp));
 }
 
@@ -1111,6 +1240,7 @@ static void gfx_sp_matrix(uint8_t parameters, const int32_t *addr) {
             rsp.proj_is_perspective = (matrix[2][3] < -0.5f);
             if (rsp.proj_is_perspective) {
                 memcpy(gfx_last_persp_proj, matrix, sizeof(matrix));
+                gfx_portal_apply_near_plane(rsp.P_matrix);
             }
         } else {
             gfx_matrix_mul(rsp.P_matrix, matrix, rsp.P_matrix);

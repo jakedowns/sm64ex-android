@@ -3446,6 +3446,15 @@ void update_camera(struct Camera *c) {
 
     if (gfx_cam_mode == 3 && c->cutscene == 0) {
         custom_camera_update(c);
+        {
+            extern int custom_camera_freelook_active(void);
+            if (custom_camera_freelook_active()) {
+                /* Pinned test camera: update_lakitu() would smoothly chase the
+                 * goal and never land exactly on the requested framing. */
+                gLakituState.lastFrameAction = sMarioCamState->action;
+                return;
+            }
+        }
     }
 
     update_lakitu(c);
@@ -11679,6 +11688,14 @@ void zoom_fov_30(UNUSED struct MarioState *m) {
  */
 void fov_default(struct MarioState *m) {
     sStatusFlags &= ~CAM_FLAG_SLEEPING;
+
+    if (gfx_cam_mode == 3 || gfx_cam_mode == 4) {
+        /* Custom orbit / first person: a stable FOV.  Vanilla zooms 45 -> 30
+         * while Mario sleeps, which reads as the camera diving at the player
+         * even though the camera itself never moves. */
+        camera_approach_f32_symmetric_bool(&sFOVState.fov, 45.f, (45.f - sFOVState.fov) / 30.f);
+        return;
+    }
 
     if ((m->action == ACT_SLEEPING) || (m->action == ACT_START_SLEEPING)) {
         camera_approach_f32_symmetric_bool(&sFOVState.fov, 30.f, (30.f - sFOVState.fov) / 30.f);

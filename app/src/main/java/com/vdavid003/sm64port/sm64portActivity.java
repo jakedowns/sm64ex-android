@@ -223,8 +223,9 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
           + "  custom orbit Y-invert; FPV X-invert; FOV up to 400%.\n"
           + "  C-up twice enters first person; C-up or Select/Back exits;\n"
           + "  no standard camera SFX in FPV; TOEAUTO raycasts forward there.\n"
-          + "Camera gestures (opt-in, CAMERA tab): two-finger pinch = FOV,\n"
-          + "  drag Y = camera distance, drag X = camera height.\n"
+          + "Camera gestures (on by default, CAMERA tab): two-finger pinch = FOV,\n"
+          + "  two-finger drag Y = camera distance, drag X = camera height;\n"
+          + "  ignores fingers spread across both stick clusters.\n"
           + "Stereo: Aspect % in 0.1 steps, default 83.4% with a live ratio\n"
           + "  label; 3D width/height calibration and a magenta ASPECT TEST\n"
           + "  square; 3D defaults 50% width / 100% height for the Leia panel.\n"
@@ -1936,7 +1937,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     /** The two-finger camera gesture enable toggle (also mirrored in CAMERA). */
     private TextView makePinchToggle() {
         final TextView t = new TextView(this);
-        t.setText("CAMERA GESTURES (PINCH): "
+        t.setText("CAMERA GESTURES (PINCH/SWIPE): "
                 + (TouchOverlay.camGesturesEnabled ? "ON" : "OFF"));
         t.setTextSize(15);
         t.setGravity(Gravity.CENTER);
@@ -1944,7 +1945,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         t.setTextColor(TouchOverlay.camGesturesEnabled ? 0xFF66FF99 : 0xFF888888);
         t.setOnClickListener(v -> {
             TouchOverlay.camGesturesEnabled = !TouchOverlay.camGesturesEnabled;
-            t.setText("CAMERA GESTURES (PINCH): "
+            t.setText("CAMERA GESTURES (PINCH/SWIPE): "
                     + (TouchOverlay.camGesturesEnabled ? "ON" : "OFF"));
             t.setTextColor(TouchOverlay.camGesturesEnabled ? 0xFF66FF99 : 0xFF888888);
             Log.i(TAG, "PINCH_CAM=" + TouchOverlay.camGesturesEnabled);

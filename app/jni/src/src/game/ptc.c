@@ -317,6 +317,8 @@ static volatile int s_pendingCommandReady;
 static void ptc_apply_command(const char *action);
 static void ptc_goomba_update(void);
 static void ptc_annex_update(void);
+static void ptc_pov_apply(void);
+static int  s_pov_shot;
 static void ptc_finish_ok(void);
 static void ptc_record_teleport(void);
 
@@ -877,6 +879,10 @@ void ptc_update(void) {
         ptc_apply_command(s_pendingCommand);
     }
 
+    if (s_pov_shot) {
+        ptc_pov_apply();
+    }
+
     ptc_goomba_update();
     ptc_annex_update();
 
@@ -1207,6 +1213,107 @@ static void ptc_goomba_update(void) {
                      s_goombaDir < 0 ? 0x8000 : 0x0000);
 }
 
+/* --------------------------------------------------- portal POV test */
+
+/* Persistent, tick-reproducible "Mario seen through the window" rig.
+ * Portals sit on the two walls of the SW corner: that is the only arrangement
+ * where the relay camera looks into open space instead of the back of the
+ * destination wall.  Mario parks in the destination space and the camera parks
+ * on the viewed portal's axis.  Everything is re-applied every tick, so the
+ * idle/sleep camera, the Lakitu smoothing and level resets cannot move the
+ * framing between setup and screenshot. */
+float g_pov_cam_dist = 600.0f;    /* camera distance from the viewed plane */
+float g_pov_cam_height = 90.0f;   /* eye height: Mario's mid-body, not the portal centre */
+float g_pov_mario_dist = 400.0f;  /* Mario distance from the destination plane */
+int   g_pov_freeze = 1;           /* hold idle frame 0 (repeatable silhouette) */
+int   g_pov_stereo = 0;           /* clean mono capture by default */
+/* s_pov_shot: 0 off, 1 view A, 2 view B (declared near the top). */
+
+static int ptc_pov_place(void) {
+    /* Aim the portals at Mario's mid-body height (the mapping preserves height
+     * relative to the portal centre, so this is what centres him in the
+     * window when the test camera is level with the floor). */
+    Vec3f aOrig = { -2400.0f, 90.0f, -3100.0f };
+    Vec3f aTarget = { -2700.0f, 90.0f, -3100.0f };   /* west wall, normal +X */
+    Vec3f bOrig = { -2500.0f, 90.0f, -3000.0f };
+    Vec3f bTarget = { -2500.0f, 90.0f, -3300.0f };   /* south wall, normal +Z */
+    Vec3f pa, na, pb, nb;
+
+    ptc_goomba_reset_state();
+    portal_reset();
+    portal_give_gun();
+    portal_shoot_at(0, aOrig, aTarget);
+    portal_shoot_at(1, bOrig, bTarget);
+    return portal_get(0, pa, na) && portal_get(1, pb, nb);
+}
+
+static void ptc_pov_apply(void) {
+    Vec3f pa, na, pb, nb;
+    Vec3f camPos, camFocus, marioPos;
+    int view = (s_pov_shot == 2) ? 1 : 0;
+    int other = 1 - view;
+    extern void custom_camera_set_freelook(int on, const Vec3f pos, const Vec3f focus);
+    extern void custom_camera_apply_mode(int mode);
+
+    if (!portal_get(view, pa, na) || !portal_get(other, pb, nb)) {
+        return;
+    }
+
+    /* Camera on the viewed portal's axis: x/z centred with its geometry,
+     * pulled straight back along its normal, at Mario's mid-body height so the
+     * relay image is centred on him instead of on the wall above him. */
+    camPos[0] = pa[0] + na[0] * g_pov_cam_dist;
+    camPos[1] = g_pov_cam_height;
+    camPos[2] = pa[2] + na[2] * g_pov_cam_dist;
+    camFocus[0] = pa[0];
+    camFocus[1] = g_pov_cam_height;
+    camFocus[2] = pa[2];
+
+    /* Mario in the destination space, feet on the floor. */
+    marioPos[0] = pb[0] + nb[0] * g_pov_mario_dist;
+    marioPos[1] = 0.0f;
+    marioPos[2] = pb[2] + nb[2] * g_pov_mario_dist;
+
+    if (gMarioState != NULL) {
+        gMarioState->pos[0] = marioPos[0];
+        gMarioState->pos[1] = 0.0f;
+        gMarioState->pos[2] = marioPos[2];
+        gMarioState->vel[0] = gMarioState->vel[1] = gMarioState->vel[2] = 0.0f;
+        /* Face away from the destination wall - i.e. straight into the relay
+         * camera behind it - so the window shows his front, not his back. */
+        gMarioState->faceAngle[1] = (s16) atan2s(-nb[0], -nb[2]);
+        set_mario_action(gMarioState, ACT_IDLE, 0);
+        if (gMarioState->marioObj != NULL) {
+            vec3f_copy(gMarioState->marioObj->header.gfx.pos, marioPos);
+            gMarioState->marioObj->header.gfx.angle[1] = gMarioState->faceAngle[1];
+            if (g_pov_freeze) {
+                gMarioState->marioObj->header.gfx.unk38.animFrame = 0;
+            }
+        }
+    }
+
+    custom_camera_apply_mode(3);          /* CUSTOM */
+    custom_camera_set_freelook(1, camPos, camFocus);
+    portal_view_force(view);
+    g_portal_debug_color = 0;
+
+    /* The 3D weave makes screenshots unreadable (and a mono shot is the honest
+     * way to judge whether the model is complete).  Use the flat single-eye
+     * path rather than disabling stereo, which would leave the composite
+     * looking at one half of the canvas. */
+    {
+        extern int gfx_stereo_2d;
+        extern int gfx_stereo_same_both;
+        if (g_pov_stereo) {
+            gfx_stereo_2d = 0;
+            gfx_stereo_same_both = 0;
+        } else {
+            gfx_stereo_2d = 1;
+            gfx_stereo_same_both = 1;
+        }
+    }
+}
+
 /* ------------------------------------------------- corner portal test */
 
 /* Reproducible corner test: portals 20 units from the SW corner where the blue
@@ -1216,10 +1323,13 @@ static void ptc_corner_portal(int face_b) {
     /* The ellipse is 135 wide (rx 67.5), so a portal cannot literally sit 20
      * units from the corner - the rim test rejects it.  100 units keeps the
      * whole rim on its wall while still hugging the corner. */
-    Vec3f aOrig = { -2400.0f, 200.0f, -3100.0f };
-    Vec3f aTarget = { -2700.0f, 200.0f, -3100.0f };   /* west wall, normal +X */
-    Vec3f bOrig = { -2500.0f, 200.0f, -3000.0f };
-    Vec3f bTarget = { -2500.0f, 200.0f, -3300.0f };   /* south wall, normal +Z */
+    /* Aim the portals at Mario's mid-body height (the mapping preserves height
+     * relative to the portal centre, so this is what centres him in the
+     * window when the test camera is level with the floor). */
+    Vec3f aOrig = { -2400.0f, 90.0f, -3100.0f };
+    Vec3f aTarget = { -2700.0f, 90.0f, -3100.0f };   /* west wall, normal +X */
+    Vec3f bOrig = { -2500.0f, 90.0f, -3000.0f };
+    Vec3f bTarget = { -2500.0f, 90.0f, -3300.0f };   /* south wall, normal +Z */
 
     /* The vanilla camera fights corners, so this test uses the custom cam. */
     {
@@ -1555,6 +1665,20 @@ static void ptc_apply_command(const char *action) {
         ptc_annex_jetpack();
     } else if (strcmp(action, "grapple") == 0) {
         ptc_annex_grapple();
+    } else if (strncmp(action, "povcam", 6) == 0) {
+        s_pov_shot = (action[6] == '2') ? 2 : 1;
+        if (!ptc_pov_place()) {
+            snprintf(s_failReason, sizeof(s_failReason), "povcam: portal shot failed");
+        }
+        ptc_pov_apply();
+    } else if (strcmp(action, "povoff") == 0) {
+        extern void custom_camera_set_freelook(int on, const Vec3f pos, const Vec3f focus);
+        extern int gfx_stereo_2d;
+        extern int gfx_stereo_same_both;
+        s_pov_shot = 0;
+        custom_camera_set_freelook(0, NULL, NULL);
+        gfx_stereo_2d = 0;
+        gfx_stereo_same_both = 0;
     } else if (strncmp(action, "cornerportal", 12) == 0) {
         ptc_corner_portal(action[12] == '2');
     } else if (strcmp(action, "walltest") == 0) {

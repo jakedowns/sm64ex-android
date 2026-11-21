@@ -41,17 +41,32 @@ public class TouchOverlay extends View {
     private boolean stickActive;
     private int stickPointer = -1;
 
-    // Two-finger camera gestures: pinch = FOV, drag Y = cam distance, drag X = cam height.
-    // Disabled by default; the CAMERA tab has the enable toggle.
-    public static boolean camGesturesEnabled = false;
+    // Two-finger camera gestures: pinch = FOV, two-finger drag = cam distance/height.
+    // Enabled by default; the CAMERA tab has the toggle.
+    public static boolean camGesturesEnabled = true;
     /* Hardware input hides the on-screen controls; touching the screen brings
      * them back. */
     public static volatile long lastTouchMs = 0;
     private boolean controlsHidden;
     private boolean camGesture;
+    private int camGestureMode = GESTURE_IDLE;
     private int camPtr1 = -1, camPtr2 = -1;
     private float gSpan0, gCx0, gCy0;
     private int gFov0, gDist0, gHeight0;
+
+    /* Two-finger gesture recognition.  A gesture starts undecided and only
+     * becomes a pinch or a swipe once the fingers have moved enough to tell
+     * the two apart; anything ambiguous is ignored (no camera jumps).
+     *   pinch : separation changes > 12% while the midpoint barely moves.
+     *   swipe : both fingers travel together > 60dp with ~constant separation. */
+    private static final int GESTURE_IDLE = 0;
+    private static final int GESTURE_PINCH = 1;
+    private static final int GESTURE_SWIPE = 2;
+    private static final float PINCH_SPAN_CHANGE = 0.12f;    // 12% separation change
+    private static final float SWIPE_SPAN_TOLERANCE = 0.15f; // "roughly constant"
+    private static final float GESTURE_SHIFT_DP = 60f;       // common translation cutoff
+    private static final float GESTURE_MIN_SPAN_DP = 48f;    // not a two-finger squish
+    private static final float START_SPAN_FRACTION = 0.40f;  // of screen width
 
     private int buttons;
     private final int[] btnIds = {BTN_A, BTN_B, BTN_Z, BTN_R, BTN_START, BTN_L, BTN_BACK};
@@ -389,6 +404,7 @@ public class TouchOverlay extends View {
                     }
                     if (!camGesture) {
                         camPtr1 = camPtr2 = -1;
+                        camGestureMode = GESTURE_IDLE;
                         invalidate();
                         return true;
                     }
@@ -619,20 +635,39 @@ public class TouchOverlay extends View {
     }
 
     private boolean startCamGesture(MotionEvent e) {
-        if (!camGesturesEnabled) {
+        if (!camGesturesEnabled || e.getPointerCount() != 2) {
             return false;
         }
         float x0 = e.getX(0), y0 = e.getY(0);
         float x1 = e.getX(1), y1 = e.getY(1);
+        float span = (float) Math.hypot(x1 - x0, y1 - y0);
+        /* Both thumbsticks in use (left thumb + right thumb): never a gesture. */
+        if (stickActive && rstickActive) {
+            return false;
+        }
+        /* A thumb that is actually pushing a stick keeps driving it. */
+        if (stickDeflected()) {
+            return false;
+        }
+        /* Buttons / mode toggle / portal buttons keep their touches. */
         if (overControl(x0, y0) || overControl(x1, y1)) {
+            return false;
+        }
+        /* Separation gate: a pinch starts with the fingers close to each
+         * other.  Two thumbs on the left/right clusters start far apart, so
+         * they can never reach this code as a gesture. */
+        if (span > getWidth() * START_SPAN_FRACTION) {
+            return false;
+        }
+        if (span < dp(GESTURE_MIN_SPAN_DP)) {
             return false;
         }
         sm64portActivity a = sm64portActivity.instance;
         camGesture = true;
+        camGestureMode = GESTURE_IDLE;
         camPtr1 = e.getPointerId(0);
         camPtr2 = e.getPointerId(1);
-        gSpan0 = (float) Math.hypot(x1 - x0, y1 - y0);
-        if (gSpan0 < 40f) gSpan0 = 40f;
+        gSpan0 = span;
         gCx0 = (x0 + x1) * 0.5f;
         gCy0 = (y0 + y1) * 0.5f;
         gFov0 = a != null ? a.getCamValue(20) : 100;
@@ -648,6 +683,20 @@ public class TouchOverlay extends View {
         return true;
     }
 
+    /** True when an active thumbstick is pushed away from its base. */
+    private boolean stickDeflected() {
+        if (stickActive
+                && Math.hypot(knobX - stickX, knobY - stickY) > dp(20f)) {
+            return true;
+        }
+        return rstickActive
+                && Math.hypot(rknobX - rstickX, rknobY - rstickY) > dp(20f);
+    }
+
+    private float dp(float v) {
+        return v * getResources().getDisplayMetrics().density;
+    }
+
     private boolean updateCamGesture(MotionEvent e) {
         int i1 = e.findPointerIndex(camPtr1);
         int i2 = e.findPointerIndex(camPtr2);
@@ -657,20 +706,54 @@ public class TouchOverlay extends View {
         float x0 = e.getX(i1), y0 = e.getY(i1);
         float x1 = e.getX(i2), y1 = e.getY(i2);
         float span = (float) Math.hypot(x1 - x0, y1 - y0);
-        if (span < 20f) span = 20f;
+        if (span < 1f) span = 1f;
         float cx = (x0 + x1) * 0.5f;
         float cy = (y0 + y1) * 0.5f;
-        int fov = Math.round(gFov0 * gSpan0 / span);
-        fov = Math.max(1, Math.min(400, fov));
-        int dist = gDist0 - Math.round((cy - gCy0) * 1.5f);
-        dist = Math.max(1, Math.min(1500, dist));
-        int height = gHeight0 + Math.round((cx - gCx0) * 0.5f);
-        height = Math.max(0, Math.min(400, height));
+        float spanRatio = (span - gSpan0) / gSpan0;
+        float shiftX = cx - gCx0, shiftY = cy - gCy0;
+        float shift = (float) Math.hypot(shiftX, shiftY);
+
+        // Classify once, then stay in that mode for the rest of the gesture.
+        if (camGestureMode == GESTURE_IDLE) {
+            boolean pinching = Math.abs(spanRatio) > PINCH_SPAN_CHANGE
+                    && shift <= dp(GESTURE_SHIFT_DP);
+            boolean swiping = shift > dp(GESTURE_SHIFT_DP)
+                    && Math.abs(spanRatio) < SWIPE_SPAN_TOLERANCE;
+            if (pinching) {
+                camGestureMode = GESTURE_PINCH;
+            } else if (swiping) {
+                camGestureMode = GESTURE_SWIPE;
+                /* Anchor the drag where it was recognised so the camera does
+                 * not snap when the swipe threshold is crossed. */
+                gCx0 = cx;
+                gCy0 = cy;
+                sm64portActivity a = sm64portActivity.instance;
+                if (a != null) {
+                    gDist0 = a.getCamValue(46);
+                    gHeight0 = a.getCamValue(47);
+                }
+            } else {
+                // Ambiguous (or not moved enough yet): ignore, no jumps.
+                return true;
+            }
+        }
+
         sm64portActivity a = sm64portActivity.instance;
-        if (a != null) {
-            a.setCamValue(20, fov);
-            a.setCamValue(46, dist);
-            a.setCamValue(47, height);
+        if (camGestureMode == GESTURE_PINCH) {
+            int fov = Math.round(gFov0 * gSpan0 / span);
+            fov = Math.max(1, Math.min(400, fov));
+            if (a != null) {
+                a.setCamValue(20, fov);
+            }
+        } else if (camGestureMode == GESTURE_SWIPE) {
+            int dist = gDist0 - Math.round((cy - gCy0) * 1.5f);
+            dist = Math.max(1, Math.min(1500, dist));
+            int height = gHeight0 + Math.round((cx - gCx0) * 0.5f);
+            height = Math.max(0, Math.min(400, height));
+            if (a != null) {
+                a.setCamValue(46, dist);
+                a.setCamValue(47, height);
+            }
         }
         return true;
     }

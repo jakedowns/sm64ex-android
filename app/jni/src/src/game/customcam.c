@@ -105,6 +105,26 @@ void first_person_camera_update(struct Camera *c) {
     gMarioObject->header.gfx.node.flags |= GRAPH_RENDER_INVISIBLE;
 }
 
+/* Debug freelook: pin the camera to an explicit position/focus so tests can
+ * frame a portal exactly and nothing lerps it away. */
+static int s_freelook;
+static Vec3f s_flPos;
+static Vec3f s_flFocus;
+
+void custom_camera_set_freelook(int on, const Vec3f pos, const Vec3f focus) {
+    s_freelook = on ? 1 : 0;
+    if (pos != NULL) {
+        vec3f_copy(s_flPos, pos);
+    }
+    if (focus != NULL) {
+        vec3f_copy(s_flFocus, focus);
+    }
+}
+
+int custom_camera_freelook_active(void) {
+    return s_freelook;
+}
+
 void custom_camera_reset(void) {
     s_init = 0;
 }
@@ -164,6 +184,19 @@ void custom_camera_update(struct Camera *c) {
     s16 inX = 0, inY = 0;
 
     if (gMarioState == NULL) {
+        return;
+    }
+
+    if (s_freelook) {
+        /* No lerp, no collision: exactly where the test asked for. */
+        vec3f_copy(c->pos, s_flPos);
+        vec3f_copy(gLakituState.pos, s_flPos);
+        vec3f_copy(c->focus, s_flFocus);
+        vec3f_copy(gLakituState.focus, s_flFocus);
+        c->yaw = calculate_yaw((Vec3f){ c->focus[0], c->focus[1], c->focus[2] }, c->pos);
+        gLakituState.yaw = c->yaw;
+        gLakituState.roll = 0;
+        gLakituState.focusDistance = 400.0f;
         return;
     }
 

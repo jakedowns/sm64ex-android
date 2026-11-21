@@ -43,6 +43,11 @@ extern int g_portal_debug_color;      /* solid relay colour */
 extern int gfx_portal_debug_blit;     /* full-screen relay FBO */
 extern int g_portal_debug_align;      /* magenta source fan */
 extern int gfx_stereo_same_both;      /* 0 off, 1 = L, 2 = R */
+extern float g_pov_cam_dist;          /* portal POV test rig (ptc.c) */
+extern float g_pov_cam_height;
+extern float g_pov_mario_dist;
+extern int   g_pov_freeze;
+extern int   g_pov_stereo;
 
 typedef struct {
     const char *name;
@@ -64,8 +69,14 @@ static int s_chart_rows = 16;
  * show the *other* portal's cube (A -> red, B -> blue). */
 static int s_cubes_on = 1;
 
-/* 600 quads covers the room plus a 24x24 chart. */
-#define PTC_SCENE_MAX_QUADS 1260
+/* Subdivided room surfaces: one cell per ~256 world units, capped so a large
+ * scene.room knob cannot blow the static vertex budget. */
+#define PTC_GRID_CELL 256.0f
+#define PTC_GRID_MAX  12
+
+/* 24x24 double-sided checker (1152) + four 12x12 walls, 12x12 floor and
+ * 12x12 ceiling (864) + two cubes (12) = 2028 quads worst case. */
+#define PTC_SCENE_MAX_QUADS 2048
 static Vtx s_vtx[PTC_SCENE_MAX_QUADS * 4];
 static int s_quad_count;
 static int s_dirty = 1;
@@ -91,6 +102,11 @@ static const PtcKnob s_knobs[] = {
     { "select.maxdeg",     0, &g_ptc_select_maxdeg },
     { "select.facing",     1, &g_ptc_select_facing },
     { "eye",               1, &gfx_stereo_same_both },
+    { "pov.dist",          0, &g_pov_cam_dist },
+    { "pov.height",        0, &g_pov_cam_height },
+    { "pov.mario",         0, &g_pov_mario_dist },
+    { "pov.freeze",        1, &g_pov_freeze },
+    { "pov.stereo",        1, &g_pov_stereo },
 };
 
 void ptc_scene_invalidate(void) {
@@ -164,12 +180,14 @@ void ptc_knob_dump(char *buf, int len) {
     }
     snprintf(buf, len,
              "knobs scene=%d room=%.0f h=%.0f chart=%.0f/%.0fx%.0f@%.0f,%.0f %dx%d "
-             "decal.off=%.1f depth=%d sel=%.0f/%d solid=%d blit=%d fan=%d cubes=%d",
+             "decal.off=%.1f depth=%d sel=%.0f/%d solid=%d blit=%d fan=%d cubes=%d "
+             "pov=%.0f/%.0f/%.0f/%d/%d",
              s_scene_on, s_room, s_room_h, s_chart_z, s_chart_w, s_chart_h,
              s_chart_x, s_chart_y, s_chart_cols, s_chart_rows, g_ptc_decal_offset,
              g_ptc_decal_depth, g_ptc_select_maxdeg, g_ptc_select_facing,
              g_portal_debug_color, gfx_portal_debug_blit, g_portal_debug_align,
-             s_cubes_on);
+             s_cubes_on, g_pov_cam_dist, g_pov_cam_height, g_pov_mario_dist,
+             g_pov_freeze, g_pov_stereo);
 }
 
 int ptc_scene_enabled(void) {
@@ -226,6 +244,20 @@ static void scene_box(int *n, float cx, float cy, float cz, float half,
     scene_quad(n, x0, y0, z0, x0, y0, z1, x0, y1, z1, x0, y1, z0, r, g, b);
 }
 
+/* Cell count for one surface axis at ~PTC_GRID_CELL units per cell. */
+static int scene_grid_cells(float length) {
+    int c = (int)ceilf(length / PTC_GRID_CELL);
+    if (c < 1) c = 1;
+    if (c > PTC_GRID_MAX) c = PTC_GRID_MAX;
+    return c;
+}
+
+/* Base colour scaled by `m` (1.0 = base, 0.85 = darker odd cell). */
+static u8 scene_tint(u8 c, float m) {
+    int v = (int)((float)c * m + 0.5f);
+    return (u8)(v < 0 ? 0 : (v > 255 ? 255 : v));
+}
+
 static void scene_build(void) {
     int n = 0;
     s_build_failed = 0;
@@ -234,20 +266,76 @@ static void scene_build(void) {
     const float Z = s_room;
     const float H = s_room_h;
 
-    /* Floor quadrants (top faces, +Y). */
-    scene_quad(&n, 0, 0, -Z,  -X, 0, -Z,  -X, 0, 0,   0, 0, 0,   220, 60, 60);
-    scene_quad(&n, X, 0, -Z,   0, 0, -Z,   0, 0, 0,   X, 0, 0,    60, 200, 80);
-    scene_quad(&n, 0, 0, 0,   -X, 0, 0,   -X, 0, Z,   0, 0, Z,    60, 110, 230);
-    scene_quad(&n, X, 0, 0,    0, 0, 0,    0, 0, Z,   X, 0, Z,   230, 205, 70);
+    int wc = scene_grid_cells(2.0f * X);
+    int wh = scene_grid_cells(H);
 
-    /* Ceiling (faces down). */
-    scene_quad(&n, X, H, -Z,  X, H, Z,  -X, H, Z,  -X, H, -Z,   90, 90, 100);
+    /* Floor quadrants (top faces, +Y), subdivided into ~256-unit cells.
+     * The quadrant colour comes from the cell centre; odd cells are shaded
+     * down so the grid reads as a grid instead of four huge flat quads. */
+    int fc = scene_grid_cells(2.0f * X);
+    int fz = scene_grid_cells(2.0f * Z);
+    for (int iz = 0; iz < fz; iz++) {
+        float z0 = -Z + 2.0f * Z * (float)iz / (float)fz;
+        float z1 = -Z + 2.0f * Z * (float)(iz + 1) / (float)fz;
+        for (int ix = 0; ix < fc; ix++) {
+            float x0 = -X + 2.0f * X * (float)ix / (float)fc;
+            float x1 = -X + 2.0f * X * (float)(ix + 1) / (float)fc;
+            float mx = (x0 + x1) * 0.5f;
+            float mz = (z0 + z1) * 0.5f;
+            u8 r, g, b;
+            if (mz < 0.0f) {
+                if (mx < 0.0f) { r = 220; g = 60;  b = 60;  }  /* -X/-Z red */
+                else           { r = 60;  g = 200; b = 80;  }  /* +X/-Z green */
+            } else {
+                if (mx < 0.0f) { r = 60;  g = 110; b = 230; }  /* -X/+Z blue */
+                else           { r = 230; g = 205; b = 70;  }  /* +X/+Z yellow */
+            }
+            float m = ((ix + iz) & 1) ? 0.85f : 1.0f;
+            scene_quad(&n, x1, 0, z0, x0, 0, z0, x0, 0, z1, x1, 0, z1,
+                       scene_tint(r, m), scene_tint(g, m), scene_tint(b, m));
+        }
+    }
 
-    /* Walls, wound to face inwards. */
-    scene_quad(&n, -X, 0, Z,  -X, 0, -Z,  -X, H, -Z,  -X, H, Z,   140, 90, 90);
-    scene_quad(&n, X, 0, -Z,  X, 0, Z,   X, H, Z,   X, H, -Z,    90, 140, 95);
-    scene_quad(&n, -X, 0, -Z,  X, 0, -Z,  X, H, -Z,  -X, H, -Z,  85, 105, 150);
-    scene_quad(&n, X, 0, Z,  -X, 0, Z,  -X, H, Z,  X, H, Z,     150, 135, 85);
+    /* Ceiling (faces down), dark grey grid. */
+    for (int iz = 0; iz < fz; iz++) {
+        float z0 = -Z + 2.0f * Z * (float)iz / (float)fz;
+        float z1 = -Z + 2.0f * Z * (float)(iz + 1) / (float)fz;
+        for (int ix = 0; ix < fc; ix++) {
+            float x0 = -X + 2.0f * X * (float)ix / (float)fc;
+            float x1 = -X + 2.0f * X * (float)(ix + 1) / (float)fc;
+            float m = ((ix + iz) & 1) ? 0.85f : 1.0f;
+            scene_quad(&n, x1, H, z0, x1, H, z1, x0, H, z1, x0, H, z0,
+                       scene_tint(85, m), scene_tint(85, m), scene_tint(95, m));
+        }
+    }
+
+    /* Walls, subdivided the same way and tinted by direction:
+     * NORTH (+Z) neutral/white, SOUTH (-Z) green, WEST (-X) blue,
+     * EAST (+X) red.  Wound to face inwards. */
+    for (int iy = 0; iy < wh; iy++) {
+        float y0 = H * (float)iy / (float)wh;
+        float y1 = H * (float)(iy + 1) / (float)wh;
+        for (int ix = 0; ix < wc; ix++) {
+            float xl = -X + 2.0f * X * (float)ix / (float)wc;
+            float xr = -X + 2.0f * X * (float)(ix + 1) / (float)wc;
+            /* The west wall runs +Z -> -Z so its winding stays inward. */
+            float zf = Z - 2.0f * Z * (float)ix / (float)wc;
+            float zn = Z - 2.0f * Z * (float)(ix + 1) / (float)wc;
+            float m = ((ix + iy) & 1) ? 0.85f : 1.0f;
+            /* NORTH (+Z): neutral white, x runs high -> low. */
+            scene_quad(&n, xr, y0, Z, xl, y0, Z, xl, y1, Z, xr, y1, Z,
+                       scene_tint(200, m), scene_tint(200, m), scene_tint(205, m));
+            /* SOUTH (-Z): green, x runs low -> high. */
+            scene_quad(&n, xl, y0, -Z, xr, y0, -Z, xr, y1, -Z, xl, y1, -Z,
+                       scene_tint(90, m), scene_tint(190, m), scene_tint(110, m));
+            /* WEST (-X): blue, z runs high -> low. */
+            scene_quad(&n, -X, y0, zf, -X, y0, zn, -X, y1, zn, -X, y1, zf,
+                       scene_tint(90, m), scene_tint(130, m), scene_tint(220, m));
+            /* EAST (+X): red, z runs low -> high. */
+            scene_quad(&n, X, y0, -zf, X, y0, -zn, X, y1, -zn, X, y1, -zf,
+                       scene_tint(210, m), scene_tint(85, m), scene_tint(80, m));
+        }
+    }
 
     /* Checker backdrop.  It sits between portal B and the relay camera, so it
      * fills the destination view while staying behind the chase camera.  The
@@ -310,10 +398,18 @@ void ptc_scene_render(void) {
     {
         /* Load the real camera view.  The scene is appended after the object
          * graph, which leaves Mario's modelview current - without this the room
-         * (and its cubes) ride along with the camera and look parented to him. */
+         * (and its cubes) ride along with the camera and look parented to him.
+         * The matrix must live in the display list pool: gSPMatrix takes a
+         * fixed-point Mtx, and a stack Mat4 would dangle by the time the list
+         * is executed. */
         Mat4 view;
+        Mtx *mtx = alloc_display_list(sizeof(*mtx));
+        if (mtx == NULL) {
+            return;
+        }
         mtxf_lookat(view, gLakituState.pos, gLakituState.focus, 0);
-        gSPMatrix(h++, VIRTUAL_TO_PHYSICAL(&view),
+        mtxf_to_mtx(mtx, view);
+        gSPMatrix(h++, VIRTUAL_TO_PHYSICAL(mtx),
                   G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);
     }
     /* G_ZBUFFER is essential: the scene is appended after the object graph, so

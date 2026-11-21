@@ -65,6 +65,11 @@ scripts/ptc-knob.sh --reload                 # re-read ptc.cfg
 | `select.maxdeg` / `select.facing` | portal selection cone / back-face rejection |
 | `relay.solid` / `relay.blit` / `fan.src` | debug views (solid relay, FBO blit, magenta source fan) |
 | `eye` | 0 stereo, 1 left-eye only, 2 right-eye only |
+| `pov.dist` | POV rig: camera distance from the viewed portal plane |
+| `pov.height` | POV rig: camera height (default 90, Mario's mid-body) |
+| `pov.mario` | POV rig: Mario's distance in front of the destination portal |
+| `pov.freeze` | POV rig: hold idle frame 0 for a repeatable silhouette |
+| `pov.stereo` | POV rig: 1 keeps stereo, 0 captures flat (single eye) |
 
 `ptc reload` reads `ptc.cfg` from
 `/sdcard/Android/data/com.vdavid003.sm64port/files/ptc.cfg` or
@@ -88,3 +93,24 @@ The ENH tab is grouped into sections and drives the same knobs live:
 
 Knob changes are applied on the next game tick, so they only take effect once a
 level is running (not on the title screen).
+
+## Mario-in-the-portal POV rig
+
+`ptc povcam` / `ptc povcam2` put the two portals on the walls of the SW corner,
+park Mario in the destination space and pin a freelook camera on the viewed
+portal's axis (`pov.dist` back, `pov.height` up). Everything is re-applied every
+tick, so the idle/sleep camera and level resets cannot move the framing between
+setup and screenshot.
+
+```bash
+B="am broadcast -n com.vdavid003.sm64port/.DebugReceiver -a com.vdavid003.sm64port.CMD"
+adb shell "$B --es cmd ptc --es action povcam"     # view portal A
+adb shell "$B --es cmd ptc --es action povcam2"    # view portal B
+adb shell "$B --es cmd ptc --es action 'knob pov.mario 400'"
+adb shell "$B --es cmd ptc --es action povoff"     # leave the rig
+```
+
+Both windows now show a complete Mario: the relay transform is conjugated into
+view space (`K = V^-1 * C * V`, applied on the right of the modelview) so objects
+keep their own matrices, and an oblique near plane at the source portal clips the
+wall that used to cover the window.
