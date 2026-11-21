@@ -2261,6 +2261,12 @@ void gfx_opengl_portal_overlay(int eye) {
     float vp[4][4];
     float buf[((PORTAL_VIEW_SEGS + 2) * 5)];
     int n = 0;
+    /* Gameplay 3D is post-scaled per axis inside gfx_sp_vertex (the panel
+     * calibration).  The decal has to use the same scale or it is drawn wider
+     * than the portal and samples the relay image from the wrong place. */
+    extern float gfx_geo_x_scale, gfx_geo_y_scale;
+    const float gsx = gfx_geo_x_scale;
+    const float gsy = gfx_geo_y_scale;
 
     if (!g_portal_view.active || s_portal_tex == 0 || s_portal_prog == 0) {
         return;
@@ -2314,8 +2320,33 @@ void gfx_opengl_portal_overlay(int eye) {
         } else {
             nx = 0.0f; ny = 0.0f; nz = 1.0f;
         }
+        nx *= gsx;
+        ny *= gsy;
+        /* Texture coordinate comes from the un-offset vertex, so the relay
+         * window lines up even though the mesh is nudged off the wall. */
         u = nx * 0.5f + 0.5f;
         v = ny * 0.5f + 0.5f;
+
+        /* Nudge the decal towards the camera along the portal normal.  The
+         * portal plane sits ~4 units off the wall, which is far below the
+         * eye buffer's 16-bit depth resolution at 1000+ units, so without
+         * this the wall wins most of the depth test and only a thin sliver of
+         * the decal survives. */
+        {
+            float ox = p[0] + g_portal_view.normal[0] * g_portal_view.decal_offset;
+            float oy = p[1] + g_portal_view.normal[1] * g_portal_view.decal_offset;
+            float oz = p[2] + g_portal_view.normal[2] * g_portal_view.decal_offset;
+            float px = ox * vp[0][0] + oy * vp[1][0] + oz * vp[2][0] + vp[3][0];
+            float py = ox * vp[0][1] + oy * vp[1][1] + oz * vp[2][1] + vp[3][1];
+            float pz = ox * vp[0][2] + oy * vp[1][2] + oz * vp[2][2] + vp[3][2];
+            float pw = ox * vp[0][3] + oy * vp[1][3] + oz * vp[2][3] + vp[3][3];
+            if (pw > 1e-5f) {
+                nx = px / pw * gsx;
+                ny = py / pw * gsy;
+                nz = pz / pw;
+            }
+        }
+
         nx += (gfx_stereo_enabled && eye >= 0) ? gfx_eye_shear[eye & 1] : 0.0f;
         buf[n++] = nx;
         buf[n++] = ny;
@@ -2358,11 +2389,21 @@ void gfx_opengl_portal_overlay(int eye) {
     glDisable(GL_CULL_FACE);
     glDisable(GL_BLEND);
     glDisable(GL_SCISSOR_TEST);
-    if (eye < 0) {
-        glDisable(GL_DEPTH_TEST);
-    } else {
-        glEnable(GL_DEPTH_TEST);
-        glDepthFunc(GL_LEQUAL);
+    /* The decal must live in the depth buffer so nearer geometry (Mario,
+     * pillars, the portal frame) occludes it.  It is coplanar with the wall it
+     * is mounted on, so nudge it towards the camera in clip space with a
+     * polygon offset instead of relying on world-space separation alone.
+     * Knob `decal.depth 0` turns the test off for A/B debugging. */
+    {
+        extern int g_ptc_decal_depth;
+        if (g_ptc_decal_depth) {
+            glEnable(GL_DEPTH_TEST);
+            glDepthFunc(GL_LEQUAL);
+            glEnable(GL_POLYGON_OFFSET_FILL);
+            glPolygonOffset(-4.0f, -4.0f);
+        } else {
+            glDisable(GL_DEPTH_TEST);
+        }
     }
     glDepthMask(GL_FALSE);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
@@ -2373,6 +2414,7 @@ void gfx_opengl_portal_overlay(int eye) {
     glDrawArrays(GL_TRIANGLE_FAN, 0, PORTAL_VIEW_SEGS + 2);
     glDisableVertexAttribArray(s_portal_apos);
     glDisableVertexAttribArray(s_portal_auv);
+    glDisable(GL_POLYGON_OFFSET_FILL);
     glBindBuffer(GL_ARRAY_BUFFER, opengl_vbo);
     glDepthMask(GL_TRUE);
     glUseProgram(0);

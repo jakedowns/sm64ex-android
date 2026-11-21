@@ -6,8 +6,8 @@ the centre of the frame.  A working relay shows the room/checkerboard through
 the portal; a missing relay shows the flat blue portal fan.
 
 Usage:
-  python3 scripts/portal-relay-test.py L.png [--pair R.png] [--json]
-  python3 scripts/portal-relay-test.py L.png --roi 0.30,0.25,0.70,0.75
+  python3 scripts/portal-relay-test.py L.png --pattern --pair R.png [--json]
+  python3 scripts/portal-relay-test.py L.png --roi 0.36,0.30,0.64,0.72
 
 Exit status: 0 if structured texture is detected, 1 otherwise.
 """
@@ -70,43 +70,103 @@ def analyse(path, roi=None, solid_green=False, pattern_mode=False):
     ratio = gx_sum / max(gy_sum, 1e-3)
 
     if pattern_mode:
-        # High-contrast pattern bounding box and L/R horizontal disparity.
-        mask = [(i, g) for i, g in enumerate(gray) if g > 200 or g < 45]
-        if mask:
-            xs = [i % cw for i, _ in mask]
-            ys = [i // cw for i, _ in mask]
-            bw = max(xs) - min(xs) + 1
-            bh = max(ys) - min(ys) + 1
-            aspect = bh / max(1, bw)
+        # Find the densest cluster of neutral high-contrast pixels: the relay
+        # checker is black/white while HUD sprites and the room are saturated
+        # colours, so this isolates the portal decal without a hand-tuned ROI.
+        mask = set(i for i, g in enumerate(gray)
+                   if (g > 200 or g < 55)
+                   and (max(px[i]) - min(px[i])) < 28)
+        sx = (x1 - x0) / max(1, cw)
+        sy = (y1 - y0) / max(1, ch)
+        BW = 16
+        bw_n = (cw + BW - 1) // BW
+        bh_n = (ch + BW - 1) // BW
+        counts = [[0] * bw_n for _ in range(bh_n)]
+        for i in mask:
+            counts[(i // cw) // BW][(i % cw) // BW] += 1
+        best = (0, 0, 0)
+        for by in range(bh_n):
+            for bx in range(bw_n):
+                c = counts[by][bx]
+                if c > best[0]:
+                    best = (c, bx, by)
+        if best[0] > 0:
+            thresh = max(4, best[0] // 4)
+            keep = set()
+            stack = [(best[1], best[2])]
+            seen = set(stack)
+            while stack:
+                bx, by = stack.pop()
+                if counts[by][bx] < thresh:
+                    continue
+                for dy in (-1, 0, 1):
+                    for dx in (-1, 0, 1):
+                        nx, ny = bx + dx, by + dy
+                        if 0 <= nx < bw_n and 0 <= ny < bh_n and (nx, ny) not in seen:
+                            seen.add((nx, ny))
+                            stack.append((nx, ny))
+            keep = seen
+            pts = [i for i in mask
+                   if (i // cw) // BW < bh_n and (i % cw) // BW < bw_n
+                   and ((i // cw) // BW, (i % cw) // BW) in keep]
         else:
-            bw = bh = 0
-            aspect = 0.0
-        col_prof = []
-        for x in range(cw):
-            col_prof.append(sum(gray[y * cw + x] for y in range(ch)) / max(1, ch))
+            pts = []
+        if pts:
+            xs = [i % cw for i in pts]
+            ys = [i // cw for i in pts]
+            bx0, bx1 = min(xs), max(xs)
+            by0, by1 = min(ys), max(ys)
+            w_px = (bx1 - bx0 + 1) * sx
+            h_px = (by1 - by0 + 1) * sy
+            aspect = h_px / max(1.0, w_px)
+            cx = x0 + (bx0 + bx1 + 1) * 0.5 * sx
+            cy = y0 + (by0 + by1 + 1) * 0.5 * sy
+            fill = len(pts) / max(1.0, (bx1 - bx0 + 1) * (by1 - by0 + 1))
+        else:
+            w_px = h_px = aspect = cx = cy = fill = 0.0
         return {
             "path": path,
-            "pass": bool(bw > 8 and bh > 8 and aspect > 1.05 and edge_density > 0.008),
+            "pass": bool(w_px > 20 and h_px > 20 and aspect > 1.15 and fill > 0.20),
             "roi": [x0, y0, x1, y1],
-            "pattern_bbox": [bw, bh],
+            "pattern_bbox": [int(w_px), int(h_px)],
             "pattern_aspect": round(aspect, 2),
+            "pattern_center": [int(cx), int(cy)],
+            "pattern_fill": round(fill, 2),
             "edge_density": round(edge_density, 4),
-            "verdict": ("pattern visible; tall oval" if bw > 8 and bh > 8 and aspect > 1.05 else
-                        "pattern missing/circular"),
+            "verdict": ("relay pattern visible (tall oval)" if w_px > 20 and h_px > 20 and aspect > 1.15 else
+                        ("relay pattern squeezed/circular" if w_px > 20 and h_px > 20 else
+                         "no relay pattern: portal surface is flat")),
         }
 
     if solid_green:
-        green = sum(1 for p in px if p[1] > 150 and p[0] < 130 and p[2] < 130)
+        green_pts = [i for i, p in enumerate(px) if p[1] > 150 and p[0] < 130 and p[2] < 130]
         blue = sum(1 for p in px if p[2] > 150 and p[0] < 120 and p[1] < 150)
-        gf = green / max(1, n)
+        gf = len(green_pts) / max(1, n)
         bf = blue / max(1, n)
         ok = gf > 0.005
+        # The green region is the decal itself, so its box gives the on-screen
+        # aspect directly (the portal ellipse is 1.5-1.8x taller than wide).
+        sx = (x1 - x0) / max(1, cw)
+        sy = (y1 - y0) / max(1, ch)
+        if green_pts:
+            gxs = [i % cw for i in green_pts]
+            gys = [i // cw for i in green_pts]
+            bw = (max(gxs) - min(gxs) + 1) * sx
+            bh = (max(gys) - min(gys) + 1) * sy
+            aspect = bh / max(1.0, bw)
+            cx = x0 + (min(gxs) + max(gxs) + 1) * 0.5 * sx
+            cy = y0 + (min(gys) + max(gys) + 1) * 0.5 * sy
+        else:
+            bw = bh = aspect = cx = cy = 0.0
         return {
             "path": path,
             "pass": bool(ok),
             "roi": [x0, y0, x1, y1],
             "green_fraction": round(gf, 4),
             "blue_fraction": round(bf, 4),
+            "decal_bbox": [int(bw), int(bh)],
+            "decal_aspect": round(aspect, 2),
+            "decal_center": [int(cx), int(cy)],
             "verdict": ("green relay decal visible (geometry/UVs work)" if ok else
                         ("blue flat portal: decal missing" if bf > gf else
                          "no green decal: relay overlay/geometry missing")),
@@ -177,7 +237,15 @@ def main():
                     best_score = tot / cnt
                     best_shift = sh
             result["lr_shift_px"] = best_shift
-            result["lr_parallax"] = abs(best_shift) >= 2
+            # Direct parallax measure: how far the pattern's box centre moved
+            # between the two eyes (the profile shift above is a cross-check).
+            other = analyse(args.pair, args.roi, False, True)
+            if other.get("pattern_center") and result.get("pattern_center"):
+                result["lr_dx_px"] = other["pattern_center"][0] - result["pattern_center"][0]
+                result["lr_dy_px"] = other["pattern_center"][1] - result["pattern_center"][1]
+                result["lr_parallax"] = abs(result["lr_dx_px"]) >= 3
+            else:
+                result["lr_parallax"] = abs(best_shift) >= 3
 
     if args.json:
         print(json.dumps(result, indent=2))

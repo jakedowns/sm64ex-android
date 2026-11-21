@@ -18,6 +18,11 @@ typedef struct {
     int count;
     float center[3];
     float rim[PORTAL_VIEW_SEGS][3];
+    /* Surface normal of the source portal and the world-space nudge applied
+     * to the decal so it wins the depth test against the wall it is drawn on
+     * (4 units of separation is far below 16-bit depth precision at range). */
+    float normal[3];
+    float decal_offset;
 } PortalViewState;
 
 extern PortalViewState g_portal_view;

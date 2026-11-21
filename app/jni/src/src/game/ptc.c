@@ -38,6 +38,7 @@
 #include "engine/surface_collision.h"
 #include "levels/ptc/header.h"
 #include "boxphys.h"
+#include "ptc_scene.h"
 
 /* Per-object occluder fade.  Bit N = fade object N (0..8 platforms, 9 ramp,
  * 10..13 room walls), set by ptc_occlusion_update(). */
@@ -1001,13 +1002,28 @@ static void ptc_apply_command(const char *action) {
         g_portal_debug_color = 1;   /* stage 1: solid green relay */
         gfx_stereo_2d = 1;
         gfx_stereo_same_both = 1;
+    } else if (strncmp(action, "knob ", 5) == 0) {
+        /* `ptc knob <name> <value>` - no rebuild needed. */
+        char name[48];
+        float value;
+        if (sscanf(action + 5, "%47s %f", name, &value) == 2) {
+            if (!ptc_knob_set(name, value)) {
+                snprintf(s_failReason, sizeof(s_failReason), "unknown knob %s", name);
+            }
+        }
+    } else if (strcmp(action, "reload") == 0) {
+        ptc_knob_reload();
+    } else if (strcmp(action, "scene") == 0) {
+        ptc_scene_toggle();
     } else if (strcmp(action, "emptytest") == 0) {
         extern int gfx_stereo_2d;
         extern int gfx_stereo_same_both;
-        Vec3f aOrig = { 0.0f, 200.0f, -100.0f };
-        Vec3f aTarget = { 0.0f, 200.0f, -280.0f };
-        Vec3f bOrig = { 0.0f, 200.0f, 400.0f };
-        Vec3f bTarget = { 0.0f, 200.0f, 599.0f };
+        /* Centre the portals on the chase camera's focus height (~124) so the
+         * source ellipse sits in the middle of the frame. */
+        Vec3f aOrig = { 0.0f, 140.0f, -100.0f };
+        Vec3f aTarget = { 0.0f, 140.0f, -280.0f };
+        Vec3f bOrig = { 0.0f, 140.0f, 400.0f };
+        Vec3f bTarget = { 0.0f, 140.0f, 599.0f };
         portal_reset();
         portal_give_gun();
         portal_shoot_at(0, aOrig, aTarget);
@@ -1197,4 +1213,12 @@ void ptc_format_status(char *buf, int len) {
              m ? m->numCoins : 0, m ? m->numStars : 0,
              ptc_save_star_count(), s_realStarsBefore, s_saveStarsBefore,
              s_calSingle, s_calDouble, s_calTriple, s_calTriple + 100.0f);
+
+    {
+        size_t used = strlen(buf);
+        if (used + 2 < (size_t)len) {
+            buf[used++] = ' ';
+            ptc_knob_dump(buf + used, len - (int)used);
+        }
+    }
 }

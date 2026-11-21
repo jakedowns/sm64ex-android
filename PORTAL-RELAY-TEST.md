@@ -40,3 +40,34 @@ adb shell $B --es cmd ptc --es action eyeOff
 
 `ptc portalblit` shows the relay FBO full-screen; use it to separate a bad
 camera transform from an overlay/composite problem.
+
+## Knobs (no rebuild)
+
+The empty test level only bakes a collision floor. The room, floor quadrants
+and the checker backdrop are generated at runtime by `src/game/ptc_scene.c`, so
+every visual parameter is tunable over adb:
+
+```bash
+scripts/ptc-knob.sh                          # print the current values
+scripts/ptc-knob.sh scene.chart_z 1200
+scripts/ptc-knob.sh scene.chart_cols 24 scene.chart_rows 24
+scripts/ptc-knob.sh --reload                 # re-read ptc.cfg
+```
+
+| knob | meaning |
+| --- | --- |
+| `scene.on` | draw the runtime test scene at all |
+| `scene.room` / `scene.height` | room half-extent (X/Z) and height |
+| `scene.chart_z` / `scene.chart_w` / `scene.chart_h` / `scene.chart_y` | relay backdrop placement |
+| `scene.chart_cols` / `scene.chart_rows` | checker density (max 24x24) |
+| `decal.offset` | decal nudge off the wall, world units |
+| `decal.depth` | 1 = depth-test the relay decal |
+| `select.maxdeg` / `select.facing` | portal selection cone / back-face rejection |
+| `relay.solid` / `relay.blit` / `fan.src` | debug views (solid relay, FBO blit, magenta source fan) |
+| `eye` | 0 stereo, 1 left-eye only, 2 right-eye only |
+
+`ptc reload` reads `ptc.cfg` from
+`/sdcard/Android/data/com.vdavid003.sm64port/files/ptc.cfg` or
+`/data/local/tmp/ptc.cfg`, one `name value` pair per line.
+`cmd dump` echoes every active knob on the `PTC ... knobs ...` line, so a
+screenshot always says how it was configured.

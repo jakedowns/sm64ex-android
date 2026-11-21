@@ -1,29 +1,35 @@
 #!/usr/bin/env python3
 """Generate a minimal, unambiguous portal test level.
 
-Room: 1200 x 600 x 1200 units.  Six coloured walls, four coloured floor
-quadrants, and a freestanding magenta portal wall at z=-300.  No textures, no
-platforms, no objects, no stars.
+Room: 4000 x 1600 x 4000 units, so the chase camera always stays inside it.
+Four coloured floor quadrants give orientation; a magenta portal mount panel
+sits at z=-300 and a second at z=+600; a high-contrast checker chart stands at
+z=-800 facing +Z.  No textures, no platforms, no objects, no stars.
+
+The portrait is deliberate: the room is much bigger than the portals so the
+camera never ends up outside the walls (which used to show a flat wall colour
+and looked like a broken relay).
 """
 from pathlib import Path
 
 OUT = Path(__file__).resolve().parents[1] / "app/jni/src/levels/ptctest"
 OUT.mkdir(parents=True, exist_ok=True)
 
-X0, X1 = -600, 600
-Y0, Y1 = 0, 600
-Z0, Z1 = -600, 600
-# Freestanding portal wall (front face at z=-280, normal +Z)
-PX0, PX1 = -300, 300
-PY0, PY1 = 0, 400
-PZ0, PZ1 = -320, -280
+X0, X1 = -2000, 2000
+Y0, Y1 = 0, 1600
+Z0, Z1 = -2000, 2000
+# Portal mount panels (thin quads, no collision needed).
+PA_X0, PA_X1 = -360, 360
+PA_Y0, PA_Y1 = 0, 560
+PA_Z = -300          # portal A panel, faces +Z (towards Mario)
+PB_Z = 600           # portal B panel, faces -Z (into the room)
 
 COL = {
     "floor_r": (220, 60, 60), "floor_g": (60, 200, 80),
     "floor_b": (60, 110, 230), "floor_y": (230, 205, 70),
     "ceil": (90, 90, 100),
-    "wall_x0": (200, 70, 70), "wall_x1": (70, 200, 80),
-    "wall_z0": (70, 120, 220), "wall_z1": (220, 190, 70),
+    "wall_x0": (140, 90, 90), "wall_x1": (90, 140, 95),
+    "wall_z0": (85, 105, 150), "wall_z1": (150, 135, 85),
     "portal": (240, 60, 240), "portal_top": (255, 255, 255),
     "pat_w": (225, 225, 225), "pat_b": (35, 35, 35),
     "pat_r": (220, 50, 50), "pat_g": (50, 200, 70),
@@ -51,39 +57,60 @@ def box_faces(x0, y0, z0, x1, y1, z1):
 
 
 room_faces = [
-    ("floor_r", quad((0, 0, 0), (X0, 0, 0), (X0, 0, Z0), (0, 0, Z0))),
-    ("floor_g", quad((X1, 0, 0), (0, 0, 0), (0, 0, Z0), (X1, 0, Z0))),
-    ("floor_b", quad((0, 0, Z1), (X0, 0, Z1), (X0, 0, 0), (0, 0, 0))),
-    ("floor_y", quad((X1, 0, Z1), (0, 0, Z1), (0, 0, 0), (X1, 0, 0))),
-    ("ceil", quad((X1, Y1, Z0), (X0, Y1, Z0), (X0, Y1, Z1), (X1, Y1, Z1))),
-    ("wall_x0", quad((X0, Y0, Z0), (X0, Y0, Z1), (X0, Y1, Z1), (X0, Y1, Z0))),
-    ("wall_x1", quad((X1, Y0, Z1), (X1, Y0, Z0), (X1, Y1, Z0), (X1, Y1, Z1))),
-    ("wall_z0", quad((X1, Y0, Z0), (X0, Y0, Z0), (X0, Y1, Z0), (X1, Y1, Z0))),
-    ("wall_z1", quad((X0, Y0, Z1), (X1, Y0, Z1), (X1, Y1, Z1), (X0, Y1, Z1))),
+    # Floor quadrants use the +Y top-face winding.
+    ("floor_r", quad((0, 0, Z0), (X0, 0, Z0), (X0, 0, 0), (0, 0, 0))),
+    ("floor_g", quad((X1, 0, Z0), (0, 0, Z0), (0, 0, 0), (X1, 0, 0))),
+    ("floor_b", quad((0, 0, 0), (X0, 0, 0), (X0, 0, Z1), (0, 0, Z1))),
+    ("floor_y", quad((X1, 0, 0), (0, 0, 0), (0, 0, Z1), (X1, 0, Z1))),
+    ("ceil", quad((X1, Y1, Z0), (X1, Y1, Z1), (X0, Y1, Z1), (X0, Y1, Z0))),
+    # Wall winding faces *inwards*: single-sided quads are culled from behind.
+    ("wall_x0", quad((X0, Y0, Z1), (X0, Y0, Z0), (X0, Y1, Z0), (X0, Y1, Z1))),
+    ("wall_x1", quad((X1, Y0, Z0), (X1, Y0, Z1), (X1, Y1, Z1), (X1, Y1, Z0))),
+    ("wall_z0", quad((X0, Y0, Z0), (X1, Y0, Z0), (X1, Y1, Z0), (X0, Y1, Z0))),
+    ("wall_z1", quad((X1, Y0, Z1), (X0, Y0, Z1), (X0, Y1, Z1), (X1, Y1, Z1))),
 ]
+# No visible mount panel: the portal needs invisible collision to raycast
+# against, but a solid panel behind the source portal would also fill the
+# middle of the relay view (the destination camera sits on the same side of
+# the wall), making the decal look flat magenta.
 portal_faces = []
-for name, pts in box_faces(PX0, PY0, PZ0, PX1, PY1, PZ1):
-    key = "portal_top" if name in ("top", "bottom") else "portal"
-    portal_faces.append((key, pts))
 
-# High-contrast checker plane for relay/parallax analysis.  It sits at z=0,
-# between the two portals, and faces +Z (toward portal B's POV).
-pattern_faces = []
-for iy in range(8):
-    for ix in range(8):
-        x0 = -400 + ix * 100
-        x1 = x0 + 100
-        y0 = 100 + iy * 50
-        y1 = y0 + 50
-        if ix == 4:
-            key = "pat_r"
-        elif iy == 4:
-            key = "pat_g"
+# High-contrast chart between portal B and the relay camera.  The relay camera
+# sits at the mirror of the chase camera (z ~ +1843 for this layout), so a panel
+# at z=+1500 fills its whole view; the chase camera at z~951 cannot see it at
+# all because it is behind it.  Every checker pixel on screen therefore comes
+# from the portal relay.
+pat_faces = []
+# Sized for the relay camera, which sits ~343 units in front of it, so the
+# grid fills that view; the portal decal then samples several cells and never
+# a single flat colour.
+PAT_X0, PAT_X1 = -150, 150
+PAT_Y0, PAT_Y1 = -20, 340
+PAT_Z = 1500
+COLS, ROWS = 24, 24
+cw = (PAT_X1 - PAT_X0) // COLS
+ch = (PAT_Y1 - PAT_Y0) // ROWS
+for iy in range(ROWS):
+    for ix in range(COLS):
+        x0 = PAT_X0 + ix * cw
+        x1 = x0 + cw
+        y0 = PAT_Y0 + iy * ch
+        y1 = y0 + ch
+        if ix == COLS // 2:
+            key = "pat_r"       # vertical marker for left/right
+        elif iy == ROWS // 2:
+            key = "pat_g"       # horizontal marker for up/down
         else:
             key = "pat_w" if (ix + iy) % 2 == 0 else "pat_b"
-        pattern_faces.append((key, quad((x1, y0, 0), (x0, y0, 0), (x0, y1, 0), (x1, y1, 0))))
+        # Fixed-z quad in (x0,y0) -> (x1,y0) order faces +Z, towards the relay
+        # camera that sits behind the portals.
+        portal_faces.append((key, quad((x0, y0, PAT_Z), (x1, y0, PAT_Z),
+                                       (x1, y1, PAT_Z), (x0, y1, PAT_Z))))
+pattern_faces = []
 
-all_faces = room_faces + portal_faces + pattern_faces
+# Visuals are generated at runtime by src/game/ptc_scene.c (knobs over adb),
+# so the ROM only carries this level's collision floor and portal mounts.
+all_faces = []
 faces = [pts for _, pts in all_faces]
 
 # ---------------- header ----------------
@@ -122,6 +149,9 @@ lines = [
     "",
 ]
 lines.append("static const Vtx ptctest_vtx[] = {")
+if not all_faces:
+    lines.append("    /* unused: the test scene is generated at runtime */")
+    lines.append("    {{{0, 0, 0}, 0, {0, 0}, {0, 0, 0, 0}}},")
 for key, pts in all_faces:
     for p in pts:
         lines.append(v(*p, COL[key]))
@@ -141,7 +171,13 @@ for i in range(len(all_faces)):
 lines += ["    gsSPEndDisplayList(),", "};", ""]
 
 # ---------------- collision ----------------
-col_faces = box_faces(X0, Y0, Z0, X1, Y1, Z1) + box_faces(PX0, PY0, PZ0, PX1, PY1, PZ1)
+col_faces = [
+    # One solid +Y floor quad; a closed box's bottom face is not a floor.
+    ("floor", quad((X1, Y0, Z0), (X0, Y0, Z0), (X0, Y0, Z1), (X1, Y0, Z1))),
+    # Thin solid mounts for the two portals: `portal_shoot_at` raycasts against
+    # level collision, so the mount must exist in the collision mesh.
+] + box_faces(PA_X0, PA_Y0, PA_Z - 20, PA_X1, PA_Y1, PA_Z) \
+  + box_faces(PA_X0, PA_Y0, PB_Z, PA_X1, PA_Y1, PB_Z + 20)
 lines.append("const Collision ptctest_collision[] = {")
 lines.append("    COL_INIT(),")
 lines.append(f"    COL_VERTEX_INIT({len(col_faces) * 4}),")

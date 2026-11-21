@@ -378,6 +378,8 @@ extern Gfx *gGfxReticleStart;
 extern Gfx *gGfxShadowStart;
 extern int gGfxHasScene;
 
+extern void ptc_scene_render(void);
+
 void render_game(void) {
     // Reset every frame: the display list pools are reused.
     gGfxUiStart = NULL;
@@ -387,6 +389,7 @@ void render_game(void) {
 
     if (gCurrentArea != NULL && !gWarpTransition.pauseRendering) {
         geo_process_root(gCurrentArea->unk04, D_8032CE74, D_8032CE78, gFBSetColor);
+        ptc_scene_render();
         portal_render();
         movekit_render();
         boxphys_render();

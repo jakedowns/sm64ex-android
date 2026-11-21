@@ -12,22 +12,22 @@ B="am broadcast -n com.vdavid003.sm64port/.DebugReceiver -a com.vdavid003.sm64po
 /media/share/lp2-test/scripts/unlock.sh >/dev/null 2>&1
 adb shell am force-stop com.vdavid003.sm64port >/dev/null 2>&1
 adb shell am start -n com.vdavid003.sm64port/.sm64portActivity >/dev/null 2>&1
-sleep 2
+sleep 6
 if [ "${STAGE}" = "pattern" ]; then
   adb shell \$B --es cmd level --ei n 37 >/dev/null 2>&1
-  sleep 4
+  sleep 7
   adb shell \$B --es cmd ptc --es action emptytest >/dev/null 2>&1
 elif [ "${STAGE}" = "color" ]; then
   adb shell \$B --es cmd level --ei n 38 >/dev/null 2>&1
-  sleep 4
+  sleep 5
   adb shell \$B --es cmd ptc --es action portaltest >/dev/null 2>&1
 else
   adb shell \$B --es cmd level --ei n 38 >/dev/null 2>&1
-  sleep 4
+  sleep 5
   adb shell \$B --es cmd ptc --es action portaltest >/dev/null 2>&1
   adb shell \$B --es cmd ptc --es action portalcolor >/dev/null 2>&1
 fi
-sleep 2
+sleep 3
 adb exec-out screencap -p > "${OUT}-L.png"
 if [ "${STAGE}" = "pattern" ]; then
   adb shell \$B --es cmd ptc --es action eyeL >/dev/null 2>&1
@@ -42,7 +42,8 @@ INNER
 )
 "$ROOT/scripts/agent-lock.sh" device --reason "portal test ${STAGE}" -- bash -lc "$RUN"
 if [ "$STAGE" = "pattern" ]; then
-  python3 "$ROOT/scripts/portal-relay-test.py" "${OUT}-L.png" --pattern --pair "${OUT}-R.png"
+  python3 "$ROOT/scripts/portal-relay-test.py" "${OUT}-L.png" --pattern --pair "${OUT}-R.png" \
+    --roi 0.20,0.05,0.80,0.85
 elif [ "$STAGE" = "color" ]; then
   python3 "$ROOT/scripts/portal-relay-test.py" "${OUT}-L.png" --solid-green
 else
