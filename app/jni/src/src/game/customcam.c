@@ -194,8 +194,10 @@ void custom_camera_update(struct Camera *c) {
         }
         if (inY > 12 || inY < -12) {
             // Inverted Y: stick up lowers the orbit (camera looks up).
+            /* Allow looking well above the horizon so portals can be placed
+             * high on walls (was clamped at 0x0400, i.e. almost level). */
             s_pitch = (s16) clamps((f32) s_pitch - (f32) inY * 10.0f * sens,
-                                   0x0400, 0x3400);
+                                   -0x1C00, 0x3400);
         }
     }
     if (inY > 12 || inY < -12) {

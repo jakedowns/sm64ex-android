@@ -945,8 +945,8 @@ static void portal_draw_reticle(const Mat4 view) {
             + (hit[1] - gLakituState.pos[1]) * (hit[1] - gLakituState.pos[1])
             + (hit[2] - gLakituState.pos[2]) * (hit[2] - gLakituState.pos[2]));
     if (d < 80.0f) d = 80.0f;
-    arm = d * 0.0040f;
-    thick = d * 0.0012f;
+    arm = d * 0.0080f;      /* 2x reticle */
+    thick = d * 0.0024f;
     inner = arm * 0.35f;
 
     /* Pull a couple of units towards the camera so it does not z-fight. */

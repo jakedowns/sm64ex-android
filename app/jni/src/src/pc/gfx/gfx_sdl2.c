@@ -65,6 +65,7 @@ extern int gfx_stereo_aspect_tenths;
 extern float gfx_geo_y_scale;
 extern float gfx_geo_x_scale;
 extern float gfx_ui_fit_scale;
+extern float gfx_ui_box_pct;
 extern int gfx_stereo_nocull;
 extern int gfx_stereo_fov_pct;
 extern int gfx_stereo_2d;
@@ -192,6 +193,7 @@ Java_com_vdavid003_sm64port_sm64portActivity_nativeSetStereoInt(JNIEnv *env, job
         case 50: gfx_geo_y_scale = (float) value / 100.0f; break;
         case 57: gfx_stereo_aspect_tenths = value; break;
         case 58: gfx_ui_fit_scale = (float) value / 100.0f; break;
+        case 59: gfx_ui_box_pct = (float) value; break;
         case 51: gfx_geo_x_scale = (float) value / 100.0f; break;
         case 40: gfx_toe_auto = value != 0; break;
         case 41: gfx_hdt_enabled = value != 0; break;
@@ -362,6 +364,13 @@ Java_com_vdavid003_sm64port_sm64portActivity_nativeDropPortalGun(JNIEnv *env, jc
 extern volatile u32 g_hw_input_ms;
 extern int g_hard_paused;
 extern void game_reset_to_intro(void);
+JNIEXPORT void JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeStepTicks(JNIEnv *env, jclass clazz, jint n) {
+    (void) env; (void) clazz;
+    extern void game_step_ticks(int n);
+    game_step_ticks((int) n);
+}
+
 JNIEXPORT void JNICALL
 Java_com_vdavid003_sm64port_sm64portActivity_nativeSetHardPause(JNIEnv *env, jclass clazz, jint on) {
     (void) env; (void) clazz;

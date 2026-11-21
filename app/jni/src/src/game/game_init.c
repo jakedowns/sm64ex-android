@@ -602,6 +602,14 @@ static struct LevelCommand *levelCommandAddr;
 /* Hard pause: skip the level script (all object/physics/camera ticking) while
  * still rendering. */
 int g_hard_paused = 0;
+/* Debug frame advance: while hard-paused, run this many extra ticks. */
+int g_step_ticks = 0;
+
+void game_step_ticks(int n) {
+    if (n > 0) {
+        g_step_ticks += n;
+    }
+}
 
 /* Return to the logo/intro level script from anywhere.  The JNI call only
  * raises a flag; thread 5 applies it at a safe point. */
@@ -656,7 +664,10 @@ void game_loop_one_iteration(void) {
         audio_game_loop_tick();
         config_gfx_pool();
         read_controller_inputs();
-        if (!g_hard_paused) {
+        if (!g_hard_paused || g_step_ticks > 0) {
+            if (g_hard_paused && g_step_ticks > 0) {
+                g_step_ticks--;
+            }
             levelCommandAddr = level_script_execute(levelCommandAddr);
         }
         display_and_vsync();

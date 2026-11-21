@@ -1152,11 +1152,16 @@ static void gfx_sp_pop_matrix(uint32_t count) {
  * - wide canvas: keep the height and compress x (pillarbox)
  * - narrow canvas: keep the width and compress y (letterbox), so dialog
  *   boxes and HUD text are never cropped at tall aspect settings. */
-float gfx_ui_fit_scale = 1.0f;   // UI size %, 100 = exact 4:3 fit
+float gfx_ui_fit_scale = 1.60f;   // UI size %, 100 = exact 4:3 fit
+/* UI bounding box width, % of the screen.  The old code always squeezed the
+ * HUD into a 4:3 box on wide screens, so corner icons never reached the edges.
+ * 100% binds the UI canvas to the full panel width without stretching it. */
+float gfx_ui_box_pct = 100.0f;
 
 static float gfx_ui_x_fit(void) {
     float a = (float)gfx_current_dimensions.width / (float)gfx_current_dimensions.height;
-    return (a >= (4.0f / 3.0f) ? (4.0f / 3.0f) / a : 1.0f) * gfx_ui_fit_scale;
+    float base = (a < (4.0f / 3.0f)) ? 1.0f : 1.0f;   /* no aspect squeeze */
+    return base * (gfx_ui_box_pct / 100.0f) * gfx_ui_fit_scale;
 }
 
 static float gfx_ui_y_fit(void) {

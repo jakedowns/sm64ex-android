@@ -849,7 +849,8 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addSlider("Zero parallax", -100, 100, 40, " px", 1);
         addSlider("Depth", -200, 200, 50, " %", 2);
         addSlider("UI depth", -60, 60, 0, " px", 38);
-        addSlider("UI size", 50, 160, 100, " %", 58);
+        addSlider("UI size", 50, 200, 160, " %", 58);
+        addSlider("UI box width", 50, 200, 100, " %", 59);
         addSlider("Toe in/out", -100, 100, 0, " %", 17);
         addSlider("Aspect % (in)", 10, 4000, 834, "", 57);
         addSlider("Eye margin%", 50, 100, 100, " %", 14);
@@ -1268,13 +1269,19 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         beginTab();
         {
             final String[] pageNames = { "MOVE", "PORTAL", "BALL", "SYS" };
+            // The sub-tab strip lives in tabContent (outside the scroll view) so
+            // it stays put while the page content scrolls.
             LinearLayout tabRow = new LinearLayout(this);
             tabRow.setOrientation(LinearLayout.HORIZONTAL);
-            controls.addView(tabRow, new LinearLayout.LayoutParams(
+            if (enhSubBar != null && enhSubBar.getParent() instanceof ViewGroup) {
+                ((ViewGroup) enhSubBar.getParent()).removeView(enhSubBar);
+            }
+            enhSubBar = tabRow;
+            tabContent.addView(tabRow, 0, new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
             enhPages = new LinearLayout[pageNames.length];
             enhPageTabs = new TextView[pageNames.length];
-            enhPageColumns = new LinearLayout[pageNames.length][2];
+            enhPageColumns = new LinearLayout[pageNames.length][3];
             for (int i = 0; i < pageNames.length; i++) {
                 final int page = i;
                 TextView tab = new TextView(this);
@@ -1294,8 +1301,11 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                 left.setOrientation(LinearLayout.VERTICAL);
                 LinearLayout right = new LinearLayout(this);
                 right.setOrientation(LinearLayout.VERTICAL);
+                LinearLayout third = new LinearLayout(this);
+                third.setOrientation(LinearLayout.VERTICAL);
                 row.addView(left, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
                 row.addView(right, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+                row.addView(third, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
                 pageLayout.addView(row);
                 pageLayout.setVisibility(i == 0 ? View.VISIBLE : View.GONE);
                 controls.addView(pageLayout, new LinearLayout.LayoutParams(
@@ -1303,6 +1313,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                 enhPages[i] = pageLayout;
                 enhPageColumns[i][0] = left;
                 enhPageColumns[i][1] = right;
+                enhPageColumns[i][2] = third;
             }
         }
 
@@ -1419,9 +1430,11 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             nativePtcCommand("ballequip");
             Log.i(TAG, "BALL BLASTER=" + ballBlasterOn);
         });
+        enhColumnTarget = enhPageColumns[2][1];
         addEnhButton("RESET CUBES", () -> nativePtcCommand("ballreset"));
         addEnhButton("WARP TO CUBES", () -> nativePtcCommand("annex"));
         addEnhButton("WARP TO RESET PAD", () -> nativePtcCommand("resetpad"));
+        enhColumnTarget = enhPageColumns[2][2];
         addEnhButton("BUTT SLAM TEST", () -> nativePtcCommand("slam"));
         addEnhButton("FIRE TEST BALL", () -> nativePtcCommand("balltest"));
         enhColumnTarget = enhPageColumns[3][1];
@@ -1438,6 +1451,15 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             pauseLoopToggle.setTextColor(hardPaused ? 0xFF66FF99 : 0xFF888888);
         });
         enhParent().addView(pauseLoopToggle);
+        addEnhButton("STEP ONE TICK", () -> {
+            nativeSetHardPause(1);
+            hardPaused = true;
+            if (pauseLoopToggle != null) {
+                pauseLoopToggle.setText("PAUSE GAME LOOP: ON");
+                pauseLoopToggle.setTextColor(0xFF66FF99);
+            }
+            nativeStepTicks(1);
+        });
         enhColumnTarget = null;
 
         // --- Realtime dynamic shadows (quality / performance) ---
@@ -1971,6 +1993,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         return b;
     }
 
+    private LinearLayout enhSubBar;
     private LinearLayout[] enhPages;
     private TextView[] enhPageTabs;
     private LinearLayout[][] enhPageColumns;
@@ -2886,6 +2909,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     static native void nativeGivePortalGun();
     static native int nativeHwInputAgeMs();
     static native void nativeSetHardPause(int on);
+    static native void nativeStepTicks(int n);
     static native void nativeResetToIntro();
     static native void nativeDropPortalGun();
     static native void nativePtcCommand(String action);
