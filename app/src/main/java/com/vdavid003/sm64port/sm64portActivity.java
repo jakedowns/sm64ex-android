@@ -1278,6 +1278,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         enhColumnTarget = enLeft;
+        addEnhSection("MOVEMENT / PHYSICS");
         ragdollToggle = addEnhToggle("DEATH RAGDOLL", 0, ragdollOn);
         hitRagdollToggle = addEnhToggle("HIT RAGDOLL", 1, hitRagdollOn);
         // PUPPYCAM+ is hidden: the CAMERA tab's PUPpycam mode supersedes it.
@@ -1305,8 +1306,10 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             refillUp.setText("REFILL PUMP L" + (nativeGetRefillTier() + 1));
         });
         controls.addView(refillUp);
+        addEnhSection("SESSION");
         addEnhButton("LEVEL SELECT", this::openLevelSelect);
         addEnhButton("KILL MARIO (TEST)", this::debugKill);
+        addEnhSection("RENDER / SIM");
         uncappedTestToggle = new TextView(this);
         uncappedTestToggle.setText("UNCAPPED TEST SIM: " + (uncappedTestOn ? "ON" : "OFF"));
         uncappedTestToggle.setTextSize(16);
@@ -1344,12 +1347,32 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         enhParent().addView(stayToggle);
 
         enhColumnTarget = enRight;
+        addEnhSection("PORTAL TESTS");
         addEnhButton("PORTAL TEST CHAMBER", () -> debugLevel(38));
         addEnhButton("RUN PORTAL SMOKE TEST", () -> debugPtc("run"));
         addEnhButton("RUN MOMENTUM TEST", () -> debugPtc("momentum"));
         addEnhButton("RESET PORTAL TEST", () -> debugPtc("reset"));
         addEnhButton("CALIBRATE JUMPS", () -> debugPtc("calibrate"));
         portalGunButton = addEnhButton(portalGunLabel(), this::togglePortalGun);
+
+        addEnhSection("PORTAL TEST SCENE (LIVE)");
+        addEnhButton("EMPTY TEST LEVEL", () -> debugLevel(37));
+        addEnhButton("GOOMBA PORTAL DEMO", () -> nativePtcCommand("goomba"));
+        addEnhButton("RELOAD ptc.cfg", () -> nativePtcCommand("reload"));
+        addEnhKnobToggle("TEST SCENE", "scene.on", true);
+        addEnhKnobToggle("TEST CUBES", "scene.cubes", true);
+        addEnhKnobToggle("DECAL DEPTH", "decal.depth", true);
+        addEnhKnobCycle("DECAL OFFSET", "decal.offset",
+                new float[] { 4f, 8f, 12f, 20f, 30f }, false);
+        addEnhKnobCycle("SELECT CONE", "select.maxdeg",
+                new float[] { 30f, 45f, 60f, 75f, 90f }, true);
+        addEnhKnobToggle("SELECT FACING", "select.facing", true);
+        addEnhKnobCycle("RELAY EYE", "eye", new float[] { 0f, 1f, 2f }, true);
+        addEnhKnobToggle("RELAY SOLID", "relay.solid", false);
+        addEnhKnobToggle("RELAY BLIT", "relay.blit", false);
+        addEnhKnobToggle("SOURCE FAN", "fan.src", false);
+
+        addEnhSection("BALL / CUBES");
         addEnhButton("RESET TO LOGO", this::resetToLogo);
         addEnhButton("REINIT LEIA SURFACE", this::debugReinit);
         addEnhButton("BALL BLASTER (TOGGLE)", () -> {
@@ -1362,6 +1385,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addEnhButton("WARP TO RESET PAD", () -> nativePtcCommand("resetpad"));
         addEnhButton("BUTT SLAM TEST", () -> nativePtcCommand("slam"));
         addEnhButton("FIRE TEST BALL", () -> nativePtcCommand("balltest"));
+        addEnhSection("SYSTEM");
         pauseLoopToggle = new TextView(this);
         pauseLoopToggle.setText("PAUSE GAME LOOP: OFF");
         pauseLoopToggle.setTextSize(16);
@@ -1972,6 +1996,60 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         b.setTextColor(0xFFFF9966);
         b.setPadding(dp(4), dp(10), dp(4), dp(10));
         b.setOnClickListener(v -> action.run());
+        addPressFeedback(b);
+        enhParent().addView(b);
+        return b;
+    }
+
+    /** Section header for the ENH tab, so long lists stay readable. */
+    private TextView addEnhSection(String title) {
+        TextView h = new TextView(this);
+        h.setText(title);
+        h.setTextSize(15);
+        h.setTextColor(0xFF66CCFF);
+        h.setPadding(dp(4), dp(14), dp(4), dp(4));
+        h.setBackgroundColor(0x22FFFFFF);
+        enhParent().addView(h);
+        return h;
+    }
+
+    /** ENH toggle that drives a runtime PTC knob (`ptc knob <name> 1|0`). */
+    private TextView addEnhKnobToggle(String name, final String knob, boolean initial) {
+        final TextView b = new TextView(this);
+        b.setText(name + ": " + (initial ? "ON" : "OFF"));
+        b.setTextSize(16);
+        b.setTextColor(initial ? 0xFF66FF99 : 0xFF888888);
+        b.setPadding(dp(4), dp(8), dp(4), dp(8));
+        b.setOnClickListener(v -> {
+            boolean on = b.getCurrentTextColor() != 0xFF66FF99;
+            b.setText(name + ": " + (on ? "ON" : "OFF"));
+            b.setTextColor(on ? 0xFF66FF99 : 0xFF888888);
+            nativePtcCommand("knob " + knob + " " + (on ? 1 : 0));
+            Log.i(TAG, "KNOB " + knob + "=" + (on ? 1 : 0));
+        });
+        addPressFeedback(b);
+        enhParent().addView(b);
+        return b;
+    }
+
+    /** ENH control that cycles a runtime PTC knob through fixed values. */
+    private TextView addEnhKnobCycle(String name, final String knob, final float[] values,
+                                     final boolean integerFormat) {
+        final TextView b = new TextView(this);
+        final int[] idx = {0};
+        Runnable render = () -> b.setText(name + ": "
+                + (integerFormat ? String.valueOf((int) values[idx[0]])
+                                 : String.format(java.util.Locale.US, "%.1f", values[idx[0]])));
+        render.run();
+        b.setTextSize(16);
+        b.setTextColor(0xFFFFCC66);
+        b.setPadding(dp(4), dp(8), dp(4), dp(8));
+        b.setOnClickListener(v -> {
+            idx[0] = (idx[0] + 1) % values.length;
+            nativePtcCommand("knob " + knob + " " + values[idx[0]]);
+            render.run();
+            Log.i(TAG, "KNOB " + knob + "=" + values[idx[0]]);
+        });
         addPressFeedback(b);
         enhParent().addView(b);
         return b;
