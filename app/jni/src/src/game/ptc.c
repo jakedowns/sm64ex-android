@@ -1198,6 +1198,12 @@ static void ptc_annex_update(void) {
         return;
     }
     s_annexTimer++;
+    if (s_annexMode == 2) {
+        /* Re-assert every tick: the ENH panel re-applies its toggle defaults
+         * on a panel rebuild, which otherwise clears the jetpack mid-test. */
+        movekit_set_flag(2, 1);
+        movekit_force_trigger(1);
+    }
     if (s_annexMode == 1) {
         if (movekit_state() & 1) {
             s_annexSeen = 1;
