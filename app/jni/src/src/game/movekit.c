@@ -34,7 +34,7 @@
 #define GRAPPLE_MIN_DIST    70.0f
 #define GRAPPLE_MAX_SPEED   60.0f
 
-#define JET_THRUST          2.2f
+#define JET_THRUST          6.5f   /* must beat gravity (~4/tick) */
 #define JET_DRAIN           0.9f
 #define JET_REFILL          0.35f
 #define JET_MAX_UP          30.0f
@@ -308,12 +308,26 @@ static void grapple_update(struct MarioState *m, u32 pressed, u32 down) {
 
 /* Smoke-test override: the PTC cannot synthesise the physical L trigger. */
 static u32 s_force_down;
+static u32 s_force_prev;
 
 void movekit_force_trigger(int on) {
     s_force_down = on ? L_TRIG : 0;
 }
 
+#ifdef __ANDROID__
+#include <android/log.h>
+#endif
+
 static void jetpack_update(struct MarioState *m, u32 down) {
+#ifdef __ANDROID__
+    {
+        static int dbg;
+        if ((dbg++ % 30) == 0) {
+            __android_log_print(ANDROID_LOG_INFO, "SM64Leia",
+                                "jet down=%u fuel=%.1f vy=%.1f", down, s_fuel, m->vel[1]);
+        }
+    }
+#endif
     if (!s_jetpack_on) {
         return;
     }
@@ -354,8 +368,11 @@ void movekit_update(struct MarioState *m) {
         }
     }
 
-    pressed = gPlayer1Controller->buttonPressed & L_TRIG;
+    /* A forced trigger also produces a one-tick "press" edge, so the grapple
+     * (which fires on press) can be exercised by the smoke test. */
+    pressed = (gPlayer1Controller->buttonPressed | (s_force_down & ~s_force_prev)) & L_TRIG;
     down = (gPlayer1Controller->buttonDown | s_force_down) & L_TRIG;
+    s_force_prev = s_force_down;
 
     if (s_jetpack_on) {
         jetpack_update(m, down);

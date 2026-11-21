@@ -1036,6 +1036,10 @@ s32 play_mode_normal(void) {
     portal_update();
     ptc_update();
     ptc_hud_update();
+    /* movekit_update() was only reachable from basic_update(), which is a level
+     * transition callback - so the jetpack thrust, grapple rope and fuel refill
+     * never ran in normal gameplay. */
+    movekit_update(gMarioState);
     boxphys_update();
     update_hud_values();
 

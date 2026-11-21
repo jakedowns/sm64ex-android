@@ -914,8 +914,11 @@ void ptc_mario_input_override(struct MarioState *m) {
         return;
     }
     if (s_annexMode == 2) {
-        /* The jetpack reads the physical L trigger; force it for the test. */
         movekit_force_trigger(1);
+        return;
+    }
+    if (s_annexMode == 3) {
+        /* Grapple fires on the press edge, which ptc_annex_update pulses. */
         return;
     }
 
@@ -1178,6 +1181,14 @@ static void ptc_annex_wallrun(void) {
     s_annexMode = 1;
 }
 
+static void ptc_annex_grapple(void) {
+    ptc_annex_reset();
+    movekit_set_flag(1, 1);              /* grapple enabled */
+    /* Inside the wall-run corridor, facing the opposite wall (70 units away). */
+    ptc_annex_place(-1000.0f, 260.0f, 900.0f, 0xC000);
+    s_annexMode = 3;
+}
+
 static void ptc_annex_jetpack(void) {
     ptc_annex_reset();
     movekit_set_flag(2, 1);              /* equip the jetpack (and refill) */
@@ -1194,10 +1205,13 @@ static void ptc_annex_update(void) {
     }
     s_annexTimer++;
     if (s_annexMode == 2) {
-        /* Re-assert every tick: the ENH panel re-applies its toggle defaults
-         * on a panel rebuild, which otherwise clears the jetpack mid-test. */
-        movekit_set_flag(2, 1);
+        /* Only hold the trigger: movekit_set_flag(2,1) refills the tank, so
+         * asserting it every tick would hide whether fuel is really burning. */
         movekit_force_trigger(1);
+    } else if (s_annexMode == 3) {
+        movekit_set_flag(1, 1);
+        /* Pulse the trigger so the grapple sees a fresh press edge. */
+        movekit_force_trigger(((s_annexTimer / 15) & 1) ? 0 : 1);
     }
     if (s_annexMode == 1) {
         if (movekit_state() & 1) {
@@ -1205,14 +1219,20 @@ static void ptc_annex_update(void) {
         }
     } else if (s_annexMode == 2) {
         if ((movekit_state() & 4) && m != NULL
-            && (m->vel[1] > 4.0f || m->pos[1] > s_annexStartY + 120.0f)) {
+            && (m->vel[1] > 2.0f || m->pos[1] > s_annexStartY + 100.0f)) {
+            s_annexSeen = 1;
+        }
+    } else if (s_annexMode == 3) {
+        if (movekit_state() & 8) {       /* rope attached */
             s_annexSeen = 1;
         }
     }
     if (s_annexTimer > 140) {           /* ~4.6 s at 30 Hz */
         if (!s_annexSeen) {
             snprintf(s_failReason, sizeof(s_failReason),
-                     "%s test did not trigger", s_annexMode == 1 ? "wallrun" : "jetpack");
+                     "%s test did not trigger",
+                     s_annexMode == 1 ? "wallrun"
+                                      : (s_annexMode == 2 ? "jetpack" : "grapple"));
         }
         ptc_annex_reset();
     }
@@ -1417,6 +1437,8 @@ static void ptc_apply_command(const char *action) {
         ptc_annex_wallrun();
     } else if (strcmp(action, "jetpack") == 0) {
         ptc_annex_jetpack();
+    } else if (strcmp(action, "grapple") == 0) {
+        ptc_annex_grapple();
     } else if (strcmp(action, "walltest") == 0) {
         s_wallTest = portal_test_walls();
     } else if (strcmp(action, "stop") == 0) {

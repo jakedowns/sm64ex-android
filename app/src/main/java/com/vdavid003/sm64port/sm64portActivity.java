@@ -1406,6 +1406,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addEnhSection("MOVE ANNEXES");
         addEnhButton("WALL-RUN ANNEX", () -> nativePtcCommand("wallrun"));
         addEnhButton("JETPACK ANNEX", () -> nativePtcCommand("jetpack"));
+        addEnhButton("GRAPPLE SMOKE TEST", () -> nativePtcCommand("grapple"));
 
         enhColumnTarget = enhPageColumns[2][0];
         addEnhSection("BALL / CUBES");
