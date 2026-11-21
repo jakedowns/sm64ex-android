@@ -168,9 +168,20 @@ for i in range(len(all_faces)):
 lines += ["    gsSPEndDisplayList(),", "};", ""]
 
 # ---------------- collision ----------------
+# Walls match the runtime scene defaults (half extent 1000, height 800) so the
+# room is actually enclosed and the chase camera has surfaces to collide with.
+WX0, WX1 = -1000, 1000
+WZ0, WZ1 = -1000, 1000
+WY1 = 800
+WT = 40
 col_faces = [
     # One solid +Y floor quad; a closed box's bottom face is not a floor.
     ("floor", quad((X1, Y0, Z0), (X0, Y0, Z0), (X0, Y0, Z1), (X1, Y0, Z1))),
+    # Four enclosing walls (thin boxes) so Mario cannot walk out of the room.
+    ("wall_x0", quad((WX0, 0, WZ1), (WX0, 0, WZ0), (WX0, WY1, WZ0), (WX0, WY1, WZ1))),
+    ("wall_x1", quad((WX1, 0, WZ0), (WX1, 0, WZ1), (WX1, WY1, WZ1), (WX1, WY1, WZ0))),
+    ("wall_z0", quad((WX0, 0, WZ0), (WX1, 0, WZ0), (WX1, WY1, WZ0), (WX0, WY1, WZ0))),
+    ("wall_z1", quad((WX1, 0, WZ1), (WX0, 0, WZ1), (WX0, WY1, WZ1), (WX1, WY1, WZ1))),
     # Two thin mounts side by side on the *same* wall, ~180 apart centre to
     # centre (portal half-width is 67.5, so this leaves a visible gap).
 ] + box_faces(-180, PA_Y0, PA_Z - 20, 0, PA_Y1, PA_Z) \

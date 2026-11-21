@@ -38,6 +38,8 @@
 #define JET_DRAIN           0.9f
 #define JET_REFILL          0.35f
 #define JET_MAX_UP          30.0f
+#define JET_AIR_ACCEL       1.7f
+#define JET_MAX_HORIZ       34.0f
 
 static int s_wallrun_on = 1;
 static int s_grapple_on = 1;
@@ -334,9 +336,33 @@ static void jetpack_update(struct MarioState *m, u32 down) {
     s_attached = 0;   // L is the jetpack when it is equipped
 
     if (down && s_fuel > 0.0f) {
+        /* Grounded actions zero vel[1] every tick, so a grounded Mario would
+         * burn fuel without ever leaving the floor.  Kick him into the air
+         * first, then let the thrust sustain the climb. */
+        if (!(m->action & ACT_FLAG_AIR)) {
+            set_mario_action(m, ACT_FREEFALL, 0);
+            m->vel[1] = 12.0f;
+        }
         m->vel[1] += JET_THRUST;
         if (m->vel[1] > JET_MAX_UP) {
             m->vel[1] = JET_MAX_UP;
+        }
+        /* The left stick steers while the pack is firing. */
+        if (m->intendedMag > 4.0f) {
+            f32 mag = m->intendedMag / 32.0f;
+            f32 hx, hz, h;
+            if (mag > 1.0f) {
+                mag = 1.0f;
+            }
+            m->vel[0] += sins(m->intendedYaw) * JET_AIR_ACCEL * mag;
+            m->vel[2] += coss(m->intendedYaw) * JET_AIR_ACCEL * mag;
+            hx = m->vel[0];
+            hz = m->vel[2];
+            h = sqrtf(hx * hx + hz * hz);
+            if (h > JET_MAX_HORIZ) {
+                m->vel[0] = hx * (JET_MAX_HORIZ / h);
+                m->vel[2] = hz * (JET_MAX_HORIZ / h);
+            }
         }
         s_fuel -= JET_DRAIN;
         if (s_fuel < 0.0f) {

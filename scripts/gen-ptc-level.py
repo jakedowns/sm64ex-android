@@ -21,7 +21,9 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "app/jni/src/levels/ptc"
 
 # ---- world-space layout (N64 units) -------------------------------------
-ROOM = dict(x0=-1200, x1=2450, y0=0, y1=1400, z0=-2600, z1=1250)
+# The z1 wall carries test portal B, so it stays where the portal test expects
+# it; the other three walls move out to make room for the annexes.
+ROOM = dict(x0=-2600, x1=3200, y0=0, y1=1400, z0=-3200, z1=1250)
 
 # name: (x0, z0, x1, z1, top_y, top_rgb, side_rgb)
 PLATFORMS = [
@@ -36,18 +38,17 @@ PLATFORMS = [
     ("P7",  -300, -1500, 300, -1100, 1100, (120, 150, 210), (70, 90, 140)),
     # Green "reset" pad: landing on it rebuilds the Box3D pyramid.
     ("P8",  1150,   650, 1350,   850,   40, (110, 250, 140), (55, 150, 85)),
-    # --- WALL-RUN ANNEX -------------------------------------------------
-    # Two long parallel walls form a corridor along +Z; the west wall face
-    # (x = -1090) is what the smoke test runs along.
-    ("WR_W", -1150,  600, -1090, 1200, 420, (170, 175, 190), (95, 100, 115)),
-    ("WR_E",  -850,  600,  -790, 1200, 420, (170, 175, 190), (95, 100, 115)),
-    # --- JETPACK ANNEX --------------------------------------------------
-    # A 400x400 shaft 1300 tall with a landing pad at the top: fly up and land.
-    ("JP_W",  1700, -700,  1760, -300, 1300, (150, 165, 205), (80, 90, 120)),
-    ("JP_E",  2040, -700,  2100, -300, 1300, (150, 165, 205), (80, 90, 120)),
-    ("JP_S",  1700, -760,  2100, -700, 1300, (150, 165, 205), (80, 90, 120)),
-    ("JP_N",  1700, -300,  2100, -240, 1300, (150, 165, 205), (80, 90, 120)),
-    ("JP_PAD",1750, -650,  2050, -350, 1200, (120, 240, 150), (60, 140, 85)),
+    # --- WALL-RUN ANNEX (west wing) -------------------------------------
+    # Corridor runs along +Z: interior x -2340..-2160, z -600..1200.  The west
+    # face (x = -2340) is the run surface.
+    ("WR_W", -2400, -600, -2340, 1200, 420, (170, 175, 190), (95, 100, 115)),
+    ("WR_E", -2160, -600, -2100, 1200, 420, (170, 175, 190), (95, 100, 115)),
+    # --- JETPACK ANNEX (east wing) --------------------------------------
+    ("JP_W",  2600, -400,  2660,    0, 1300, (150, 165, 205), (80, 90, 120)),
+    ("JP_E",  2940, -400,  3000,    0, 1300, (150, 165, 205), (80, 90, 120)),
+    ("JP_S",  2600, -460,  3000, -400, 1300, (150, 165, 205), (80, 90, 120)),
+    ("JP_N",  2600,    0,  3000,   60, 1300, (150, 165, 205), (80, 90, 120)),
+    ("JP_PAD",2650, -350,  2950,  -50, 1200, (120, 240, 150), (60, 140, 85)),
     ("P9",  -300,   150, 300,   560,  950, (230, 190, 90), (140, 110, 45)),
 ]
 
@@ -222,11 +223,23 @@ def emit_walls():
         "",
         "static const Vtx ptc_vtx_walls[] = {",
     ]
-    for _name, p0, p1, p2, p3, normal, uv in walls:
+    # N = +Z (portal B wall, stays neutral), S = -Z green, W = -X blue, E = +X red.
+    wall_tint = {
+        "front": (130, 230, 140),   # south
+        "back":  (255, 255, 255),   # north (portal B)
+        "left":  (140, 175, 255),   # west
+        "right": (255, 150, 140),   # east
+    }
+    for name, p0, p1, p2, p3, normal, uv in walls:
         pts = face([p0, p1, p2, p3], normal)
+        tint = wall_tint.get(name, (255, 255, 255))
         for p in pts:
             s, t = uv(p)
-            lines.append(vtx(*p, s, t, (255, 255, 255)))
+            # 32-texel checker: wrap in 10.5 fixed point so the bigger room does
+            # not overflow the s16 texture coordinates.
+            s %= 1024
+            t %= 1024
+            lines.append(vtx(*p, s, t, tint))
     lines += ["};", ""]
 
     wall_setup = [
@@ -678,19 +691,7 @@ const GeoLayout ptc_geo[] = {
             GEO_CAMERA(1, 0, 2000, 6000, 0, 0, 0, geo_camera_main),
             GEO_OPEN_NODE(),
                GEO_DISPLAY_LIST(LAYER_OPAQUE, ptc_dl_room),
-               GEO_ASM(0, ptc_geo_obj),
-               GEO_ASM(1, ptc_geo_obj),
-               GEO_ASM(2, ptc_geo_obj),
-               GEO_ASM(3, ptc_geo_obj),
-               GEO_ASM(4, ptc_geo_obj),
-               GEO_ASM(5, ptc_geo_obj),
-               GEO_ASM(6, ptc_geo_obj),
-               GEO_ASM(7, ptc_geo_obj),
-               GEO_ASM(8, ptc_geo_obj),
-               GEO_ASM(9, ptc_geo_obj),
-               GEO_ASM(10, ptc_geo_obj),
-               GEO_ASM(11, ptc_geo_obj),
-               GEO_ASM(12, ptc_geo_obj),
+{ASM_NODES}
                GEO_DISPLAY_LIST(LAYER_OPAQUE, ptc_dl_panels),
                GEO_DISPLAY_LIST(LAYER_OPAQUE, ptc_dl_labels),
                GEO_RENDER_OBJ(),
@@ -701,7 +702,9 @@ const GeoLayout ptc_geo[] = {
    GEO_END(),
 };
 """
-    (OUT / "geo.c").write_text(geo)
+    asm = "".join(f"               GEO_ASM({i}, ptc_geo_obj),\n"
+                  for i in range(len(PLATFORMS) + 1 + 4))
+    (OUT / "geo.c").write_text(geo.replace("{ASM_NODES}", asm))
 
     script = """#include <ultra64.h>
 #include "sm64.h"

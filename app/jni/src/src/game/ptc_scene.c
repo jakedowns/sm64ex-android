@@ -49,8 +49,8 @@ typedef struct {
 } PtcKnob;
 
 static int s_scene_on = 1;
-static float s_room = 2000.0f;      /* half extent in X and Z */
-static float s_room_h = 1600.0f;
+static float s_room = 1000.0f;      /* half extent in X and Z */
+static float s_room_h = 800.0f;
 static float s_chart_z = 1500.0f;
 static float s_chart_w = 300.0f;
 static float s_chart_h = 360.0f;

@@ -48,7 +48,7 @@
 u32 g_ptc_fade_mask = 0;
 
 /* Animated 0..1 fade amount per object (0 = opaque, 1 = fully faded). */
-static f32 s_ptc_fade[14];
+static f32 s_ptc_fade[24];
 
 /* Debug calibration quad: a camera-facing world-space square, drawn to check
  * that 3D geometry keeps square pixels at any aspect setting. */
@@ -57,13 +57,19 @@ void ptc_aspect_calib_toggle(void) {
     g_ptc_aspect_calib = !g_ptc_aspect_calib;
 }
 
-static const Gfx *const s_ptc_solid_dl[10] = {
+/* 0-9 base platforms, 10-16 the wall-run / jetpack annex boxes.  Every entry
+ * must be listed here *and* have a GEO_ASM node, or the box keeps its collision
+ * while never being drawn (invisible geometry Mario bumps into). */
+static const Gfx *const s_ptc_solid_dl[17] = {
     ptc_dl_p1, ptc_dl_p2, ptc_dl_p3, ptc_dl_p4,
-    ptc_dl_p5, ptc_dl_p6, ptc_dl_p7, ptc_dl_p8, ptc_dl_p9, ptc_dl_ramp,
+    ptc_dl_p5, ptc_dl_p6, ptc_dl_p7, ptc_dl_p8, ptc_dl_p9,
+    ptc_dl_wr_w, ptc_dl_wr_e,
+    ptc_dl_jp_w, ptc_dl_jp_e, ptc_dl_jp_s, ptc_dl_jp_n, ptc_dl_jp_pad,
+    ptc_dl_ramp,
 };
 /* Per-platform pre-list: a writable prim-colour command (alpha is updated
  * each frame to animate the fade) followed by the translucent display list. */
-static Gfx s_ptc_fade_pre[10][3] = {
+static Gfx s_ptc_fade_pre[17][3] = {
     { gsDPSetPrimColor(0, 0, 190, 190, 200, 255), gsSPDisplayList(ptc_dl_p1_fade), gsSPEndDisplayList() },
     { gsDPSetPrimColor(0, 0, 190, 190, 200, 255), gsSPDisplayList(ptc_dl_p2_fade), gsSPEndDisplayList() },
     { gsDPSetPrimColor(0, 0, 190, 190, 200, 255), gsSPDisplayList(ptc_dl_p3_fade), gsSPEndDisplayList() },
@@ -73,6 +79,13 @@ static Gfx s_ptc_fade_pre[10][3] = {
     { gsDPSetPrimColor(0, 0, 190, 190, 200, 255), gsSPDisplayList(ptc_dl_p7_fade), gsSPEndDisplayList() },
     { gsDPSetPrimColor(0, 0, 190, 190, 200, 255), gsSPDisplayList(ptc_dl_p8_fade), gsSPEndDisplayList() },
     { gsDPSetPrimColor(0, 0, 190, 190, 200, 255), gsSPDisplayList(ptc_dl_p9_fade), gsSPEndDisplayList() },
+    { gsDPSetPrimColor(0, 0, 190, 190, 200, 255), gsSPDisplayList(ptc_dl_wr_w_fade), gsSPEndDisplayList() },
+    { gsDPSetPrimColor(0, 0, 190, 190, 200, 255), gsSPDisplayList(ptc_dl_wr_e_fade), gsSPEndDisplayList() },
+    { gsDPSetPrimColor(0, 0, 190, 190, 200, 255), gsSPDisplayList(ptc_dl_jp_w_fade), gsSPEndDisplayList() },
+    { gsDPSetPrimColor(0, 0, 190, 190, 200, 255), gsSPDisplayList(ptc_dl_jp_e_fade), gsSPEndDisplayList() },
+    { gsDPSetPrimColor(0, 0, 190, 190, 200, 255), gsSPDisplayList(ptc_dl_jp_s_fade), gsSPEndDisplayList() },
+    { gsDPSetPrimColor(0, 0, 190, 190, 200, 255), gsSPDisplayList(ptc_dl_jp_n_fade), gsSPEndDisplayList() },
+    { gsDPSetPrimColor(0, 0, 190, 190, 200, 255), gsSPDisplayList(ptc_dl_jp_pad_fade), gsSPEndDisplayList() },
     { gsDPSetPrimColor(0, 0, 190, 190, 200, 255), gsSPDisplayList(ptc_dl_ramp_fade), gsSPEndDisplayList() },
 };
 static const Gfx *const s_ptc_wall_dl[4] = {
@@ -90,16 +103,21 @@ Gfx *ptc_geo_obj(s32 callContext, struct GraphNode *node, UNUSED void *context) 
     int id = (int) gen->parameter;
 
     (void) callContext; (void) context;
-    if (id >= 0 && id < 10) {
+    if (id >= 0 && id < 17) {
         if (s_ptc_fade[id] > 0.01f) {
-            u32 a = (u32)(255.0f - s_ptc_fade[id] * 175.0f);
+            /* Never fully transparent: clamp the fade so occluding geometry
+             * stays readable as ghosted blocks instead of disappearing. */
+            f32 f = s_ptc_fade[id];
+            if (f > 1.0f) f = 1.0f;
+            u32 a = (u32)(255.0f - f * 175.0f);
+            if (a < 70) a = 70;
             s_ptc_fade_pre[id][0].words.w1 =
                 (s_ptc_fade_pre[id][0].words.w1 & 0xFFFFFF00u) | (a & 0xFF);
             return s_ptc_fade_pre[id];
         }
         return (Gfx *) s_ptc_solid_dl[id];
     }
-    id -= 10;
+    id -= 17;
     if (id >= 0 && id < 4) {
         return (Gfx *)((g_ptc_fade_mask & (1u << (10 + id)))
                 ? s_ptc_wall_fade[id] : s_ptc_wall_dl[id]);
@@ -1141,10 +1159,10 @@ static void ptc_goomba_update(void) {
  *   jetpack shaft      (1700..2100, z -760..-240, 1300 tall, pad at 1200)
  * `ptc wallrun` / `ptc jetpack` warp there, arm the equipment and drive a
  * scripted input for ~4 s; the result lands in `PTC ... annex=...`. */
-#define PTC_WR_WALL_X   (-1090.0f)
-#define PTC_WR_Z        (650.0f)
-#define PTC_JP_X        (1900.0f)
-#define PTC_JP_Z        (-500.0f)
+#define PTC_WR_WALL_X   (-2340.0f)
+#define PTC_WR_Z        (600.0f)
+#define PTC_JP_X        (2800.0f)
+#define PTC_JP_Z        (-200.0f)
 
 static void ptc_annex_reset(void) {
     s_annexMode = 0;
@@ -1185,15 +1203,15 @@ static void ptc_annex_grapple(void) {
     ptc_annex_reset();
     movekit_set_flag(1, 1);              /* grapple enabled */
     /* Inside the wall-run corridor, facing the opposite wall (70 units away). */
-    ptc_annex_place(-1000.0f, 260.0f, 900.0f, 0xC000);
+    ptc_annex_place(-2250.0f, 260.0f, 300.0f, 0x4000);   /* face +X wall */
     s_annexMode = 3;
 }
 
 static void ptc_annex_jetpack(void) {
     ptc_annex_reset();
     movekit_set_flag(2, 1);              /* equip the jetpack (and refill) */
-    ptc_annex_place(PTC_JP_X, 60.0f, PTC_JP_Z, 0x0000);
-    s_annexStartY = 60.0f;
+    ptc_annex_place(PTC_JP_X, 0.0f, PTC_JP_Z, 0x0000);   /* on the floor */
+    s_annexStartY = 0.0f;
     s_annexMode = 2;
 }
 
