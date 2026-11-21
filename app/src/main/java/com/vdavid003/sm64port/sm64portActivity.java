@@ -1264,20 +1264,49 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         camStatusView.setPadding(dp(4), dp(10), dp(4), dp(4));
         controls.addView(camStatusView);
 
-        // --- Gameplay enhancements ---
+        // --- Gameplay enhancements: sub-tabbed ---
         beginTab();
-        LinearLayout enRow = new LinearLayout(this);
-        enRow.setOrientation(LinearLayout.HORIZONTAL);
-        LinearLayout enLeft = new LinearLayout(this);
-        enLeft.setOrientation(LinearLayout.VERTICAL);
-        LinearLayout enRight = new LinearLayout(this);
-        enRight.setOrientation(LinearLayout.VERTICAL);
-        enRow.addView(enLeft, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        enRow.addView(enRight, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        controls.addView(enRow, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        {
+            final String[] pageNames = { "MOVE", "PORTAL", "BALL", "SYS" };
+            LinearLayout tabRow = new LinearLayout(this);
+            tabRow.setOrientation(LinearLayout.HORIZONTAL);
+            controls.addView(tabRow, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            enhPages = new LinearLayout[pageNames.length];
+            enhPageTabs = new TextView[pageNames.length];
+            enhPageColumns = new LinearLayout[pageNames.length][2];
+            for (int i = 0; i < pageNames.length; i++) {
+                final int page = i;
+                TextView tab = new TextView(this);
+                tab.setText(pageNames[i]);
+                tab.setTextSize(16);
+                tab.setPadding(dp(10), dp(8), dp(10), dp(8));
+                tab.setTextColor(i == 0 ? 0xFF66FF99 : 0xFF888888);
+                tab.setOnClickListener(v -> showEnhPage(page));
+                tabRow.addView(tab);
+                enhPageTabs[i] = tab;
 
-        enhColumnTarget = enLeft;
+                LinearLayout pageLayout = new LinearLayout(this);
+                pageLayout.setOrientation(LinearLayout.VERTICAL);
+                LinearLayout row = new LinearLayout(this);
+                row.setOrientation(LinearLayout.HORIZONTAL);
+                LinearLayout left = new LinearLayout(this);
+                left.setOrientation(LinearLayout.VERTICAL);
+                LinearLayout right = new LinearLayout(this);
+                right.setOrientation(LinearLayout.VERTICAL);
+                row.addView(left, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+                row.addView(right, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+                pageLayout.addView(row);
+                pageLayout.setVisibility(i == 0 ? View.VISIBLE : View.GONE);
+                controls.addView(pageLayout, new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+                enhPages[i] = pageLayout;
+                enhPageColumns[i][0] = left;
+                enhPageColumns[i][1] = right;
+            }
+        }
+
+        enhColumnTarget = enhPageColumns[0][0];
         addEnhSection("MOVEMENT / PHYSICS");
         ragdollToggle = addEnhToggle("DEATH RAGDOLL", 0, ragdollOn);
         hitRagdollToggle = addEnhToggle("HIT RAGDOLL", 1, hitRagdollOn);
@@ -1305,10 +1334,12 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             nativeMovekitUpgrade(1);
             refillUp.setText("REFILL PUMP L" + (nativeGetRefillTier() + 1));
         });
-        controls.addView(refillUp);
+        enhParent().addView(refillUp);
+        enhColumnTarget = enhPageColumns[3][0];
         addEnhSection("SESSION");
         addEnhButton("LEVEL SELECT", this::openLevelSelect);
         addEnhButton("KILL MARIO (TEST)", this::debugKill);
+        enhColumnTarget = enhPageColumns[0][1];
         addEnhSection("RENDER / SIM");
         uncappedTestToggle = new TextView(this);
         uncappedTestToggle.setText("UNCAPPED TEST SIM: " + (uncappedTestOn ? "ON" : "OFF"));
@@ -1346,7 +1377,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         });
         enhParent().addView(stayToggle);
 
-        enhColumnTarget = enRight;
+        enhColumnTarget = enhPageColumns[1][1];
         addEnhSection("PORTAL TESTS");
         addEnhButton("PORTAL TEST CHAMBER", () -> debugLevel(38));
         addEnhButton("RUN PORTAL SMOKE TEST", () -> debugPtc("run"));
@@ -1372,6 +1403,11 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addEnhKnobToggle("RELAY BLIT", "relay.blit", false);
         addEnhKnobToggle("SOURCE FAN", "fan.src", false);
 
+        addEnhSection("MOVE ANNEXES");
+        addEnhButton("WALL-RUN ANNEX", () -> nativePtcCommand("wallrun"));
+        addEnhButton("JETPACK ANNEX", () -> nativePtcCommand("jetpack"));
+
+        enhColumnTarget = enhPageColumns[2][0];
         addEnhSection("BALL / CUBES");
         addEnhButton("RESET TO LOGO", this::resetToLogo);
         addEnhButton("REINIT LEIA SURFACE", this::debugReinit);
@@ -1385,6 +1421,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addEnhButton("WARP TO RESET PAD", () -> nativePtcCommand("resetpad"));
         addEnhButton("BUTT SLAM TEST", () -> nativePtcCommand("slam"));
         addEnhButton("FIRE TEST BALL", () -> nativePtcCommand("balltest"));
+        enhColumnTarget = enhPageColumns[3][1];
         addEnhSection("SYSTEM");
         pauseLoopToggle = new TextView(this);
         pauseLoopToggle.setText("PAUSE GAME LOOP: OFF");
@@ -1397,7 +1434,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             pauseLoopToggle.setText("PAUSE GAME LOOP: " + (hardPaused ? "ON" : "OFF"));
             pauseLoopToggle.setTextColor(hardPaused ? 0xFF66FF99 : 0xFF888888);
         });
-        controls.addView(pauseLoopToggle);
+        enhParent().addView(pauseLoopToggle);
         enhColumnTarget = null;
 
         // --- Realtime dynamic shadows (quality / performance) ---
@@ -1929,6 +1966,20 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         b.setPadding(dp(4), dp(10), dp(4), dp(10));
         b.setOnClickListener(v -> action.run());
         return b;
+    }
+
+    private LinearLayout[] enhPages;
+    private TextView[] enhPageTabs;
+    private LinearLayout[][] enhPageColumns;
+
+    private void showEnhPage(int page) {
+        if (enhPages == null) {
+            return;
+        }
+        for (int i = 0; i < enhPages.length; i++) {
+            enhPages[i].setVisibility(i == page ? View.VISIBLE : View.GONE);
+            enhPageTabs[i].setTextColor(i == page ? 0xFF66FF99 : 0xFF888888);
+        }
     }
 
     private void addCamButton(String name, final Runnable action) {

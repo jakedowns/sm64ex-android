@@ -36,6 +36,18 @@ PLATFORMS = [
     ("P7",  -300, -1500, 300, -1100, 1100, (120, 150, 210), (70, 90, 140)),
     # Green "reset" pad: landing on it rebuilds the Box3D pyramid.
     ("P8",  1150,   650, 1350,   850,   40, (110, 250, 140), (55, 150, 85)),
+    # --- WALL-RUN ANNEX -------------------------------------------------
+    # Two long parallel walls form a corridor along +Z; the west wall face
+    # (x = -1090) is what the smoke test runs along.
+    ("WR_W", -1150,  600, -1090, 1200, 420, (170, 175, 190), (95, 100, 115)),
+    ("WR_E",  -850,  600,  -790, 1200, 420, (170, 175, 190), (95, 100, 115)),
+    # --- JETPACK ANNEX --------------------------------------------------
+    # A 400x400 shaft 1300 tall with a landing pad at the top: fly up and land.
+    ("JP_W",  1700, -700,  1760, -300, 1300, (150, 165, 205), (80, 90, 120)),
+    ("JP_E",  2040, -700,  2100, -300, 1300, (150, 165, 205), (80, 90, 120)),
+    ("JP_S",  1700, -760,  2100, -700, 1300, (150, 165, 205), (80, 90, 120)),
+    ("JP_N",  1700, -300,  2100, -240, 1300, (150, 165, 205), (80, 90, 120)),
+    ("JP_PAD",1750, -650,  2050, -350, 1200, (120, 240, 150), (60, 140, 85)),
     ("P9",  -300,   150, 300,   560,  950, (230, 190, 90), (140, 110, 45)),
 ]
 
@@ -606,6 +618,22 @@ extern const Gfx ptc_dl_p6[];
 extern const Gfx ptc_dl_p6_fade[];
 extern const Gfx ptc_dl_p7[];
 extern const Gfx ptc_dl_p7_fade[];
+extern const Gfx ptc_dl_p8[];
+extern const Gfx ptc_dl_p8_fade[];
+extern const Gfx ptc_dl_wr_w[];
+extern const Gfx ptc_dl_wr_w_fade[];
+extern const Gfx ptc_dl_wr_e[];
+extern const Gfx ptc_dl_wr_e_fade[];
+extern const Gfx ptc_dl_jp_w[];
+extern const Gfx ptc_dl_jp_w_fade[];
+extern const Gfx ptc_dl_jp_e[];
+extern const Gfx ptc_dl_jp_e_fade[];
+extern const Gfx ptc_dl_jp_s[];
+extern const Gfx ptc_dl_jp_s_fade[];
+extern const Gfx ptc_dl_jp_n[];
+extern const Gfx ptc_dl_jp_n_fade[];
+extern const Gfx ptc_dl_jp_pad[];
+extern const Gfx ptc_dl_jp_pad_fade[];
 extern const Gfx ptc_dl_p9[];
 extern const Gfx ptc_dl_p9_fade[];
 extern const Gfx ptc_dl_ramp[];

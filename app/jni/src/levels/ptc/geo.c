@@ -44,7 +44,6 @@ const GeoLayout ptc_geo[] = {
                GEO_ASM(10, ptc_geo_obj),
                GEO_ASM(11, ptc_geo_obj),
                GEO_ASM(12, ptc_geo_obj),
-               GEO_ASM(13, ptc_geo_obj),
                GEO_DISPLAY_LIST(LAYER_OPAQUE, ptc_dl_panels),
                GEO_DISPLAY_LIST(LAYER_OPAQUE, ptc_dl_labels),
                GEO_RENDER_OBJ(),

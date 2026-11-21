@@ -41,6 +41,7 @@
 #include "levels/ptc/header.h"
 #include "boxphys.h"
 #include "ptc_scene.h"
+#include "movekit.h"
 
 /* Per-object occluder fade.  Bit N = fade object N (0..8 platforms, 9 ramp,
  * 10..13 room walls), set by ptc_occlusion_update(). */
@@ -216,6 +217,12 @@ static int s_phaseTimer;
 static int s_failed;
 static char s_failReason[96];
 
+/* Move-annex smoke test state (declared early: the input override reads it). */
+static int s_annexMode;      /* 0 none, 1 wall-run, 2 jetpack */
+static int s_annexTimer;
+static int s_annexSeen;
+static float s_annexStartY;
+
 static int s_shotA;
 static int s_shotB;
 static int s_portalsPlaced;
@@ -245,6 +252,7 @@ static char s_pendingCommand[24];
 static volatile int s_pendingCommandReady;
 static void ptc_apply_command(const char *action);
 static void ptc_goomba_update(void);
+static void ptc_annex_update(void);
 static void ptc_finish_ok(void);
 static void ptc_record_teleport(void);
 
@@ -806,6 +814,7 @@ void ptc_update(void) {
     }
 
     ptc_goomba_update();
+    ptc_annex_update();
 
     if (s_calActive) {
         ptc_calibrate_update();
@@ -894,6 +903,21 @@ void ptc_mario_input_override(struct MarioState *m) {
         return;
     }
     s_inputHookCalls++;
+
+    if (s_annexMode == 1) {
+        /* Hold "forward + into the wall" so the wall-run trigger sees a
+         * non-zero stick and horizontal speed towards the surface. */
+        m->intendedMag = 32.0f;
+        m->intendedYaw = 0x0000;                 /* +Z, along the corridor */
+        m->input |= INPUT_NONZERO_ANALOG;
+        m->input &= ~INPUT_UNKNOWN_5;
+        return;
+    }
+    if (s_annexMode == 2) {
+        /* The jetpack reads the physical L trigger; force it for the test. */
+        movekit_force_trigger(1);
+        return;
+    }
 
     if (s_calActive) {
         /* Keep A held for maximum jump height. */
@@ -1112,6 +1136,87 @@ static void ptc_goomba_update(void) {
     }
 }
 
+/* ------------------------------------------------------- move annexes */
+
+/* Two purpose-built annexes in the chamber:
+ *   wall-run corridor  (-1090..-790, z 600..1200, walls 420 tall)
+ *   jetpack shaft      (1700..2100, z -760..-240, 1300 tall, pad at 1200)
+ * `ptc wallrun` / `ptc jetpack` warp there, arm the equipment and drive a
+ * scripted input for ~4 s; the result lands in `PTC ... annex=...`. */
+#define PTC_WR_WALL_X   (-1090.0f)
+#define PTC_WR_Z        (650.0f)
+#define PTC_JP_X        (1900.0f)
+#define PTC_JP_Z        (-500.0f)
+
+static void ptc_annex_reset(void) {
+    s_annexMode = 0;
+    s_annexTimer = 0;
+    s_annexSeen = 0;
+    movekit_force_trigger(0);
+}
+
+static void ptc_annex_place(float x, float y, float z, s16 yaw) {
+    if (gMarioState == NULL) {
+        return;
+    }
+    gMarioState->pos[0] = x;
+    gMarioState->pos[1] = y;
+    gMarioState->pos[2] = z;
+    gMarioState->vel[0] = gMarioState->vel[1] = gMarioState->vel[2] = 0.0f;
+    gMarioState->faceAngle[1] = yaw;
+    set_mario_action(gMarioState, ACT_FREEFALL, 0);
+    if (gMarioState->marioObj != NULL) {
+        vec3f_copy(gMarioState->marioObj->header.gfx.pos, gMarioState->pos);
+    }
+    gCameraMovementFlags |= CAM_MOVE_INIT_CAMERA;
+}
+
+static void ptc_annex_wallrun(void) {
+    ptc_annex_reset();
+    movekit_set_flag(0, 1);              /* wall-run enabled */
+    /* Airborne beside the west wall, moving into it and along it. */
+    ptc_annex_place(PTC_WR_WALL_X + 26.0f, 260.0f, PTC_WR_Z, 0x0000);
+    if (gMarioState != NULL) {
+        gMarioState->vel[0] = -14.0f;
+        gMarioState->vel[2] = 42.0f;
+    }
+    s_annexMode = 1;
+}
+
+static void ptc_annex_jetpack(void) {
+    ptc_annex_reset();
+    movekit_set_flag(2, 1);              /* equip the jetpack (and refill) */
+    ptc_annex_place(PTC_JP_X, 60.0f, PTC_JP_Z, 0x0000);
+    s_annexStartY = 60.0f;
+    s_annexMode = 2;
+}
+
+static void ptc_annex_update(void) {
+    struct MarioState *m = gMarioState;
+
+    if (s_annexMode == 0) {
+        return;
+    }
+    s_annexTimer++;
+    if (s_annexMode == 1) {
+        if (movekit_state() & 1) {
+            s_annexSeen = 1;
+        }
+    } else if (s_annexMode == 2) {
+        if ((movekit_state() & 4) && m != NULL
+            && (m->vel[1] > 4.0f || m->pos[1] > s_annexStartY + 120.0f)) {
+            s_annexSeen = 1;
+        }
+    }
+    if (s_annexTimer > 140) {           /* ~4.6 s at 30 Hz */
+        if (!s_annexSeen) {
+            snprintf(s_failReason, sizeof(s_failReason),
+                     "%s test did not trigger", s_annexMode == 1 ? "wallrun" : "jetpack");
+        }
+        ptc_annex_reset();
+    }
+}
+
 /* ------------------------------------------------------------ diagnostics */
 
 static void ptc_apply_command(const char *action) {
@@ -1307,6 +1412,10 @@ static void ptc_apply_command(const char *action) {
             }
             gCameraMovementFlags |= CAM_MOVE_INIT_CAMERA;
         }
+    } else if (strcmp(action, "wallrun") == 0) {
+        ptc_annex_wallrun();
+    } else if (strcmp(action, "jetpack") == 0) {
+        ptc_annex_jetpack();
     } else if (strcmp(action, "walltest") == 0) {
         s_wallTest = portal_test_walls();
     } else if (strcmp(action, "stop") == 0) {
@@ -1345,7 +1454,7 @@ void ptc_format_status(char *buf, int len) {
              "wall=%d ceil=%d ledge=%d "
              "coins=%d stars=%d save=%d before=%d/%d "
              "cal=%.1f,%.1f,%.1f ledge_reach=%.1f goomba=%d,%.1f,%.1f gmodel=%d "
-             "gobj=%d,0x%x,%d,%d",
+             "gobj=%d,0x%x,%d,%d annex=%d,%d,%d",
              gCurrLevelNum, gCurrAreaIndex, s_phase, s_testMode, s_testActive, s_failed, s_failReason,
              s_starCollected[0], s_starCollected[1], ptc_star_visible(), portal_count(), s_shotA, s_shotB, g_portal_debug,
              g_portal_view.active, g_portal_view.source,
@@ -1373,7 +1482,8 @@ void ptc_format_status(char *buf, int len) {
              s_goombaIn != NULL,
              s_goombaIn != NULL ? s_goombaIn->header.gfx.node.flags : 0,
              s_goombaIn != NULL ? (s_goombaIn->header.gfx.sharedChild != NULL) : 0,
-             s_goombaIn != NULL ? (int) s_goombaIn->activeFlags : -1);
+             s_goombaIn != NULL ? (int) s_goombaIn->activeFlags : -1,
+             s_annexMode, s_annexSeen, s_annexTimer);
 
     {
         size_t used = strlen(buf);

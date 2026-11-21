@@ -306,6 +306,13 @@ static void grapple_update(struct MarioState *m, u32 pressed, u32 down) {
     }
 }
 
+/* Smoke-test override: the PTC cannot synthesise the physical L trigger. */
+static u32 s_force_down;
+
+void movekit_force_trigger(int on) {
+    s_force_down = on ? L_TRIG : 0;
+}
+
 static void jetpack_update(struct MarioState *m, u32 down) {
     if (!s_jetpack_on) {
         return;
@@ -348,7 +355,7 @@ void movekit_update(struct MarioState *m) {
     }
 
     pressed = gPlayer1Controller->buttonPressed & L_TRIG;
-    down = gPlayer1Controller->buttonDown & L_TRIG;
+    down = (gPlayer1Controller->buttonDown | s_force_down) & L_TRIG;
 
     if (s_jetpack_on) {
         jetpack_update(m, down);
