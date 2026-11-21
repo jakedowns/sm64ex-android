@@ -58,9 +58,12 @@ static float s_chart_x = 270.0f;     /* chart centre X (relay camera axis) */
 static float s_chart_y = 160.0f;     /* chart centre height */
 static int s_chart_cols = 16;
 static int s_chart_rows = 16;
+/* Diagnostic cubes: one in front of each portal, so each relay window should
+ * show the *other* portal's cube (A -> red, B -> blue). */
+static int s_cubes_on = 1;
 
 /* 600 quads covers the room plus a 24x24 chart. */
-#define PTC_SCENE_MAX_QUADS 1200
+#define PTC_SCENE_MAX_QUADS 1260
 static Vtx s_vtx[PTC_SCENE_MAX_QUADS * 4];
 static int s_quad_count;
 static int s_dirty = 1;
@@ -77,6 +80,7 @@ static const PtcKnob s_knobs[] = {
     { "scene.chart_y",     0, &s_chart_y },
     { "scene.chart_cols",  1, &s_chart_cols },
     { "scene.chart_rows",  1, &s_chart_rows },
+    { "scene.cubes",       1, &s_cubes_on },
     { "decal.offset",      0, &g_ptc_decal_offset },
     { "decal.depth",       1, &g_ptc_decal_depth },
     { "relay.solid",       1, &g_portal_debug_color },
@@ -158,11 +162,12 @@ void ptc_knob_dump(char *buf, int len) {
     }
     snprintf(buf, len,
              "knobs scene=%d room=%.0f h=%.0f chart=%.0f/%.0fx%.0f@%.0f,%.0f %dx%d "
-             "decal.off=%.1f depth=%d sel=%.0f/%d solid=%d blit=%d fan=%d",
+             "decal.off=%.1f depth=%d sel=%.0f/%d solid=%d blit=%d fan=%d cubes=%d",
              s_scene_on, s_room, s_room_h, s_chart_z, s_chart_w, s_chart_h,
              s_chart_x, s_chart_y, s_chart_cols, s_chart_rows, g_ptc_decal_offset,
              g_ptc_decal_depth, g_ptc_select_maxdeg, g_ptc_select_facing,
-             g_portal_debug_color, gfx_portal_debug_blit, g_portal_debug_align);
+             g_portal_debug_color, gfx_portal_debug_blit, g_portal_debug_align,
+             s_cubes_on);
 }
 
 int ptc_scene_enabled(void) {
@@ -199,6 +204,24 @@ static void scene_quad(int *n, float x0, float y0, float z0,
         v->v.cn[2] = b;
         v->v.cn[3] = 0xFF;
     }
+}
+
+/* Axis-aligned box with outward faces; `half` is the half extent (1 "unit"
+ * here is 100 world units, i.e. one Mario-height-ish block). */
+static void scene_box(int *n, float cx, float cy, float cz, float half,
+                      u8 r, u8 g, u8 b) {
+    float x0 = cx - half, x1 = cx + half;
+    float y0 = cy - half, y1 = cy + half;
+    float z0 = cz - half, z1 = cz + half;
+    /* top / bottom */
+    scene_quad(n, x1, y1, z0, x0, y1, z0, x0, y1, z1, x1, y1, z1, r, g, b);
+    scene_quad(n, x1, y0, z1, x0, y0, z1, x0, y0, z0, x1, y0, z0, r, g, b);
+    /* +Z / -Z */
+    scene_quad(n, x0, y0, z1, x1, y0, z1, x1, y1, z1, x0, y1, z1, r, g, b);
+    scene_quad(n, x1, y0, z0, x0, y0, z0, x0, y1, z0, x1, y1, z0, r, g, b);
+    /* +X / -X */
+    scene_quad(n, x1, y0, z1, x1, y0, z0, x1, y1, z0, x1, y1, z1, r, g, b);
+    scene_quad(n, x0, y0, z0, x0, y0, z1, x0, y1, z1, x0, y1, z0, r, g, b);
 }
 
 static void scene_build(void) {
@@ -256,6 +279,14 @@ static void scene_build(void) {
             scene_quad(&n, x1, y0, s_chart_z, x0, y0, s_chart_z,
                        x0, y1, s_chart_z, x1, y1, s_chart_z, r, g, b);
         }
+    }
+
+    /* Diagnostic cubes 150 units in front of each portal mount. */
+    if (s_cubes_on) {
+        /* Offset sideways so each cube sits in front of its portal without
+         * covering the oval: the window stays visible. */
+        scene_box(&n, -190.0f, 140.0f, -150.0f, 50.0f, 40, 80, 220);  /* blue @ A */
+        scene_box(&n, 190.0f, 140.0f, -150.0f, 50.0f, 220, 40, 40);   /* red  @ B */
     }
 
     s_quad_count = n / 4;
