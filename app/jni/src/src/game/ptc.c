@@ -980,7 +980,9 @@ static struct Object *s_goombaIn;
 static struct Object *s_goombaOut;
 static int s_goombaActive;
 static float s_goombaZ;
+static float s_goombaX;
 static float s_goombaMirrorDz;   /* exit Z for entry Z (portal A -> portal B) */
+static float s_goombaMirrorDx;   /* exit X for entry X (portal A -> portal B) */
 
 static void ptc_goomba_reset_state(void) {
     s_goombaIn = NULL;
@@ -989,14 +991,14 @@ static void ptc_goomba_reset_state(void) {
     s_goombaZ = PTC_GOOMBA_START_Z;
 }
 
-static void ptc_goomba_place(struct Object *o, float z) {
+static void ptc_goomba_place(struct Object *o, float x, float z) {
     if (o == NULL) {
         return;
     }
-    o->oPosX = 0.0f;
+    o->oPosX = x;
     o->oPosY = 0.0f;
     o->oPosZ = z;
-    o->oHomeX = 0.0f;
+    o->oHomeX = x;
     o->oHomeY = 0.0f;
     o->oHomeZ = z;
     o->oMoveAngleYaw = 0x8000;      /* face -Z */
@@ -1020,13 +1022,14 @@ static void ptc_goomba_place(struct Object *o, float z) {
 }
 
 static void ptc_goomba_start(void) {
-    Vec3f aOrig = { 0.0f, 140.0f, 120.0f };
-    Vec3f aTarget = { 0.0f, 140.0f, -280.0f };
-    Vec3f bOrig = { 0.0f, 140.0f, 400.0f };
-    Vec3f bTarget = { 0.0f, 140.0f, 599.0f };
+    Vec3f aOrig = { -90.0f, 140.0f, 120.0f };
+    Vec3f aTarget = { -90.0f, 140.0f, -280.0f };
+    Vec3f bOrig = { 90.0f, 140.0f, 120.0f };
+    Vec3f bTarget = { 90.0f, 140.0f, -280.0f };
     Vec3f pa, pb, na, nb;
 
     ptc_goomba_reset_state();
+    s_goombaX = -90.0f;          /* walk into portal A */
     portal_reset();
     portal_give_gun();
     portal_shoot_at(0, aOrig, aTarget);
@@ -1089,11 +1092,19 @@ static void ptc_goomba_update(void) {
             obj_mark_for_deletion(s_goombaIn);
             s_goombaIn = NULL;
         } else {
-            ptc_goomba_place(s_goombaIn, s_goombaZ);
+            ptc_goomba_place(s_goombaIn, s_goombaX, s_goombaZ);
         }
     }
     if (s_goombaOut != NULL) {
-        ptc_goomba_place(s_goombaOut, s_goombaZ + s_goombaMirrorDz);
+        /* Mirror about the pair: for two portals on one plane with the same
+         * normal the map is (x, z) -> (Bx - (x - Ax), Bz - (z - Az)). */
+        Vec3f pa, na, pb, nb;
+        float mx = s_goombaX, mz = s_goombaZ + s_goombaMirrorDz;
+        if (portal_get(0, pa, na) && portal_get(1, pb, nb)) {
+            mx = pb[0] - (s_goombaX - pa[0]);
+            mz = pb[2] - (s_goombaZ - pa[2]);
+        }
+        ptc_goomba_place(s_goombaOut, mx, mz);
     }
 
     if (s_goombaZ < -1500.0f) {
@@ -1160,12 +1171,12 @@ static void ptc_apply_command(const char *action) {
     } else if (strcmp(action, "emptytest") == 0) {
         extern int gfx_stereo_2d;
         extern int gfx_stereo_same_both;
-        /* Centre the portals on the chase camera's focus height (~124) so the
-         * source ellipse sits in the middle of the frame. */
-        Vec3f aOrig = { 0.0f, 140.0f, -100.0f };
-        Vec3f aTarget = { 0.0f, 140.0f, -280.0f };
-        Vec3f bOrig = { 0.0f, 140.0f, 400.0f };
-        Vec3f bTarget = { 0.0f, 140.0f, 599.0f };
+        /* Side by side on the same wall, ~180 apart: both faces are visible
+         * and each portal gets its own relay window. */
+        Vec3f aOrig = { -90.0f, 140.0f, 120.0f };
+        Vec3f aTarget = { -90.0f, 140.0f, -280.0f };
+        Vec3f bOrig = { 90.0f, 140.0f, 120.0f };
+        Vec3f bTarget = { 90.0f, 140.0f, -280.0f };
         portal_reset();
         portal_give_gun();
         portal_shoot_at(0, aOrig, aTarget);

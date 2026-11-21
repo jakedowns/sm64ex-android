@@ -2152,11 +2152,15 @@ static void gfx_opengl_start_frame(void) {
 #include "game/portal.h"
 extern float gfx_eye_shear[2];
 extern int gfx_get_portal_view_proj(float out[4][4]);
+extern int gfx_get_portal_view_proj_index(int index, float out[4][4]);
 extern int gfx_portal_debug_blit;
 extern int g_portal_debug_color;
 
-static GLuint s_portal_fbo = 0, s_portal_tex = 0, s_portal_depth = 0;
-static int s_portal_w = 0, s_portal_h = 0;
+/* Two relay images: one per portal, so a side-by-side pair shows a window in
+ * both surfaces instead of only the one being looked at. */
+#define PORTAL_VIEWS 2
+static GLuint s_portal_fbo[PORTAL_VIEWS], s_portal_tex[PORTAL_VIEWS], s_portal_depth[PORTAL_VIEWS];
+static int s_portal_w[PORTAL_VIEWS], s_portal_h[PORTAL_VIEWS];
 static GLuint s_portal_prog = 0;
 static GLint s_portal_apos = -1, s_portal_auv = -1, s_portal_utex = -1;
 
@@ -2177,7 +2181,7 @@ static const char *s_portal_fs =
     "  gl_FragColor = texture2D(uTex, vUV);\n"
     "}\n";
 
-static int portal_ensure_resources(int w, int h) {
+static int portal_ensure_resources(int index, int w, int h) {
     if (s_portal_prog == 0) {
         GLuint vs = compile_shader(GL_VERTEX_SHADER, s_portal_vs);
         GLuint fs = compile_shader(GL_FRAGMENT_SHADER, s_portal_fs);
@@ -2194,48 +2198,51 @@ static int portal_ensure_resources(int w, int h) {
         s_portal_auv = glGetAttribLocation(s_portal_prog, "aUV");
         s_portal_utex = glGetUniformLocation(s_portal_prog, "uTex");
     }
-    if (s_portal_fbo != 0 && w == s_portal_w && h == s_portal_h) {
+    if (s_portal_fbo[index] != 0 && w == s_portal_w[index] && h == s_portal_h[index]) {
         return 1;
     }
-    if (s_portal_fbo) glDeleteFramebuffers(1, &s_portal_fbo);
-    if (s_portal_tex) glDeleteTextures(1, &s_portal_tex);
-    if (s_portal_depth) glDeleteRenderbuffers(1, &s_portal_depth);
-    s_portal_fbo = s_portal_tex = s_portal_depth = 0;
-    s_portal_w = s_portal_h = 0;
+    if (s_portal_fbo[index]) glDeleteFramebuffers(1, &s_portal_fbo[index]);
+    if (s_portal_tex[index]) glDeleteTextures(1, &s_portal_tex[index]);
+    if (s_portal_depth[index]) glDeleteRenderbuffers(1, &s_portal_depth[index]);
+    s_portal_fbo[index] = s_portal_tex[index] = s_portal_depth[index] = 0;
+    s_portal_w[index] = s_portal_h[index] = 0;
 
-    glGenTextures(1, &s_portal_tex);
-    glBindTexture(GL_TEXTURE_2D, s_portal_tex);
+    glGenTextures(1, &s_portal_tex[index]);
+    glBindTexture(GL_TEXTURE_2D, s_portal_tex[index]);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
-    glGenFramebuffers(1, &s_portal_fbo);
-    glBindFramebuffer(GL_FRAMEBUFFER, s_portal_fbo);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, s_portal_tex, 0);
-    glGenRenderbuffers(1, &s_portal_depth);
-    glBindRenderbuffer(GL_RENDERBUFFER, s_portal_depth);
+    glGenFramebuffers(1, &s_portal_fbo[index]);
+    glBindFramebuffer(GL_FRAMEBUFFER, s_portal_fbo[index]);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, s_portal_tex[index], 0);
+    glGenRenderbuffers(1, &s_portal_depth[index]);
+    glBindRenderbuffer(GL_RENDERBUFFER, s_portal_depth[index]);
     glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT16, w, h);
-    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, s_portal_depth);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, s_portal_depth[index]);
 
     GLenum st = glCheckFramebufferStatus(GL_FRAMEBUFFER);
-    __android_log_print(ANDROID_LOG_INFO, "SM64PORTAL", "fbo=%u tex=%u %dx%d status=0x%x",
-                        s_portal_fbo, s_portal_tex, w, h, st);
+    __android_log_print(ANDROID_LOG_INFO, "SM64PORTAL", "fbo%d=%u tex=%u %dx%d status=0x%x",
+                        index, s_portal_fbo[index], s_portal_tex[index], w, h, st);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     if (st != GL_FRAMEBUFFER_COMPLETE) {
         return 0;
     }
-    s_portal_w = w;
-    s_portal_h = h;
+    s_portal_w[index] = w;
+    s_portal_h[index] = h;
     return 1;
 }
 
-int gfx_opengl_portal_begin(int w, int h) {
-    if (w < 1 || h < 1 || !portal_ensure_resources(w, h)) {
+int gfx_opengl_portal_begin(int index, int w, int h) {
+    if (index < 0 || index >= PORTAL_VIEWS) {
         return 0;
     }
-    glBindFramebuffer(GL_FRAMEBUFFER, s_portal_fbo);
+    if (w < 1 || h < 1 || !portal_ensure_resources(index, w, h)) {
+        return 0;
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, s_portal_fbo[index]);
     glDisable(GL_SCISSOR_TEST);
     glDepthMask(GL_TRUE);
     if (g_portal_debug_color) {
@@ -2257,7 +2264,8 @@ void gfx_opengl_portal_end(void) {
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
-void gfx_opengl_portal_overlay(int eye) {
+void gfx_opengl_portal_overlay(int eye, int index) {
+    const PortalViewState *vs;
     float vp[4][4];
     float buf[((PORTAL_VIEW_SEGS + 2) * 5)];
     int n = 0;
@@ -2268,7 +2276,11 @@ void gfx_opengl_portal_overlay(int eye) {
     const float gsx = gfx_geo_x_scale;
     const float gsy = gfx_geo_y_scale;
 
-    if (!g_portal_view.active || s_portal_tex == 0 || s_portal_prog == 0) {
+    if (index < 0 || index >= PORTAL_VIEWS) {
+        return;
+    }
+    vs = (index == 1) ? &g_portal_view2 : &g_portal_view;
+    if (!vs->active || s_portal_tex[index] == 0 || s_portal_prog == 0) {
         return;
     }
     if (gfx_portal_debug_blit) {
@@ -2280,7 +2292,7 @@ void gfx_opengl_portal_overlay(int eye) {
         };
         glUseProgram(s_portal_prog);
         glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, s_portal_tex);
+        glBindTexture(GL_TEXTURE_2D, s_portal_tex[index]);
         glUniform1i(s_portal_utex, 0);
         glDisable(GL_CULL_FACE);
         glDisable(GL_BLEND);
@@ -2302,12 +2314,12 @@ void gfx_opengl_portal_overlay(int eye) {
         glUseProgram(0);
         return;
     }
-    if (!gfx_get_portal_view_proj(vp)) {
+    if (!gfx_get_portal_view_proj_index(index, vp)) {
         return;
     }
 
-    for (int i = -1; i < g_portal_view.count; i++) {
-        const float *p = (i < 0) ? g_portal_view.center : g_portal_view.rim[i];
+    for (int i = -1; i < vs->count; i++) {
+        const float *p = (i < 0) ? vs->center : vs->rim[i];
         float x = p[0] * vp[0][0] + p[1] * vp[1][0] + p[2] * vp[2][0] + vp[3][0];
         float y = p[0] * vp[0][1] + p[1] * vp[1][1] + p[2] * vp[2][1] + vp[3][1];
         float z = p[0] * vp[0][2] + p[1] * vp[1][2] + p[2] * vp[2][2] + vp[3][2];
@@ -2333,9 +2345,9 @@ void gfx_opengl_portal_overlay(int eye) {
          * this the wall wins most of the depth test and only a thin sliver of
          * the decal survives. */
         {
-            float ox = p[0] + g_portal_view.normal[0] * g_portal_view.decal_offset;
-            float oy = p[1] + g_portal_view.normal[1] * g_portal_view.decal_offset;
-            float oz = p[2] + g_portal_view.normal[2] * g_portal_view.decal_offset;
+            float ox = p[0] + vs->normal[0] * vs->decal_offset;
+            float oy = p[1] + vs->normal[1] * vs->decal_offset;
+            float oz = p[2] + vs->normal[2] * vs->decal_offset;
             float px = ox * vp[0][0] + oy * vp[1][0] + oz * vp[2][0] + vp[3][0];
             float py = ox * vp[0][1] + oy * vp[1][1] + oz * vp[2][1] + vp[3][1];
             float pz = ox * vp[0][2] + oy * vp[1][2] + oz * vp[2][2] + vp[3][2];
@@ -2366,8 +2378,8 @@ void gfx_opengl_portal_overlay(int eye) {
             GLint gvp[4] = { 0, 0, 0, 0 };
             float mnx = 1e9f, mxx = -1e9f, mny = 1e9f, mxy = -1e9f;
             glGetIntegerv(GL_VIEWPORT, gvp);
-            for (int i = -1; i < g_portal_view.count; i++) {
-                const float *p = (i < 0) ? g_portal_view.center : g_portal_view.rim[i];
+            for (int i = -1; i < vs->count; i++) {
+                const float *p = (i < 0) ? vs->center : vs->rim[i];
                 float x = p[0]*vp[0][0] + p[1]*vp[1][0] + p[2]*vp[2][0] + vp[3][0];
                 float y = p[0]*vp[0][1] + p[1]*vp[1][1] + p[2]*vp[2][1] + vp[3][1];
                 float w = p[0]*vp[0][3] + p[1]*vp[1][3] + p[2]*vp[2][3] + vp[3][3];
@@ -2384,7 +2396,7 @@ void gfx_opengl_portal_overlay(int eye) {
     }
     glUseProgram(s_portal_prog);
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, s_portal_tex);
+    glBindTexture(GL_TEXTURE_2D, s_portal_tex[index]);
     glUniform1i(s_portal_utex, 0);
     glDisable(GL_CULL_FACE);
     glDisable(GL_BLEND);

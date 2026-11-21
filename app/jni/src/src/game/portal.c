@@ -67,6 +67,7 @@ int g_portal_debug = 0;
 int g_portal_debug_align = 0;   /* magenta source fan behind the relay decal */
 int g_portal_debug_color = 0;   /* solid relay colour: isolate geometry/UVs */
 PortalViewState g_portal_view;
+PortalViewState g_portal_view2;
 static int s_portal_view_enabled = 1;
 static int s_forceView = -1;   /* debug: -1 auto, 0/1 force that source */
 static int s_hasGun = 0;
@@ -693,26 +694,78 @@ static void mat4_world_to_local(float out[4][4], const Vec3f pos, const Vec3f ta
     out[3][0] = 0.0f;     out[3][1] = 0.0f;     out[3][2] = 0.0f;     out[3][3] = 1.0f;
 }
 
+/* Build the camera-space portal transform and fan geometry for one portal. */
+static void portal_fill_view(int srcIdx, PortalViewState *out, const Mat4 view) {
+    struct Portal *a = &s_portal[srcIdx];
+    struct Portal *b = &s_portal[1 - srcIdx];
+    float tsrc[4][4], tsrc_inv[4][4], tdst[4][4], tdst_inv[4][4], r[4][4];
+    float m1[4][4], m[4][4], c[4][4];
+    int i, i2, j2;
+
+    out->active = 0;
+    if (!a->active || !b->active) {
+        return;
+    }
+
+    mat4_local_to_world(tsrc, a->pos, a->tan, a->bitan, a->normal);
+    mat4_world_to_local(tsrc_inv, a->pos, a->tan, a->bitan, a->normal);
+    mat4_local_to_world(tdst, b->pos, b->tan, b->bitan, b->normal);
+    mat4_world_to_local(tdst_inv, b->pos, b->tan, b->bitan, b->normal);
+
+    memset(r, 0, sizeof(r));
+    r[0][0] = -1.0f;
+    r[1][1] = 1.0f;
+    r[2][2] = -1.0f;
+    r[3][3] = 1.0f;
+
+    /* Relay transform, column-vector convention.  The virtual camera is the
+     * real camera mapped through the portal pair, so the *scene* is rendered
+     * with the inverse: M^-1 = localToWorld(src) * R * worldToLocal(dst).  The
+     * renderer stores matrices transposed (row vectors: v' = v * M), so the
+     * camera-space product is the transpose of M^-1. */
+    mat4_mul_rm(m, tsrc, r);
+    mat4_mul_rm(m1, m, tdst_inv);
+    for (i2 = 0; i2 < 4; i2++) {
+        for (j2 = 0; j2 < 4; j2++) {
+            c[i2][j2] = m1[j2][i2];
+        }
+    }
+
+    memcpy(out->c_matrix, c, sizeof(c));
+    memcpy(out->view, view, sizeof(Mat4));
+    out->source = srcIdx;
+    vec3f_copy(out->normal, a->normal);
+    out->decal_offset = g_ptc_decal_offset;
+    out->count = PORTAL_VIEW_SEGS;
+    vec3f_copy(out->center, a->pos);
+    for (i = 0; i < PORTAL_VIEW_SEGS; i++) {
+        float ang = (float)i * (2.0f * 3.14159265f) / (float)PORTAL_VIEW_SEGS;
+        out->rim[i][0] = a->pos[0] + a->tan[0] * cosf(ang) * a->rx
+                                    + a->bitan[0] * sinf(ang) * a->ry;
+        out->rim[i][1] = a->pos[1] + a->tan[1] * cosf(ang) * a->rx
+                                    + a->bitan[1] * sinf(ang) * a->ry;
+        out->rim[i][2] = a->pos[2] + a->tan[2] * cosf(ang) * a->rx
+                                    + a->bitan[2] * sinf(ang) * a->ry;
+    }
+    out->active = 1;
+}
+
 /* Build the camera-space portal transform and the source fan geometry. */
 static void portal_view_update(const Mat4 view) {
-    struct Portal *a, *b, *src, *dst;
-    int i, best = -1;
+    int best = -1;
 
     g_portal_view.active = 0;
+    g_portal_view2.active = 0;
     if (!s_portal_view_enabled || !s_portal[0].active || !s_portal[1].active) {
         return;
     }
 
-    /* Pick the portal the camera is actually looking at: it must be in front
-     * of the camera, its front side must face the camera, and its centre must
-     * be closer to the view axis than the other portal's.  Requiring the
-     * camera-to-focus ray to pass through the ellipse (the previous test)
-     * dropped the through-view whenever the portal sat slightly off-centre,
-     * which is most of the time. */
     if (s_forceView >= 0) {
         best = s_forceView;
         if (!s_portal[best].active) best = -1;
     } else {
+        /* Pick the portal the camera is actually looking at: in front of the
+         * camera, front side towards it, and closest to the view axis. */
         Vec3f look, rel;
         float lookLen, bestScore = 1e30f;
         float maxdeg = g_ptc_select_maxdeg;
@@ -722,20 +775,20 @@ static void portal_view_update(const Mat4 view) {
         vec3f_sub(look, gLakituState.pos);
         lookLen = sqrtf(vdot3(look, look));
         if (lookLen > 1e-4f) {
-            for (i = 0; i < 2; i++) {
+            for (int i = 0; i < 2; i++) {
                 float along, dist, cosang, score;
                 if (!s_portal[i].active) continue;
                 rel[0] = s_portal[i].pos[0] - gLakituState.pos[0];
                 rel[1] = s_portal[i].pos[1] - gLakituState.pos[1];
                 rel[2] = s_portal[i].pos[2] - gLakituState.pos[2];
                 along = vdot3(rel, look);
-                if (along <= 0.0f) continue;                       /* behind */
+                if (along <= 0.0f) continue;
                 if (g_ptc_select_facing
-                    && vdot3(rel, s_portal[i].normal) >= 0.0f) continue; /* back side */
+                    && vdot3(rel, s_portal[i].normal) >= 0.0f) continue;
                 dist = sqrtf(vdot3(rel, rel));
                 if (dist < 1e-3f) continue;
                 cosang = along / (dist * lookLen);
-                if (cosang < min_cos) continue;                    /* too far off-axis */
+                if (cosang < min_cos) continue;
                 score = 1.0f - cosang;
                 if (score < bestScore) {
                     bestScore = score;
@@ -748,95 +801,10 @@ static void portal_view_update(const Mat4 view) {
         return;
     }
 
-    src = &s_portal[best];
-    dst = &s_portal[1 - best];
-    a = src;
-    b = dst;
-
-    {
-        float tsrc[4][4], tsrc_inv[4][4], tdst[4][4], tdst_inv[4][4], r[4][4];
-        float m1[4][4], m[4][4], c[4][4];
-        int i2, j2;
-
-        mat4_local_to_world(tsrc, a->pos, a->tan, a->bitan, a->normal);
-        mat4_world_to_local(tsrc_inv, a->pos, a->tan, a->bitan, a->normal);
-        mat4_local_to_world(tdst, b->pos, b->tan, b->bitan, b->normal);
-        mat4_world_to_local(tdst_inv, b->pos, b->tan, b->bitan, b->normal);
-
-        memset(r, 0, sizeof(r));
-        r[0][0] = -1.0f;
-        r[1][1] = 1.0f;
-        r[2][2] = -1.0f;
-        r[3][3] = 1.0f;
-
-        /* Relay transform, column-vector convention.  The virtual camera is
-         * the real camera mapped through the portal pair, so the *scene* is
-         * rendered with the inverse: M^-1 = localToWorld(src) * R *
-         * worldToLocal(dst).  The renderer stores matrices transposed (row
-         * vectors: v' = v * M), so the camera-space product is the transpose
-         * of M^-1.  Mixing the two conventions (the old view * M * view^-1)
-         * put the relay camera at a garbage position. */
-        mat4_mul_rm(m, tsrc, r);
-        mat4_mul_rm(m1, m, tdst_inv);
-        for (i2 = 0; i2 < 4; i2++) {
-            for (j2 = 0; j2 < 4; j2++) {
-                c[i2][j2] = m1[j2][i2];
-            }
-        }
-
-        memcpy(g_portal_view.c_matrix, c, sizeof(c));
-
-        /* Debug: where the mirror actually puts the camera.  `want` is
-         * M * camPos (column-vector maths); `got` is the eye implied by the
-         * C * modelview product the renderer actually uses. */
-        {
-            static int s_dbg;
-            if ((s_dbg++ % 60) == 0) {
-                float cp[4] = { gLakituState.pos[0], gLakituState.pos[1],
-                                gLakituState.pos[2], 1.0f };
-                float mf[4][4], mi[4][4], want[4];
-                mat4_mul_rm(mf, tdst, r);
-                mat4_mul_rm(mi, mf, tsrc_inv);
-                for (int i = 0; i < 4; i++) {
-                    want[i] = mi[i][0] * cp[0] + mi[i][1] * cp[1]
-                            + mi[i][2] * cp[2] + mi[i][3] * cp[3];
-                }
-                /* effective view = C * V (row-vector multiply) */
-                float ev[4][4];
-                for (int i = 0; i < 4; i++) {
-                    for (int j = 0; j < 4; j++) {
-                        ev[i][j] = c[i][0] * view[0][j] + c[i][1] * view[1][j]
-                                 + c[i][2] * view[2][j] + c[i][3] * view[3][j];
-                    }
-                }
-                float got[3] = { 0.0f, 0.0f, 0.0f };
-                for (int j = 0; j < 3; j++) {
-                    got[j] = -(ev[3][0] * ev[j][0] + ev[3][1] * ev[j][1] + ev[3][2] * ev[j][2]);
-                }
-                __android_log_print(ANDROID_LOG_INFO, "SM64PORTAL",
-                    "mirror cam=(%.1f,%.1f,%.1f) want=(%.1f,%.1f,%.1f) got=(%.1f,%.1f,%.1f) src=%d",
-                    gLakituState.pos[0], gLakituState.pos[1], gLakituState.pos[2],
-                    want[0], want[1], want[2], got[0], got[1], got[2], best);
-            }
-        }
-    }
-
-    memcpy(g_portal_view.view, view, sizeof(Mat4));
-    g_portal_view.source = best;
-    vec3f_copy(g_portal_view.normal, a->normal);
-    g_portal_view.decal_offset = g_ptc_decal_offset;
-    g_portal_view.count = PORTAL_VIEW_SEGS;
-    vec3f_copy(g_portal_view.center, a->pos);
-    for (i = 0; i < PORTAL_VIEW_SEGS; i++) {
-        float ang = (float)i * (2.0f * 3.14159265f) / (float)PORTAL_VIEW_SEGS;
-        g_portal_view.rim[i][0] = a->pos[0] + a->tan[0] * cosf(ang) * a->rx
-                                           + a->bitan[0] * sinf(ang) * a->ry;
-        g_portal_view.rim[i][1] = a->pos[1] + a->tan[1] * cosf(ang) * a->rx
-                                           + a->bitan[1] * sinf(ang) * a->ry;
-        g_portal_view.rim[i][2] = a->pos[2] + a->tan[2] * cosf(ang) * a->rx
-                                           + a->bitan[2] * sinf(ang) * a->ry;
-    }
-    g_portal_view.active = 1;
+    /* Both portals are windows: the one being looked at first, then the
+     * other, so a side-by-side pair shows a tunnel in each. */
+    portal_fill_view(best, &g_portal_view, view);
+    portal_fill_view(1 - best, &g_portal_view2, view);
 }
 
 static void portal_draw_reticle(const Mat4 view);
@@ -868,8 +836,13 @@ void portal_render(void) {
      * overlap exactly, and the newest one must not be hidden underneath. */
     for (int k = 0; k < 2; k++) {
         int i = (k == 0) ? (1 - s_lastPlaced) : s_lastPlaced;
+        PortalViewState *vs = (i == 0) ? &g_portal_view : &g_portal_view2;
+        PortalViewState *alt = (i == 0) ? &g_portal_view2 : &g_portal_view;
         if (!s_portal[i].active) continue;
-        if (g_portal_view.active && g_portal_view.source == i && !g_portal_debug_align) continue;
+        /* A portal with a live relay view is a window, not a flat fan. */
+        if ((vs->active || alt->active) && !g_portal_debug_align) {
+            continue;
+        }
         if (i == 0) {
             if (g_portal_view.active && g_portal_view.source == i)
                 draw_portal(&s_portal[0], 0xFF, 0x00, 0xFF, view);  // magenta alignment

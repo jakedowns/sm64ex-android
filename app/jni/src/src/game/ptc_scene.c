@@ -60,7 +60,7 @@ static int s_chart_cols = 16;
 static int s_chart_rows = 16;
 
 /* 600 quads covers the room plus a 24x24 chart. */
-#define PTC_SCENE_MAX_QUADS 600
+#define PTC_SCENE_MAX_QUADS 1200
 static Vtx s_vtx[PTC_SCENE_MAX_QUADS * 4];
 static int s_quad_count;
 static int s_dirty = 1;
@@ -251,6 +251,10 @@ static void scene_build(void) {
             }
             scene_quad(&n, x0, y0, s_chart_z, x1, y0, s_chart_z,
                        x1, y1, s_chart_z, x0, y1, s_chart_z, r, g, b);
+            /* Back face too: with same-surface portals the relay camera can
+             * end up on either side of the backdrop. */
+            scene_quad(&n, x1, y0, s_chart_z, x0, y0, s_chart_z,
+                       x0, y1, s_chart_z, x1, y1, s_chart_z, r, g, b);
         }
     }
 

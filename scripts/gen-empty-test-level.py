@@ -171,10 +171,10 @@ lines += ["    gsSPEndDisplayList(),", "};", ""]
 col_faces = [
     # One solid +Y floor quad; a closed box's bottom face is not a floor.
     ("floor", quad((X1, Y0, Z0), (X0, Y0, Z0), (X0, Y0, Z1), (X1, Y0, Z1))),
-    # Thin solid mounts for the two portals: `portal_shoot_at` raycasts against
-    # level collision, so the mount must exist in the collision mesh.
-] + box_faces(PA_X0, PA_Y0, PA_Z - 20, PA_X1, PA_Y1, PA_Z) \
-  + box_faces(PA_X0, PA_Y0, PB_Z, PA_X1, PA_Y1, PB_Z + 20)
+    # Two thin mounts side by side on the *same* wall, ~180 apart centre to
+    # centre (portal half-width is 67.5, so this leaves a visible gap).
+] + box_faces(-180, PA_Y0, PA_Z - 20, 0, PA_Y1, PA_Z) \
+  + box_faces(0, PA_Y0, PA_Z - 20, 180, PA_Y1, PA_Z)
 lines.append("const Collision ptctest_collision[] = {")
 lines.append("    COL_INIT(),")
 lines.append(f"    COL_VERTEX_INIT({len(col_faces) * 4}),")

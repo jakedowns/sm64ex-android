@@ -25,7 +25,8 @@ typedef struct {
     float decal_offset;
 } PortalViewState;
 
-extern PortalViewState g_portal_view;
+extern PortalViewState g_portal_view;    /* primary (the portal looked at) */
+extern PortalViewState g_portal_view2;   /* the other portal */
 void portal_view_toggle(void);
 void portal_view_force(int src);
 

@@ -37,10 +37,11 @@ int gfx_portal_debug_blit = 0;   /* debug: show the portal FBO full-screen */
 /* Last camera perspective projection, for the portal overlay: by the time the
  * overlay runs, rsp.P_matrix may hold the skybox/HUD ortho. */
 float gfx_last_persp_proj[4][4];
-extern int gfx_opengl_portal_begin(int w, int h);
+extern int gfx_opengl_portal_begin(int index, int w, int h);
 extern void gfx_opengl_portal_end(void);
 extern void gfx_opengl_portal_fill_green(void);
-extern void gfx_opengl_portal_overlay(int eye);
+extern void gfx_opengl_portal_overlay(int eye, int index);
+int gfx_get_portal_view_proj_index(int index, float out[4][4]);
 
 #define SUPPORT_CHECK(x) assert(x)
 
@@ -954,19 +955,26 @@ static void gfx_matrix_mul(float res[4][4], const float a[4][4], const float b[4
 /* Portal pass: clip = p * (C * modelview) * projection. */
 static void gfx_apply_portal_mp(void) {
     float tmp[4][4];
+    const PortalViewState *vs;
     if (!gfx_portal_pass) {
         return;
     }
-    gfx_matrix_mul(tmp, g_portal_view.c_matrix, rsp.MP_matrix);
+    vs = (gfx_portal_pass == 2) ? &g_portal_view2 : &g_portal_view;
+    gfx_matrix_mul(tmp, vs->c_matrix, rsp.MP_matrix);
     memcpy(rsp.MP_matrix, tmp, sizeof(tmp));
 }
 
 /* Real camera view * current projection, for the portal overlay. */
 int gfx_get_portal_view_proj(float out[4][4]) {
-    if (!g_portal_view.active) {
+    return gfx_get_portal_view_proj_index(0, out);
+}
+
+int gfx_get_portal_view_proj_index(int index, float out[4][4]) {
+    const PortalViewState *vs = (index == 1) ? &g_portal_view2 : &g_portal_view;
+    if (!vs->active) {
         return 0;
     }
-    gfx_matrix_mul(out, g_portal_view.view, gfx_last_persp_proj);
+    gfx_matrix_mul(out, vs->view, gfx_last_persp_proj);
     return 1;
 }
 
@@ -2376,13 +2384,18 @@ void gfx_run(Gfx *commands) {
     /* Through-portal view: render the scene once from the mirrored camera
      * into a mono FBO before the eye passes.  The portal ellipse is drawn as
      * a textured, depth-tested overlay per eye afterwards. */
-    if (g_portal_view.active) {
-        int pw = gfx_stereo_enabled ? gfx_stereo_canvas[2] : gfx_current_dimensions.width;
-        int ph = gfx_stereo_enabled ? gfx_stereo_canvas[3] : gfx_current_dimensions.height;
-        if (gfx_opengl_portal_begin(pw, ph)) {
+    for (int pi = 0; pi < 2; pi++) {
+        const PortalViewState *vs = (pi == 0) ? &g_portal_view : &g_portal_view2;
+        int pw, ph;
+        if (!vs->active) {
+            continue;
+        }
+        pw = gfx_stereo_enabled ? gfx_stereo_canvas[2] : gfx_current_dimensions.width;
+        ph = gfx_stereo_enabled ? gfx_stereo_canvas[3] : gfx_current_dimensions.height;
+        if (gfx_opengl_portal_begin(pi, pw, ph)) {
             gfx_stereo_eye = 0;
             gfx_sp_reset();
-            gfx_portal_pass = 1;
+            gfx_portal_pass = pi + 1;
             gfx_run_dl_range(commands,
                     (gGfxHasScene && gGfxUiStart != NULL) ? gGfxUiStart : NULL);
             gfx_flush();
@@ -2458,11 +2471,12 @@ void gfx_run(Gfx *commands) {
             gfx_run_dl_range(commands, ui_sep ? gGfxUiStart : NULL);
             gfx_flush();
 #ifdef __ANDROID__
-            if (g_portal_view.active) {
+            if (g_portal_view.active || g_portal_view2.active) {
                 /* Draw into this eye's FBO, where the viewport/projection match
                  * the portal mesh exactly.  (Post-composite drawing used the
                  * second eye's viewport and made the decal float.) */
-                gfx_opengl_portal_overlay(eye);
+                if (g_portal_view.active) gfx_opengl_portal_overlay(eye, 0);
+                if (g_portal_view2.active) gfx_opengl_portal_overlay(eye, 1);
                 gfx_rapi->unload_shader(rendering_state.shader_program);
                 rendering_state.shader_program = NULL;
             }
@@ -2509,8 +2523,9 @@ void gfx_run(Gfx *commands) {
         if (gGfxHasScene && gGfxUiStart != NULL) {
             gfx_run_dl_range(commands, gGfxUiStart);
             gfx_flush();
-            if (g_portal_view.active) {
-                gfx_opengl_portal_overlay(0);
+            if (g_portal_view.active || g_portal_view2.active) {
+                if (g_portal_view.active) gfx_opengl_portal_overlay(0, 0);
+                if (g_portal_view2.active) gfx_opengl_portal_overlay(0, 1);
                 gfx_rapi->unload_shader(rendering_state.shader_program);
                 rendering_state.shader_program = NULL;
             }
@@ -2518,8 +2533,9 @@ void gfx_run(Gfx *commands) {
         } else {
             gfx_run_dl(commands);
             gfx_flush();
-            if (g_portal_view.active) {
-                gfx_opengl_portal_overlay(0);
+            if (g_portal_view.active || g_portal_view2.active) {
+                if (g_portal_view.active) gfx_opengl_portal_overlay(0, 0);
+                if (g_portal_view2.active) gfx_opengl_portal_overlay(0, 1);
                 gfx_rapi->unload_shader(rendering_state.shader_program);
                 rendering_state.shader_program = NULL;
             }
@@ -2534,8 +2550,9 @@ void gfx_run(Gfx *commands) {
     gfx_rapi->start_frame();
     gfx_run_dl(commands);
     gfx_flush();
-    if (g_portal_view.active) {
-        gfx_opengl_portal_overlay(0);
+    if (g_portal_view.active || g_portal_view2.active) {
+        if (g_portal_view.active) gfx_opengl_portal_overlay(0, 0);
+        if (g_portal_view2.active) gfx_opengl_portal_overlay(0, 1);
     }
     double t1 = gfx_wapi->get_time();
     //printf("Process %f %f\n", t1, t1 - t0);
