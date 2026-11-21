@@ -1184,10 +1184,15 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx *verti
         
         if (!gfx_shadow_pass) {
             if (!rsp.proj_is_perspective) {
-                /* 2D/UI ortho only: the 3D perspective already has the aspect. */
-                x *= gfx_ui_x_fit();
-                if (gfx_ui_pass) {
-                    y *= gfx_ui_y_fit();
+                /* 2D/UI ortho only: the 3D perspective already has the aspect.
+                 * Gameplay only - the intro/logo/file-select are a 4:3
+                 * presentation and must stay at 100% (a 160% UI size used to
+                 * blow the PRESS START text up over the logo). */
+                if (gCurrAreaIndex > 0) {
+                    x *= gfx_ui_x_fit();
+                    if (gfx_ui_pass) {
+                        y *= gfx_ui_y_fit();
+                    }
                 }
                 /* The skybox/2D scene ortho gets the panel correction too;
                  * the UI pass stays at native 1:1. */
