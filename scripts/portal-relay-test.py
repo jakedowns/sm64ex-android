@@ -35,7 +35,7 @@ def roi_bounds(w, h, roi):
     return (int(w * roi[0]), int(h * roi[1]), int(w * roi[2]), int(h * roi[3]))
 
 
-def analyse(path, roi=None, solid_green=False):
+def analyse(path, roi=None, solid_green=False, pattern_mode=False):
     im = load_rgb(path)
     w, h = im.size
     x0, y0, x1, y1 = roi_bounds(w, h, roi)
@@ -68,6 +68,32 @@ def analyse(path, roi=None, solid_green=False):
                 edge_y += 1
     edge_density = 0.5 * (edge_x + edge_y) / max(1, cw * (ch - 1) + (cw - 1) * ch)
     ratio = gx_sum / max(gy_sum, 1e-3)
+
+    if pattern_mode:
+        # High-contrast pattern bounding box and L/R horizontal disparity.
+        mask = [(i, g) for i, g in enumerate(gray) if g > 200 or g < 45]
+        if mask:
+            xs = [i % cw for i, _ in mask]
+            ys = [i // cw for i, _ in mask]
+            bw = max(xs) - min(xs) + 1
+            bh = max(ys) - min(ys) + 1
+            aspect = bh / max(1, bw)
+        else:
+            bw = bh = 0
+            aspect = 0.0
+        col_prof = []
+        for x in range(cw):
+            col_prof.append(sum(gray[y * cw + x] for y in range(ch)) / max(1, ch))
+        return {
+            "path": path,
+            "pass": bool(bw > 8 and bh > 8 and aspect > 1.05 and edge_density > 0.008),
+            "roi": [x0, y0, x1, y1],
+            "pattern_bbox": [bw, bh],
+            "pattern_aspect": round(aspect, 2),
+            "edge_density": round(edge_density, 4),
+            "verdict": ("pattern visible; tall oval" if bw > 8 and bh > 8 and aspect > 1.05 else
+                        "pattern missing/circular"),
+        }
 
     if solid_green:
         green = sum(1 for p in px if p[1] > 150 and p[0] < 130 and p[2] < 130)
@@ -119,12 +145,39 @@ def main():
     ap.add_argument("--pair", help="second eye screenshot for comparison")
     ap.add_argument("--roi", help="x0,y0,x1,y1 as fractions (default centre)")
     ap.add_argument("--json", action="store_true")
-    ap.add_argument("--solid-green", action="store_true", help="stage-1 solid relay colour")
+    ap.add_argument("--solid-green", action="store_true", help="old solid relay colour")
+    ap.add_argument("--pattern", action="store_true", help="checker/parallax pattern mode")
     args = ap.parse_args()
 
-    result = analyse(args.image, args.roi, args.solid_green)
+    result = analyse(args.image, args.roi, args.solid_green, args.pattern)
     if args.pair:
         result["pair_mean_abs_diff"] = pair_diff(args.image, args.pair)
+        if args.pattern:
+            def column_profile(path):
+                im = load_rgb(path)
+                w, h = im.size
+                x0, y0, x1, y1 = roi_bounds(w, h, args.roi)
+                c = im.crop((x0, y0, x1, y1)).convert("L")
+                c.thumbnail((320, 320))
+                cw, ch = c.size
+                px = list(c.getdata())
+                return [sum(px[y * cw + x] for y in range(ch)) / max(1, ch)
+                        for x in range(cw)]
+            a = column_profile(args.image)
+            b = column_profile(args.pair)
+            best_shift, best_score = 0, 1e30
+            for sh in range(-40, 41):
+                tot = cnt = 0
+                for x in range(10, len(a) - 10):
+                    bx = x + sh
+                    if 0 <= bx < len(b):
+                        tot += abs(a[x] - b[bx])
+                        cnt += 1
+                if cnt and tot / cnt < best_score:
+                    best_score = tot / cnt
+                    best_shift = sh
+            result["lr_shift_px"] = best_shift
+            result["lr_parallax"] = abs(best_shift) >= 2
 
     if args.json:
         print(json.dumps(result, indent=2))

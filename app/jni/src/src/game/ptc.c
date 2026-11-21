@@ -1024,9 +1024,9 @@ static void ptc_apply_command(const char *action) {
                 vec3f_copy(gMarioState->marioObj->header.gfx.pos, gMarioState->pos);
             }
         }
-        g_portal_debug_color = 1;
-        gfx_stereo_2d = 1;
-        gfx_stereo_same_both = 1;
+        g_portal_debug_color = 0;   /* scene relay; the room has a checker chart */
+        gfx_stereo_2d = 0;
+        gfx_stereo_same_both = 0;
         gCameraMovementFlags |= CAM_MOVE_INIT_CAMERA;
     } else if (strcmp(action, "portalcolor") == 0) {
         g_portal_debug_color = !g_portal_debug_color;

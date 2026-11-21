@@ -25,6 +25,8 @@ COL = {
     "wall_x0": (200, 70, 70), "wall_x1": (70, 200, 80),
     "wall_z0": (70, 120, 220), "wall_z1": (220, 190, 70),
     "portal": (240, 60, 240), "portal_top": (255, 255, 255),
+    "pat_w": (225, 225, 225), "pat_b": (35, 35, 35),
+    "pat_r": (220, 50, 50), "pat_g": (50, 200, 70),
 }
 
 
@@ -64,7 +66,24 @@ for name, pts in box_faces(PX0, PY0, PZ0, PX1, PY1, PZ1):
     key = "portal_top" if name in ("top", "bottom") else "portal"
     portal_faces.append((key, pts))
 
-all_faces = room_faces + portal_faces
+# High-contrast checker plane for relay/parallax analysis.  It sits at z=0,
+# between the two portals, and faces +Z (toward portal B's POV).
+pattern_faces = []
+for iy in range(8):
+    for ix in range(8):
+        x0 = -400 + ix * 100
+        x1 = x0 + 100
+        y0 = 100 + iy * 50
+        y1 = y0 + 50
+        if ix == 4:
+            key = "pat_r"
+        elif iy == 4:
+            key = "pat_g"
+        else:
+            key = "pat_w" if (ix + iy) % 2 == 0 else "pat_b"
+        pattern_faces.append((key, quad((x1, y0, 0), (x0, y0, 0), (x0, y1, 0), (x1, y1, 0))))
+
+all_faces = room_faces + portal_faces + pattern_faces
 faces = [pts for _, pts in all_faces]
 
 # ---------------- header ----------------
@@ -159,7 +178,7 @@ const GeoLayout ptctest_geo[] = {
       GEO_OPEN_NODE(),
          GEO_NODE_ORTHO(100),
          GEO_OPEN_NODE(),
-            GEO_BACKGROUND_COLOR(0x0001),
+            GEO_BACKGROUND_COLOR(0x0000),
          GEO_CLOSE_NODE(),
       GEO_CLOSE_NODE(),
       GEO_ZBUFFER(1),

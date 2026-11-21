@@ -17,7 +17,7 @@ const GeoLayout ptctest_geo[] = {
       GEO_OPEN_NODE(),
          GEO_NODE_ORTHO(100),
          GEO_OPEN_NODE(),
-            GEO_BACKGROUND_COLOR(0x0001),
+            GEO_BACKGROUND_COLOR(0x0000),
          GEO_CLOSE_NODE(),
       GEO_CLOSE_NODE(),
       GEO_ZBUFFER(1),
