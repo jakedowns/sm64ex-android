@@ -83,6 +83,11 @@ adb shell "$B --es cmd level --ei n 38"
 adb shell "$B --es cmd ptc --es action chain"          # full run from the start
 ```
 
+From the tablet UI: **ENH → PORTAL → RUN NINJA CHAIN**.  It loads level 38,
+waits 2.5 s, then starts `chain`; **STOP NINJA CHAIN** calls `chainoff`.  The
+PORTAL page is laid out in three columns (ninja/tests, live scene, knobs +
+annexes) so it needs minimal scrolling.
+
 Per-section starts for tuning (each resets the chain and places Mario):
 
 ```bash

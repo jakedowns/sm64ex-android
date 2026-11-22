@@ -428,7 +428,9 @@ adb shell "$B --es cmd dump"                         # chain=<phase>,<timer>,<fl
 Flags: 1 ball, 2 punch, 4 kick, 8 slam, 16 jetpack, 32 wallrun, 64 grapple,
 128 portal, 256 star1, 512 star2, 1024 goomba.  Each section can be started
 alone (`chainbox`, `chainwall`, `chaingrapple`, `chainjet`, `chainportal`,
-`chaingoomba`) for tuning.  The run always starts in the **custom camera** (`ptc_chain_setup()` calls
+`chaingoomba`) for tuning, or from the tablet: **ENH → PORTAL → RUN NINJA
+CHAIN** (loads level 38 then starts after 2.5 s; STOP NINJA CHAIN beside it).
+The PORTAL page is 3 columns so it needs little scrolling.  The run always starts in the **custom camera** (`ptc_chain_setup()` calls
 `custom_camera_apply_mode(3)`), and the dump prints `cmode=3`; the green panel
 line tracks the current step and expected outcome.  R springs the custom camera
 back behind Mario (racing lag) unless the grapple rope is attached.

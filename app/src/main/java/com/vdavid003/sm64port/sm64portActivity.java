@@ -1390,24 +1390,39 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         });
         enhParent().addView(stayToggle);
 
-        enhColumnTarget = enhPageColumns[1][1];
+        /* PORTAL page: three balanced columns so the page rarely scrolls.
+         * Column 0: ninja run + portal regression tests.
+         * Column 1: live test scene (level + core knobs).
+         * Column 2: remaining knobs + movement annexes. */
+        enhColumnTarget = enhPageColumns[1][0];
+        addEnhSection("NINJA CHAIN");
+        addEnhButton("RUN NINJA CHAIN", () -> {
+            debugLevel(38);
+            new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(
+                    () -> nativePtcCommand("chain"), 2500);
+        });
+        addEnhButton("STOP NINJA CHAIN", () -> nativePtcCommand("chainoff"));
+
         addEnhSection("PORTAL TESTS");
-        addEnhButton("PORTAL TEST CHAMBER", () -> debugLevel(38));
-        addEnhButton("RUN PORTAL SMOKE TEST", () -> debugPtc("run"));
-        addEnhButton("RUN MOMENTUM TEST", () -> debugPtc("momentum"));
-        addEnhButton("RESET PORTAL TEST", () -> debugPtc("reset"));
+        addEnhButton("WARP TO PTC", () -> debugLevel(38));
+        addEnhButton("PORTAL SMOKE TEST", () -> debugPtc("run"));
+        addEnhButton("MOMENTUM TEST", () -> debugPtc("momentum"));
+        addEnhButton("RESET TEST", () -> debugPtc("reset"));
         addEnhButton("CALIBRATE JUMPS", () -> debugPtc("calibrate"));
         portalGunButton = addEnhButton(portalGunLabel(), this::togglePortalGun);
 
-        addEnhSection("PORTAL TEST SCENE (LIVE)");
+        enhColumnTarget = enhPageColumns[1][1];
+        addEnhSection("TEST SCENE (LIVE)");
         addEnhButton("EMPTY TEST LEVEL", () -> debugLevel(37));
-        addEnhButton("GOOMBA PORTAL DEMO", () -> nativePtcCommand("goomba"));
+        addEnhButton("GOOMBA DEMO", () -> nativePtcCommand("goomba"));
         addEnhButton("RELOAD ptc.cfg", () -> nativePtcCommand("reload"));
         addEnhKnobToggle("TEST SCENE", "scene.on", true);
         addEnhKnobToggle("TEST CUBES", "scene.cubes", true);
         addEnhKnobToggle("DECAL DEPTH", "decal.depth", true);
         addEnhKnobCycle("DECAL OFFSET", "decal.offset",
                 new float[] { 4f, 8f, 12f, 20f, 30f }, false);
+
+        enhColumnTarget = enhPageColumns[1][2];
         addEnhKnobCycle("SELECT CONE", "select.maxdeg",
                 new float[] { 30f, 45f, 60f, 75f, 90f }, true);
         addEnhKnobToggle("SELECT FACING", "select.facing", true);
@@ -1419,9 +1434,9 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addEnhSection("MOVE ANNEXES");
         addEnhButton("WALL-RUN ANNEX", () -> nativePtcCommand("wallrun"));
         addEnhButton("JETPACK ANNEX", () -> nativePtcCommand("jetpack"));
-        addEnhButton("GRAPPLE SMOKE TEST", () -> nativePtcCommand("grapple"));
-        addEnhButton("CORNER PORTAL TEST (W)", () -> nativePtcCommand("cornerportal"));
-        addEnhButton("CORNER PORTAL TEST (S)", () -> nativePtcCommand("cornerportal2"));
+        addEnhButton("GRAPPLE TEST", () -> nativePtcCommand("grapple"));
+        addEnhButton("CORNER (W)", () -> nativePtcCommand("cornerportal"));
+        addEnhButton("CORNER (S)", () -> nativePtcCommand("cornerportal2"));
 
         enhColumnTarget = enhPageColumns[2][0];
         addEnhSection("BALL / CUBES");
