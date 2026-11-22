@@ -11,6 +11,7 @@
 #include "levels/scripts.h"
 #include "levels/ptc/header.h"
 #include "levels/ptc/ptc_level.h"
+#include "actors/common0.h"
 
 #include "make_const_nonconst.h"
 
@@ -19,6 +20,8 @@ const LevelScript level_ptc_entry[] = {
     LOAD_MIO0(/*seg*/ 0x07, _ptc_segment_7SegmentRomStart, _ptc_segment_7SegmentRomEnd),
     LOAD_RAW(/*seg*/ 0x13, _behaviorSegmentRomStart, _behaviorSegmentRomEnd),
     ALLOC_LEVEL_POOL(),
+    /* The goomba-lemming finale needs this model. */
+    LOAD_MODEL_FROM_GEO(MODEL_GOOMBA, goomba_geo),
     MARIO(/*model*/ MODEL_MARIO, /*behParam*/ 0x00000001, /*beh*/ bhvMario),
 
     AREA(/*index*/ 1, ptc_geo),

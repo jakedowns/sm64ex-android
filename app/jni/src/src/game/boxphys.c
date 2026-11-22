@@ -236,6 +236,52 @@ void boxphys_fire(void) {
     boxphys_fire_dir(orig, dir);
 }
 
+/* --- chain-demo hooks -------------------------------------------------- */
+/* All coordinates are N64 units; Box3D itself works in metres. */
+void boxphys_test_spawn(float x, float y, float z) {
+    boxphys_init();
+    if (s_world.index1 == 0) return;
+    bp_add_box(x * BP_SCALE, y * BP_SCALE, z * BP_SCALE);
+}
+
+void boxphys_test_tower(float x, float y, float z, int n) {
+    int i;
+    boxphys_init();
+    if (s_world.index1 == 0) return;
+    for (i = 0; i < n && i < 6; i++) {
+        bp_add_box(x * BP_SCALE, (y + i * BP_CUBE_HALF * 2.02f) * BP_SCALE, z * BP_SCALE);
+    }
+}
+
+int boxphys_test_fire_at(float x, float y, float z) {
+    Vec3f orig, dir;
+    boxphys_init();
+    if (s_world.index1 == 0) return 0;
+    orig[0] = gLakituState.pos[0];
+    orig[1] = gLakituState.pos[1];
+    orig[2] = gLakituState.pos[2];
+    dir[0] = x - orig[0];
+    dir[1] = y - orig[1];
+    dir[2] = z - orig[2];
+    boxphys_fire_dir(orig, dir);
+    return 1;
+}
+
+int boxphys_test_boxes_near(float x, float y, float z, float r) {
+    int i, n = 0;
+    if (s_world.index1 == 0) return 0;
+    for (i = 0; i < s_boxCount; i++) {
+        b3Pos p = b3Body_GetPosition(s_boxes[i]);
+        float px = p.x / BP_SCALE - x;
+        float py = p.y / BP_SCALE - y;
+        float pz = p.z / BP_SCALE - z;
+        if (px * px + py * py + pz * pz <= r * r) {
+            n++;
+        }
+    }
+    return n;
+}
+
 int boxphys_test_fire(void) {
     Vec3f orig, dir;
     boxphys_init();

@@ -99,10 +99,26 @@ public class DebugReceiver extends BroadcastReceiver {
                 Log.i(TAG, "CMD uncapped " + v);
                 break;
             }
+            case "runticks": {
+                int n = intent.getIntExtra("n", 300);
+                a.debugRunTicks(n);
+                Log.i(TAG, "CMD runticks n=" + n);
+                break;
+            }
+            case "trace":
+                a.debugTrace();
+                Log.i(TAG, "CMD trace");
+                break;
             case "hz": {
                 int v = intent.getIntExtra("v", 60);
                 a.debugDisplayHz(v);
                 Log.i(TAG, "CMD hz " + v);
+                break;
+            }
+            case "note": {
+                String text = intent.getStringExtra("text");
+                a.debugNote(text);
+                Log.i(TAG, "CMD note " + text);
                 break;
             }
             case "givegun":

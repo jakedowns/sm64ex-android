@@ -319,6 +319,15 @@ static void ptc_goomba_update(void);
 static void ptc_annex_update(void);
 static void ptc_pov_apply(void);
 static int  s_pov_shot;
+static void ptc_chain_update(void);
+static void ptc_chain_input(struct MarioState *m);
+static const char *ptc_chain_note(int ph);
+static int s_chainFlags;
+static int s_chainGoombaCross;
+/* Green test note in the Android debug panel (gfx_sdl2.c). */
+extern void gfx_set_debug_note(const char *s);
+extern int gfx_cam_mode;
+static int  s_chainMode;
 static void ptc_finish_ok(void);
 static void ptc_record_teleport(void);
 
@@ -391,6 +400,15 @@ int ptc_star_collected_index(int index) {
     return index >= 0 && index < 2 ? s_starCollected[index] : 0;
 }
 
+/* Compact snapshot for the fast-forward trace (ptc_trace / runticks). */
+void ptc_chain_state(int *phase, int *flags, int *crossings, int *star0, int *star1) {
+    if (phase != NULL) *phase = s_chainMode;
+    if (flags != NULL) *flags = (int) s_chainFlags;
+    if (crossings != NULL) *crossings = s_chainGoombaCross;
+    if (star0 != NULL) *star0 = s_starCollected[0];
+    if (star1 != NULL) *star1 = s_starCollected[1];
+}
+
 int ptc_star_collected(void) {
     return s_starCollected[0];
 }
@@ -459,7 +477,9 @@ void ptc_star_reset(void) {
                 f32 x, y, z;
                 struct Object *star;
                 ptc_star_position(idx, &x, &y, &z);
-                star = spawn_object_abs_with_rot(NULL, 0, MODEL_STAR, bhvPtcDebugStar,
+                struct Object *parent = gMarioState != NULL && gMarioState->marioObj != NULL
+                                      ? gMarioState->marioObj : &gMacroObjectDefaultParent;
+                star = spawn_object_abs_with_rot(parent, 0, MODEL_STAR, bhvPtcDebugStar,
                                                  (s16) x, (s16) y, (s16) z, 0, 0, 0);
                 if (star != NULL) {
                     star->oBehParams = (u32) idx << 24;
@@ -521,6 +541,14 @@ static void ptc_reset_mario(void) {
 }
 
 void ptc_reset(void) {
+    {
+        extern void custom_camera_set_focus_hint(int on, const Vec3f pos);
+        extern void custom_camera_set_yaw_hint(int on, s16 yaw);
+        s_chainMode = 0;
+        movekit_force_trigger(0);
+        custom_camera_set_focus_hint(0, NULL);
+        custom_camera_set_yaw_hint(0, 0);
+    }
     s_testActive = 0;
     s_phase = PTC_PHASE_IDLE;
     s_phaseTimer = 0;
@@ -883,6 +911,8 @@ void ptc_update(void) {
         ptc_pov_apply();
     }
 
+    ptc_chain_update();
+
     ptc_goomba_update();
     ptc_annex_update();
 
@@ -973,6 +1003,11 @@ void ptc_mario_input_override(struct MarioState *m) {
         return;
     }
     s_inputHookCalls++;
+
+    if (s_chainMode != 0) {
+        ptc_chain_input(m);
+        return;
+    }
 
     if (s_annexMode == 1) {
         /* Hold "forward + into the wall" so the wall-run trigger sees a
@@ -1281,7 +1316,7 @@ static void ptc_pov_apply(void) {
         gMarioState->vel[0] = gMarioState->vel[1] = gMarioState->vel[2] = 0.0f;
         /* Face away from the destination wall - i.e. straight into the relay
          * camera behind it - so the window shows his front, not his back. */
-        gMarioState->faceAngle[1] = (s16) atan2s(-nb[0], -nb[2]);
+        gMarioState->faceAngle[1] = (s16) atan2s(-nb[2], -nb[0]);
         set_mario_action(gMarioState, ACT_IDLE, 0);
         if (gMarioState->marioObj != NULL) {
             vec3f_copy(gMarioState->marioObj->header.gfx.pos, marioPos);
@@ -1360,6 +1395,733 @@ static void ptc_gun_aim_end(void) {
     custom_camera_set_freelook(0, NULL, NULL);
     gfx_stereo_2d = 0;
     gfx_stereo_same_both = 0;
+}
+
+/* ------------------------------------------------------- ninja chain */
+
+/* One continuous, scripted run through every system in the chamber:
+ * box3d ball/punch/kick/slam, jetpack, wall-run, grapple, a ceiling-portal
+ * drop and the goomba lemming loop.  The driver owns Mario's input through
+ * ptc_mario_input_override() and advances on world state (action, ground,
+ * position, teleport count), never on a cut.  `ptc chainwall|chaingrapple|
+ * chainjet|chainportal|chaingoomba` start at a single section for tuning. */
+
+enum {
+    CH_OFF = 0,
+    CH_BOX_BALL,
+    CH_BOX_BALL_WAIT,
+    CH_BOX_WALK_PUNCH,
+    CH_BOX_PUNCH,
+    CH_BOX_WALK_KICK,
+    CH_BOX_KICK,
+    CH_BOX_WALK_SLAM,
+    CH_BOX_SLAM_JUMP,
+    CH_BOX_SLAM,
+    CH_JET_L1,
+    CH_RUN_WALL,
+    CH_WALLRUN,
+    CH_WALL_LAND,
+    CH_GRAPPLE_AIM,
+    CH_GRAPPLE_FIRE,
+    CH_GRAPPLE_HOLD,
+    CH_GRAPPLE_RELEASE,
+    CH_LAND_N4,
+    CH_STAR1,
+    CH_JET_N5,
+    CH_LAND_N5,
+    CH_PORTAL_RUN,
+    CH_PORTAL_FALL,
+    CH_STAR2,
+    CH_GOOMBA_SETUP,
+    CH_GOOMBA_LOOP,
+    CH_DONE
+};
+
+#define CH_FLAG_BALL      (1u << 0)
+#define CH_FLAG_PUNCH     (1u << 1)
+#define CH_FLAG_KICK      (1u << 2)
+#define CH_FLAG_SLAM      (1u << 3)
+#define CH_FLAG_JETPACK   (1u << 4)
+#define CH_FLAG_WALLRUN   (1u << 5)
+#define CH_FLAG_GRAPPLE   (1u << 6)
+#define CH_FLAG_PORTAL    (1u << 7)
+#define CH_FLAG_STAR1     (1u << 8)
+#define CH_FLAG_STAR2     (1u << 9)
+#define CH_FLAG_GOOMBA    (1u << 10)
+
+#define CH_BOX_X        (-450.0f)
+#define CH_BOX_TOWER_Z  (-1150.0f)
+#define CH_BOX_B_Z      (-1270.0f)
+#define CH_BOX_C_Z      (-1390.0f)
+#define CH_BOX_D_Z      (-1510.0f)
+#define CH_L1_X         (-875.0f)
+#define CH_L1_Z         (-1500.0f)
+#define CH_STAR1_X      (300.0f)
+#define CH_STAR1_Y      (320.0f)
+#define CH_STAR1_Z      (-2950.0f)
+#define CH_STAR2_X      (-750.0f)
+#define CH_STAR2_Y      (1620.0f)
+#define CH_STAR2_Z      (-3100.0f)
+
+static int s_chainTimer;
+static int s_chainFlags;
+static int s_chainTeleBase;
+static int s_chainJumped;
+static int s_chainGoombaState;
+static int s_chainGoombaCross;
+static float s_chainGoombaX, s_chainGoombaY, s_chainGoombaZ, s_chainGoombaVY;
+static struct Object *s_chainGoomba;
+
+static int ptc_chain_grounded(struct MarioState *m) {
+    return m != NULL && !(m->action & ACT_FLAG_AIR);
+}
+
+static void ptc_chain_star_place(int idx, float x, float y, float z) {
+    struct Object *star = ptc_find_star(idx);
+    if (star == NULL && ptc_in_level()) {
+        struct Object *parent = gMarioState != NULL && gMarioState->marioObj != NULL
+                              ? gMarioState->marioObj : &gMacroObjectDefaultParent;
+        star = spawn_object_abs_with_rot(parent, 0, MODEL_STAR, bhvPtcDebugStar,
+                                         (s16) x, (s16) y, (s16) z, 0, 0, 0);
+        if (star != NULL) {
+            star->oBehParams = (u32) idx << 24;
+        }
+    }
+    if (star != NULL) {
+        star->oPosX = x;
+        star->oPosY = y;
+        star->oPosZ = z;
+        star->oInteractStatus = 0;
+        star->oInteractType = INTERACT_COIN;
+        star->oDamageOrCoinValue = 0;
+        star->activeFlags |= ACTIVE_FLAG_ACTIVE;
+        star->header.gfx.scale[0] = 1.0f;
+        star->header.gfx.scale[1] = 1.0f;
+        star->header.gfx.scale[2] = 1.0f;
+    }
+    if (idx >= 0 && idx < 2) {
+        s_starCollected[idx] = 0;
+    }
+}
+
+static void ptc_chain_camera_setup(void) {
+    extern void custom_camera_apply_mode(int mode);
+    extern float gfx_cam_dist, gfx_cam_height;
+    extern int gfx_stereo_2d, gfx_stereo_same_both;
+
+    custom_camera_apply_mode(3);
+    gfx_cam_dist = 700.0f;
+    gfx_cam_height = 110.0f;
+    gCameraMovementFlags |= CAM_MOVE_INIT_CAMERA;
+    /* Flat capture: the Leia weave makes stills unreadable. */
+    gfx_stereo_2d = 1;
+    gfx_stereo_same_both = 1;
+}
+
+static void ptc_chain_spawn_boxes(void) {
+    boxphys_reset();
+    boxphys_test_tower(CH_BOX_X, 60.0f, CH_BOX_TOWER_Z, 3);
+    boxphys_test_spawn(CH_BOX_X, 60.0f, CH_BOX_B_Z);
+    boxphys_test_spawn(CH_BOX_X, 60.0f, CH_BOX_C_Z);
+    boxphys_test_spawn(CH_BOX_X, 60.0f, CH_BOX_D_Z);
+}
+
+static void ptc_chain_shoot_player_portals(void) {
+    Vec3f aOrig = { 1700.0f, 1050.0f, -2900.0f };
+    Vec3f aTgt  = { 1900.0f, 1040.0f, -2900.0f };
+    Vec3f bOrig = { -600.0f, 2200.0f, -2980.0f };
+    Vec3f bTgt  = { -600.0f, 2799.0f, -2980.0f };
+
+    portal_shoot_at(0, aOrig, aTgt);
+    portal_shoot_at(1, bOrig, bTgt);
+}
+
+static void ptc_chain_shoot_goomba_portals(void) {
+    Vec3f aOrig = { -650.0f, 1620.0f, -3000.0f };
+    Vec3f aTgt  = { -450.0f, 1620.0f, -3000.0f };
+    portal_shoot_at(0, aOrig, aTgt);
+}
+
+static void ptc_chain_setup(void) {
+    struct MarioState *m = gMarioState;
+
+    s_chainMode = CH_BOX_BALL;
+    s_chainTimer = 0;
+    s_chainFlags = 0;
+    s_chainJumped = 0;
+    s_chainGoombaState = 0;
+    s_chainGoombaCross = 0;
+    s_chainGoomba = NULL;
+
+    {
+        extern void custom_camera_set_yaw_hint(int on, s16 yaw);
+        custom_camera_set_yaw_hint(0, 0);
+    }
+    portal_reset();
+    portal_give_gun();
+    movekit_set_flag(0, 1);
+    movekit_set_flag(1, 1);
+    movekit_set_flag(2, 0);
+    movekit_force_trigger(0);
+
+    {
+        char nb[160];
+        snprintf(nb, sizeof(nb), "CUSTOM CAM | %s", ptc_chain_note(s_chainMode));
+        gfx_set_debug_note(nb);
+    }
+    {
+        extern void custom_camera_set_freelook(int on, const Vec3f pos, const Vec3f focus);
+        extern void custom_camera_reset(void);
+        custom_camera_set_freelook(0, NULL, NULL);
+        custom_camera_reset();
+    }
+    ptc_chain_star_place(0, CH_STAR1_X, CH_STAR1_Y, CH_STAR1_Z);
+    ptc_chain_star_place(1, CH_STAR2_X, CH_STAR2_Y, CH_STAR2_Z);
+    ptc_chain_spawn_boxes();
+    ptc_chain_shoot_player_portals();
+    ptc_chain_camera_setup();
+
+    if (m != NULL) {
+        m->pos[0] = CH_BOX_X;
+        m->pos[1] = 0.0f;
+        m->pos[2] = -1000.0f;
+        m->vel[0] = m->vel[1] = m->vel[2] = 0.0f;
+        m->forwardVel = 0.0f;
+        m->faceAngle[1] = 0x8000;      /* south, down the course */
+        m->intendedMag = 0.0f;
+        m->intendedYaw = 0x8000;
+        set_mario_action(m, ACT_IDLE, 0);
+        if (m->marioObj != NULL) {
+            vec3f_copy(m->marioObj->header.gfx.pos, m->pos);
+            m->marioObj->header.gfx.unk38.animFrame = 0;
+        }
+    }
+    s_chainTeleBase = portal_teleport_count();
+}
+
+static void ptc_chain_place_ground(float x, float y, float z, s16 yaw) {
+    struct MarioState *m = gMarioState;
+    if (m == NULL) {
+        return;
+    }
+    m->pos[0] = x;
+    m->pos[1] = y;
+    m->pos[2] = z;
+    m->vel[0] = m->vel[1] = m->vel[2] = 0.0f;
+    m->forwardVel = 0.0f;
+    m->faceAngle[1] = yaw;
+    set_mario_action(m, ACT_IDLE, 0);
+    if (m->marioObj != NULL) {
+        vec3f_copy(m->marioObj->header.gfx.pos, m->pos);
+    }
+    gCameraMovementFlags |= CAM_MOVE_INIT_CAMERA;
+}
+
+static void ptc_chain_place(float x, float y, float z, s16 yaw) {
+    struct MarioState *m = gMarioState;
+    if (m == NULL) {
+        return;
+    }
+    m->pos[0] = x;
+    m->pos[1] = y;
+    m->pos[2] = z;
+    m->vel[0] = m->vel[1] = m->vel[2] = 0.0f;
+    m->forwardVel = 0.0f;
+    m->faceAngle[1] = yaw;
+    set_mario_action(m, ACT_FREEFALL, 0);
+    if (m->marioObj != NULL) {
+        vec3f_copy(m->marioObj->header.gfx.pos, m->pos);
+    }
+    gCameraMovementFlags |= CAM_MOVE_INIT_CAMERA;
+}
+
+/* Per-tick scripted stick: walk towards a world point. */
+static void ptc_chain_walk_to(struct MarioState *m, float x, float z) {
+    float dx, dz, len;
+    if (m == NULL) {
+        return;
+    }
+    dx = x - m->pos[0];
+    dz = z - m->pos[2];
+    len = sqrtf(dx * dx + dz * dz);
+    if (len > 1.0f) {
+        m->intendedYaw = (s16) atan2s(dz, dx);   /* SM64 yaw: atan2s(z, x) */
+    }
+    m->intendedMag = 32.0f;
+    m->input |= INPUT_NONZERO_ANALOG;
+    m->input &= ~INPUT_UNKNOWN_5;
+}
+
+static void ptc_chain_stick(struct MarioState *m, s16 yaw, float mag) {
+    if (m == NULL) {
+        return;
+    }
+    m->intendedYaw = yaw;
+    m->intendedMag = mag;
+    m->input |= INPUT_NONZERO_ANALOG;
+    m->input &= ~INPUT_UNKNOWN_5;
+}
+
+static void ptc_chain_hint(int on, float x, float y, float z) {
+    extern void custom_camera_set_focus_hint(int on, const Vec3f pos);
+    Vec3f p = { x, y, z };
+    custom_camera_set_focus_hint(on, p);
+}
+
+static const char *ptc_chain_note(int ph) {
+    extern void gfx_set_debug_note(const char *s);
+extern int gfx_cam_mode;
+    switch (ph) {
+        case CH_BOX_BALL:      return "NINJA 1/8 box3d: ball blast, punch, kick, ground pound";
+        case CH_BOX_WALK_PUNCH:return "NINJA 1/8: walk to the punch cube";
+        case CH_BOX_PUNCH:     return "NINJA 1/8: PUNCH the cube";
+        case CH_BOX_WALK_KICK: return "NINJA 1/8: line up the kick cube";
+        case CH_BOX_KICK:      return "NINJA 1/8: JUMP KICK the cube";
+        case CH_BOX_WALK_SLAM: return "NINJA 1/8: walk to the slam cube";
+        case CH_BOX_SLAM_JUMP:
+        case CH_BOX_SLAM:      return "NINJA 1/8: GROUND POUND the cubes";
+        case CH_JET_L1:        return "NINJA 2/8 jetpack: fly up to the L1 pad";
+        case CH_RUN_WALL:      return "NINJA 3/8 wallrun: run east off L1, jump into the wall";
+        case CH_WALLRUN:       return "NINJA 3/8 wallrun: 52 ticks along the wall";
+        case CH_WALL_LAND:     return "NINJA 3/8 wallrun: land on N2";
+        case CH_GRAPPLE_AIM:
+        case CH_GRAPPLE_FIRE:
+        case CH_GRAPPLE_HOLD:  return "NINJA 4/8 grapple: aim at the N3 anchor and swing";
+        case CH_GRAPPLE_RELEASE:
+        case CH_LAND_N4:       return "NINJA 4/8 grapple: release over N4";
+        case CH_STAR1:         return "NINJA 4/8: collect the N4 star";
+        case CH_JET_N5:        return "NINJA 5/8 jetpack: climb east to N5";
+        case CH_LAND_N5:       return "NINJA 5/8 jetpack: land on N5";
+        case CH_PORTAL_RUN:    return "NINJA 6/8 portals: run into the N7 portal";
+        case CH_PORTAL_FALL:   return "NINJA 6/8 portals: drop out of the ceiling onto N6";
+        case CH_STAR2:         return "NINJA 6/8: collect the N6 star";
+        case CH_GOOMBA_SETUP:
+        case CH_GOOMBA_LOOP:   return "NINJA 7/8 goomba: ceiling portal lemming loop";
+        case CH_DONE:          return "NINJA: run complete";
+        default:               return "NINJA: ready";
+    }
+}
+
+static void ptc_chain_advance(int next) {
+    char buf[160];
+    s_chainMode = next;
+    s_chainTimer = 0;
+    if (next == CH_RUN_WALL) {
+        s_chainJumped = 0;
+        movekit_set_flag(0, 1);   /* wall-run back on for the wall section */
+    }
+    snprintf(buf, sizeof(buf), "CUSTOM CAM | %s", ptc_chain_note(next));
+    gfx_set_debug_note(buf);
+}
+
+/* Goomba lemming: walks into the wall portal, drops out of the ceiling one. */
+static void ptc_chain_goomba_place(struct Object *o, float x, float y, float z, s16 yaw) {
+    if (o == NULL) {
+        return;
+    }
+    o->oPosX = x;
+    o->oPosY = y;
+    o->oPosZ = z;
+    o->oHomeX = x;
+    o->oHomeY = y;
+    o->oHomeZ = z;
+    o->oForwardVel = 0.0f;
+    o->oVelX = o->oVelY = o->oVelZ = 0.0f;
+    o->oGravity = 0.0f;
+    o->oMoveAngleYaw = yaw;
+    o->oFaceAngleYaw = yaw;
+    o->oDrawingDistance = 12000.0f;
+    o->header.gfx.node.flags |= GRAPH_RENDER_ACTIVE;
+    o->header.gfx.node.flags &= ~GRAPH_RENDER_INVISIBLE;
+    vec3f_copy(o->header.gfx.pos, (Vec3f){ x, y, z });
+    o->header.gfx.angle[1] = yaw;
+}
+
+static void ptc_chain_goomba_tick(void) {
+    if (s_chainGoomba == NULL) {
+        return;
+    }
+    if (s_chainGoombaState == 0) {
+        /* Walk east into the gate portal. */
+        s_chainGoombaX += 9.0f;
+        if (s_chainGoombaX > -454.0f) {
+            /* Entered the portal: reappear just below the ceiling portal. */
+            s_chainGoombaState = 1;
+            s_chainGoombaX = -600.0f;
+            s_chainGoombaZ = -2980.0f;
+            s_chainGoombaY = 2666.0f;
+            s_chainGoombaVY = 0.0f;
+            s_chainGoombaCross++;
+        }
+    } else {
+        /* Fall out of the ceiling portal. */
+        s_chainGoombaVY -= 2.5f;
+        s_chainGoombaY += s_chainGoombaVY;
+        if (s_chainGoombaY <= 1500.0f) {
+            s_chainGoombaY = 1500.0f;
+            s_chainGoombaVY = 0.0f;
+            s_chainGoombaState = 0;
+        }
+    }
+    ptc_chain_goomba_place(s_chainGoomba, s_chainGoombaX, s_chainGoombaY,
+                           s_chainGoombaZ, 0x4000);   /* face +X */
+}
+
+static void ptc_chain_goomba_start(void) {
+    extern float gfx_cam_dist, gfx_cam_height;
+    extern void custom_camera_set_yaw_hint(int on, s16 yaw);
+    gfx_cam_dist = 350.0f;      /* keep the spectator camera inside the room */
+    gfx_cam_height = 150.0f;
+    custom_camera_set_yaw_hint(1, 0x8000);   /* camera north, looking south */
+    ptc_chain_shoot_goomba_portals();
+    s_chainGoombaState = 0;
+    s_chainGoombaX = -700.0f;
+    s_chainGoombaY = 1500.0f;
+    s_chainGoombaZ = -3000.0f;
+    s_chainGoombaVY = 0.0f;
+    if (s_chainGoomba == NULL) {
+        struct Object *parent = gMarioState != NULL && gMarioState->marioObj != NULL
+                              ? gMarioState->marioObj : &gMacroObjectDefaultParent;
+        s_chainGoomba = spawn_object_abs_with_rot(parent, 0, MODEL_GOOMBA, bhvGoomba,
+                                                  (s16) s_chainGoombaX, (s16) s_chainGoombaY,
+                                                  (s16) s_chainGoombaZ, 0, 0x4000, 0);
+    }
+    ptc_chain_goomba_place(s_chainGoomba, s_chainGoombaX, s_chainGoombaY,
+                           s_chainGoombaZ, 0x4000);
+    ptc_chain_hint(1, -600.0f, 1650.0f, -2980.0f);
+}
+
+static void ptc_chain_update(void) {
+    struct MarioState *m = gMarioState;
+
+    if (s_chainMode == CH_OFF || m == NULL) {
+        return;
+    }
+    s_chainTimer++;
+
+    switch (s_chainMode) {
+        case CH_BOX_BALL:
+            if (s_chainTimer == 1) {
+                ptc_chain_hint(1, CH_BOX_X, 180.0f, CH_BOX_TOWER_Z);
+            }
+            if (s_chainTimer == 14) {
+                if (!boxphys_equipped()) {
+                    boxphys_equip_toggle();
+                }
+                boxphys_test_fire_at(CH_BOX_X, 180.0f, CH_BOX_TOWER_Z);
+            }
+            if (s_chainTimer > 30) {
+                s_chainFlags |= CH_FLAG_BALL;
+                ptc_chain_hint(0, 0.0f, 0.0f, 0.0f);
+                ptc_chain_advance(CH_BOX_WALK_PUNCH);
+            }
+            break;
+
+        case CH_BOX_WALK_PUNCH:
+            if (m->pos[2] < CH_BOX_B_Z + 70.0f || s_chainTimer > 90) {
+                ptc_chain_advance(CH_BOX_PUNCH);
+            }
+            break;
+
+        case CH_BOX_PUNCH:
+            if (s_chainTimer == 1) {
+                set_mario_action(m, ACT_PUNCHING, 0);
+            }
+            if (s_chainTimer > 14) {
+                s_chainFlags |= CH_FLAG_PUNCH;
+                ptc_chain_advance(CH_BOX_WALK_KICK);
+            }
+            break;
+
+        case CH_BOX_WALK_KICK:
+            if (m->pos[2] < CH_BOX_C_Z + 70.0f || s_chainTimer > 90) {
+                ptc_chain_advance(CH_BOX_KICK);
+            }
+            break;
+
+        case CH_BOX_KICK:
+            if (s_chainTimer == 1) {
+                m->vel[1] = 10.0f;
+                set_mario_action(m, ACT_JUMP_KICK, 0);
+            }
+            if (s_chainTimer > 18) {
+                s_chainFlags |= CH_FLAG_KICK;
+                ptc_chain_advance(CH_BOX_WALK_SLAM);
+            }
+            break;
+
+        case CH_BOX_WALK_SLAM:
+            if (m->pos[2] < CH_BOX_D_Z + 80.0f || s_chainTimer > 90) {
+                ptc_chain_advance(CH_BOX_SLAM_JUMP);
+            }
+            break;
+
+        case CH_BOX_SLAM_JUMP:
+            if (s_chainTimer == 1) {
+                m->vel[1] = 18.0f;
+                set_mario_action(m, ACT_FREEFALL, 0);
+            }
+            if (s_chainTimer == 7) {
+                set_mario_action(m, ACT_GROUND_POUND, 0);
+            }
+            if (s_chainTimer > 8 && ptc_chain_grounded(m)) {
+                s_chainFlags |= CH_FLAG_SLAM;
+                ptc_chain_advance(CH_JET_L1);
+            } else if (s_chainTimer > 80) {
+                ptc_chain_advance(CH_JET_L1);
+            }
+            break;
+
+        case CH_JET_L1:
+            if (s_chainTimer == 1) {
+                movekit_set_flag(0, 0);   /* no spurious wall-run during ascent */
+                movekit_set_flag(2, 1);
+                movekit_force_trigger(1);
+            }
+            if ((m->pos[1] > 500.0f && m->pos[0] < -800.0f && m->pos[2] < -1400.0f)
+                || s_chainTimer > 55) {
+                movekit_force_trigger(0);
+                movekit_set_flag(2, 0);
+                /* Kill the horizontal carry so he drops onto L1 instead of
+                 * sliding off the west edge into a knockback. */
+                m->forwardVel = 0.0f;
+                m->vel[0] = 0.0f;
+                m->vel[2] = 0.0f;
+                s_chainFlags |= CH_FLAG_JETPACK;
+                ptc_chain_advance(CH_RUN_WALL);
+            } else if (s_chainTimer > 90) {
+                ptc_chain_advance(CH_RUN_WALL);
+            }
+            break;
+
+        case CH_RUN_WALL:
+            /* Jump near the L1 edge.  A short assist once he is beside the
+             * wall commits him into it: the wall-run trigger wants speed >= 30
+             * plus velocity into the surface, and a scripted run-up alone is
+             * marginal at this distance. */
+            if (!s_chainJumped && ptc_chain_grounded(m) && m->pos[0] > -720.0f) {
+                /* Commit the jump towards the wall.  The air action rebuilds
+                 * the horizontal velocity from forwardVel every tick, so that
+                 * is what has to carry the speed, not m->vel. */
+                m->forwardVel = 34.0f;
+                m->faceAngle[1] = 0x4000;   /* east */
+                m->vel[0] = 34.0f;
+                m->vel[1] = 20.0f;
+                m->vel[2] = 0.0f;
+                set_mario_action(m, ACT_FREEFALL, 0);
+                s_chainJumped = 1;
+            }
+
+            if (m->action == ACT_WALLRUN) {
+                s_chainFlags |= CH_FLAG_WALLRUN;
+                ptc_chain_advance(CH_WALLRUN);
+            } else if (s_chainTimer > 70) {
+                ptc_chain_advance(CH_WALL_LAND);
+            }
+            break;
+
+        case CH_WALLRUN:
+            if (m->action != ACT_WALLRUN) {
+                ptc_chain_advance(CH_WALL_LAND);
+            }
+            break;
+
+        case CH_WALL_LAND:
+            if (ptc_chain_grounded(m) && m->pos[1] < 600.0f) {
+                ptc_chain_advance(CH_GRAPPLE_AIM);
+            } else if (s_chainTimer > 120) {
+                ptc_chain_advance(CH_GRAPPLE_AIM);
+            }
+            break;
+
+        case CH_GRAPPLE_AIM:
+            if (s_chainTimer == 1) {
+                ptc_chain_hint(1, -150.0f, 800.0f, -2820.0f);
+            }
+            if (s_chainTimer > 18) {
+                movekit_force_trigger(0);
+                ptc_chain_advance(CH_GRAPPLE_FIRE);
+            }
+            break;
+
+        case CH_GRAPPLE_FIRE:
+            if (s_chainTimer == 2) {
+                movekit_force_trigger(1);
+            }
+            if (movekit_state() & 8) {
+                s_chainFlags |= CH_FLAG_GRAPPLE;
+                ptc_chain_advance(CH_GRAPPLE_HOLD);
+            } else if (s_chainTimer > 12) {
+                movekit_force_trigger(0);
+                ptc_chain_advance(CH_GRAPPLE_HOLD);
+            }
+            break;
+
+        case CH_GRAPPLE_HOLD:
+            if (s_chainTimer > 40) {
+                ptc_chain_advance(CH_GRAPPLE_RELEASE);
+            }
+            break;
+
+        case CH_GRAPPLE_RELEASE:
+            if (s_chainTimer == 1) {
+                movekit_force_trigger(0);
+                m->vel[1] += 8.0f;
+                ptc_chain_hint(0, 0.0f, 0.0f, 0.0f);
+            }
+            if (s_chainTimer > 8) {
+                ptc_chain_advance(CH_LAND_N4);
+            }
+            break;
+
+        case CH_LAND_N4:
+            if (ptc_chain_grounded(m) || s_chainTimer > 120) {
+                ptc_chain_advance(CH_STAR1);
+            }
+            break;
+
+        case CH_STAR1:
+            if (s_starCollected[0]) {
+                s_chainFlags |= CH_FLAG_STAR1;
+                ptc_chain_advance(CH_JET_N5);
+            } else if (s_chainTimer > 120) {
+                ptc_chain_advance(CH_JET_N5);
+            }
+            break;
+
+        case CH_JET_N5:
+            if (s_chainTimer == 1) {
+                movekit_set_flag(0, 0);
+                movekit_set_flag(2, 1);
+                movekit_force_trigger(1);
+            }
+            if ((m->pos[1] > 980.0f && m->pos[0] > 1150.0f) || m->pos[1] > 1400.0f) {
+                movekit_force_trigger(0);
+                movekit_set_flag(2, 0);
+                s_chainFlags |= CH_FLAG_JETPACK;
+                ptc_chain_advance(CH_LAND_N5);
+            } else if (s_chainTimer > 120) {
+                ptc_chain_advance(CH_LAND_N5);
+            }
+            break;
+
+        case CH_LAND_N5:
+            if (ptc_chain_grounded(m) || s_chainTimer > 90) {
+                ptc_chain_advance(CH_PORTAL_RUN);
+            }
+            break;
+
+        case CH_PORTAL_RUN:
+            if (portal_teleport_count() != s_chainTeleBase) {
+                s_chainFlags |= CH_FLAG_PORTAL;
+                ptc_chain_advance(CH_PORTAL_FALL);
+            } else if (s_chainTimer > 140) {
+                ptc_chain_advance(CH_PORTAL_FALL);
+            }
+            break;
+
+        case CH_PORTAL_FALL:
+            if (ptc_chain_grounded(m) && m->pos[1] < 1700.0f) {
+                ptc_chain_advance(CH_STAR2);
+            } else if (s_chainTimer > 180) {
+                ptc_chain_advance(CH_STAR2);
+            }
+            break;
+
+        case CH_STAR2:
+            if (s_starCollected[1]) {
+                s_chainFlags |= CH_FLAG_STAR2;
+                ptc_chain_advance(CH_GOOMBA_SETUP);
+            } else if (s_chainTimer > 120) {
+                ptc_chain_advance(CH_GOOMBA_SETUP);
+            }
+            break;
+
+        case CH_GOOMBA_SETUP:
+            if (s_chainTimer > 34) {
+                ptc_chain_goomba_start();
+                s_chainFlags |= CH_FLAG_GOOMBA;
+                ptc_chain_advance(CH_GOOMBA_LOOP);
+            }
+            break;
+
+        case CH_GOOMBA_LOOP:
+            ptc_chain_goomba_tick();
+            break;
+
+        default:
+            break;
+    }
+}
+
+/* Input for the chain, called from ptc_mario_input_override(). */
+static void ptc_chain_input(struct MarioState *m) {
+    switch (s_chainMode) {
+        case CH_BOX_BALL:
+        case CH_BOX_BALL_WAIT:
+        case CH_BOX_PUNCH:
+        case CH_BOX_KICK:
+        case CH_GRAPPLE_AIM:
+        case CH_GRAPPLE_FIRE:
+        case CH_GRAPPLE_HOLD:
+        case CH_GRAPPLE_RELEASE:
+            break;
+
+        case CH_GOOMBA_SETUP:
+            if (m != NULL) {
+                m->faceAngle[1] = 0x8000;
+            }
+            break;
+
+        case CH_GOOMBA_LOOP:
+            if (m != NULL) {
+                m->faceAngle[1] = 0x8000;
+            }
+            break;
+
+        case CH_BOX_WALK_PUNCH:
+            ptc_chain_walk_to(m, CH_BOX_X, CH_BOX_B_Z);
+            break;
+        case CH_BOX_WALK_KICK:
+            ptc_chain_walk_to(m, CH_BOX_X, CH_BOX_C_Z);
+            break;
+        case CH_BOX_WALK_SLAM:
+            ptc_chain_walk_to(m, CH_BOX_X, CH_BOX_D_Z);
+            break;
+
+        case CH_JET_L1:
+            ptc_chain_walk_to(m, -950.0f, -1500.0f);  /* steer onto L1 */
+            break;
+
+        case CH_RUN_WALL:
+            /* Stick must be held while airborne too: the wall-run trigger
+             * requires INPUT_NONZERO_ANALOG. */
+            ptc_chain_stick(m, 0x4000, 32.0f);       /* east, towards the wall */
+            break;
+
+        case CH_WALLRUN:
+            ptc_chain_stick(m, 0x8000, 32.0f);   /* south along the wall */
+            break;
+
+        case CH_JET_N5:
+            ptc_chain_stick(m, 0x4000, 32.0f);   /* east to N5 */
+            break;
+
+        case CH_STAR1:
+            ptc_chain_walk_to(m, CH_STAR1_X, CH_STAR1_Z);
+            break;
+
+        case CH_STAR2:
+            ptc_chain_walk_to(m, CH_STAR2_X, CH_STAR2_Z);
+            break;
+
+        case CH_PORTAL_RUN:
+            ptc_chain_walk_to(m, 2000.0f, -2900.0f);
+            break;
+
+        default:
+            break;
+    }
 }
 
 /* ------------------------------------------------- corner portal test */
@@ -1564,11 +2326,49 @@ static void ptc_apply_command(const char *action) {
         }
     } else if (strcmp(action, "reload") == 0) {
         ptc_knob_reload();
+    } else if (strcmp(action, "chain") == 0) {
+        ptc_chain_setup();
+    } else if (strcmp(action, "chainbox") == 0) {
+        ptc_chain_setup();
+        ptc_chain_advance(CH_BOX_BALL);
+    } else if (strcmp(action, "chainwall") == 0) {
+        ptc_chain_setup();
+        ptc_chain_place_ground(-950.0f, 450.0f, -1500.0f, 0x4000);
+        ptc_chain_advance(CH_RUN_WALL);
+    } else if (strcmp(action, "chaingrapple") == 0) {
+        ptc_chain_setup();
+        ptc_chain_place_ground(-450.0f, 330.0f, -2550.0f, 0x8000);
+        ptc_chain_advance(CH_GRAPPLE_AIM);
+    } else if (strcmp(action, "chainjet") == 0) {
+        ptc_chain_setup();
+        ptc_chain_place_ground(850.0f, 300.0f, -2900.0f, 0x4000);
+        ptc_chain_advance(CH_JET_N5);
+    } else if (strcmp(action, "chainportal") == 0) {
+        ptc_chain_setup();
+        ptc_chain_place_ground(1450.0f, 900.0f, -2900.0f, 0x4000);
+        ptc_chain_advance(CH_PORTAL_RUN);
+    } else if (strcmp(action, "chaingoomba") == 0) {
+        ptc_chain_setup();
+        ptc_chain_place_ground(-800.0f, 1500.0f, -3100.0f, 0x4000);
+        ptc_chain_advance(CH_GOOMBA_SETUP);
+    } else if (strcmp(action, "chainoff") == 0) {
+        extern void custom_camera_set_focus_hint(int on, const Vec3f pos);
+        extern void custom_camera_set_yaw_hint(int on, s16 yaw);
+        s_chainMode = 0;
+        movekit_force_trigger(0);
+        custom_camera_set_focus_hint(0, NULL);
+        custom_camera_set_yaw_hint(0, 0);
     } else if (strcmp(action, "gunaim") == 0) {
+        extern void gfx_set_debug_note(const char *s);
+extern int gfx_cam_mode;
+        gfx_set_debug_note("GUN AIM: barrel points at the floating marker");
         ptc_gun_aim_test();
     } else if (strcmp(action, "gunaimoff") == 0) {
         ptc_gun_aim_end();
     } else if (strcmp(action, "goomba") == 0) {
+        extern void gfx_set_debug_note(const char *s);
+extern int gfx_cam_mode;
+        gfx_set_debug_note("GOOMBA: portal lemming loop (crossings)");
         ptc_goomba_start();
     } else if (strcmp(action, "scene") == 0) {
         ptc_scene_toggle();
@@ -1718,6 +2518,9 @@ static void ptc_apply_command(const char *action) {
     } else if (strcmp(action, "grapple") == 0) {
         ptc_annex_grapple();
     } else if (strncmp(action, "povcam", 6) == 0) {
+        extern void gfx_set_debug_note(const char *s);
+extern int gfx_cam_mode;
+        gfx_set_debug_note("POV: complete Mario through the portal window");
         s_pov_shot = (action[6] == '2') ? 2 : 1;
         if (!ptc_pov_place()) {
             snprintf(s_failReason, sizeof(s_failReason), "povcam: portal shot failed");
@@ -1766,12 +2569,13 @@ void ptc_format_status(char *buf, int len) {
              "mom_enter=%.1f mom_exit=%.1f mom_apex=%.1f momy=%.1f momv=%.1f,%.1f,%.1f walltest=0x%X "
              "p0=%.1f,%.1f,%.1f n0=%.3f,%.3f,%.3f p1=%.1f,%.1f,%.1f n1=%.3f,%.3f,%.3f "
              "tele=%d src=%d dst=%d onplat=%d "
-             "mario=%.2f,%.2f,%.2f vel=%.2f,%.2f,%.2f fv=%.1f in=0x%04X im=%.1f hook=%d action=0x%08X floor=%.2f "
+             "mario=%.2f,%.2f,%.2f vel=%.2f,%.2f,%.2f fv=%.1f iy=%d in=0x%04X im=%.1f hook=%d action=0x%08X floor=%.2f "
              "cam=%.1f,%.1f,%.1f focus=%.1f,%.1f,%.1f "
              "wall=%d ceil=%d ledge=%d "
              "coins=%d stars=%d save=%d before=%d/%d "
              "cal=%.1f,%.1f,%.1f ledge_reach=%.1f goomba=%d,%.1f,%.1f gmodel=%d "
-             "gobj=%d,0x%x,%d,%d annex=%d,%d,%d gun=%d,%d,%d",
+             "gobj=%d,0x%x,%d,%d annex=%d,%d,%d gun=%d,%d,%d "
+             "chain=%d,%d,0x%x,%d,%d cmode=%d",
              gCurrLevelNum, gCurrAreaIndex, s_phase, s_testMode, s_testActive, s_failed, s_failReason,
              s_starCollected[0], s_starCollected[1], ptc_star_visible(), portal_count(), s_shotA, s_shotB, g_portal_debug,
              g_portal_view.active, g_portal_view.source,
@@ -1784,7 +2588,8 @@ void ptc_format_status(char *buf, int len) {
              portal_teleport_count(), portal_last_src(), portal_last_dst(), s_onPlatform,
              m ? m->pos[0] : 0.0f, m ? m->pos[1] : 0.0f, m ? m->pos[2] : 0.0f,
              m ? m->vel[0] : 0.0f, m ? m->vel[1] : 0.0f, m ? m->vel[2] : 0.0f,
-             m ? m->forwardVel : 0.0f, m ? m->input : 0, m ? m->intendedMag : 0.0f,
+             m ? m->forwardVel : 0.0f, m ? (int) m->intendedYaw : 0,
+             m ? m->input : 0, m ? m->intendedMag : 0.0f,
              s_inputHookCalls, m ? m->action : 0, m ? m->floorHeight : 0.0f,
              gLakituState.pos[0], gLakituState.pos[1], gLakituState.pos[2],
              gLakituState.focus[0], gLakituState.focus[1], gLakituState.focus[2],
@@ -1802,7 +2607,11 @@ void ptc_format_status(char *buf, int len) {
              s_goombaIn != NULL ? (int) s_goombaIn->activeFlags : -1,
              s_annexMode, s_annexSeen, s_annexTimer,
              portal_gun_has(), portal_gun_aim_error_deg10(),
-             portal_gun_yaw_offset_deg10());
+             portal_gun_yaw_offset_deg10(),
+             s_chainMode, s_chainTimer, s_chainFlags,
+             s_chainGoombaCross,
+             boxphys_test_boxes_near(CH_BOX_X, 120.0f, CH_BOX_B_Z, 300.0f),
+             gfx_cam_mode);
 
     {
         size_t used = strlen(buf);

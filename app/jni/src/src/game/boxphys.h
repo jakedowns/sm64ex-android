@@ -14,5 +14,10 @@ void boxphys_equip_toggle(void);
 int  boxphys_equipped(void);
 void boxphys_fire(void);
 int  boxphys_test_fire(void);
+/* Chain-demo hooks (N64 units). */
+void boxphys_test_spawn(float x, float y, float z);
+void boxphys_test_tower(float x, float y, float z, int n);
+int  boxphys_test_fire_at(float x, float y, float z);
+int  boxphys_test_boxes_near(float x, float y, float z, float r);
 
 #endif

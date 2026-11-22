@@ -103,18 +103,29 @@ void movekit_try_wallrun(struct MarioState *m) {
     wc.x = m->pos[0];
     wc.y = m->pos[1];
     wc.z = m->pos[2];
-    wc.radius = 32.0f;
+    wc.radius = 64.0f;   /* must exceed Mario's collision radius (~50 here) */
     wc.offsetY = 40.0f;
     if (!find_wall_collisions(&wc)) {
         return;
     }
-    wall = wc.walls[wc.numWalls - 1];
-    if (wall->normal.y > 0.6f || wall->normal.y < -0.6f) {
-        return;   // only near-vertical walls
+    /* Pick the wall Mario is most moving into.  Taking the last of up to
+     * four overlapping surfaces can pick a perpendicular face at a corner. */
+    wall = NULL;
+    into = 0.0f;
+    for (int wi = 0; wi < wc.numWalls; wi++) {
+        struct Surface *w = wc.walls[wi];
+        f32 i2;
+        if (w->normal.y > 0.6f || w->normal.y < -0.6f) {
+            continue;   // only near-vertical walls
+        }
+        i2 = m->vel[0] * w->normal.x + m->vel[2] * w->normal.z;
+        if (i2 < into) {
+            into = i2;
+            wall = w;
+        }
     }
-    into = m->vel[0] * wall->normal.x + m->vel[2] * wall->normal.z;
-    if (into > -1.0f) {
-        return;   // not moving into the wall
+    if (wall == NULL || into > -1.0f) {
+        return;   // not moving into any wall
     }
 
     // Same-wall regrab rule: only if we dropped at least 20 units or the wall
@@ -159,14 +170,38 @@ u32 movekit_act_wallrun(struct MarioState *m) {
     wc.x = m->pos[0];
     wc.y = m->pos[1];
     wc.z = m->pos[2];
-    wc.radius = 34.0f;
+    wc.radius = 64.0f;   /* must exceed Mario's collision radius (~50 here) */
     wc.offsetY = 40.0f;
     if (!find_wall_collisions(&wc)) {
         s_roll = 0;
         s_cooldown = 20;
         return set_mario_action(m, ACT_FREEFALL, 0);
     }
-    wall = wc.walls[wc.numWalls - 1];
+    /* Sustain on the same wall as the trigger, not on whatever face happens to
+     * be last in the overlap list at a corner. */
+    wall = NULL;
+    {
+        f32 best = -2.0f;
+        for (int wi = 0; wi < wc.numWalls; wi++) {
+            struct Surface *w = wc.walls[wi];
+            f32 d;
+            if (w->normal.y > 0.6f || w->normal.y < -0.6f) {
+                continue;
+            }
+            d = w->normal.x * s_lastWallNormal[0]
+              + w->normal.y * s_lastWallNormal[1]
+              + w->normal.z * s_lastWallNormal[2];
+            if (d > best) {
+                best = d;
+                wall = w;
+            }
+        }
+        if (wall == NULL) {
+            s_roll = 0;
+            s_cooldown = 20;
+            return set_mario_action(m, ACT_FREEFALL, 0);
+        }
+    }
 
     tx = -wall->normal.z * (f32) side;
     tz = wall->normal.x * (f32) side;
@@ -375,6 +410,15 @@ static void jetpack_update(struct MarioState *m, u32 down) {
             if (h > JET_MAX_HORIZ) {
                 m->vel[0] = hx * (JET_MAX_HORIZ / h);
                 m->vel[2] = hz * (JET_MAX_HORIZ / h);
+            }
+        }
+        /* The freefall action rebuilds m->vel from forwardVel each tick, so
+         * carry the jetpack's horizontal velocity there or it is discarded. */
+        {
+            f32 hs = sqrtf(m->vel[0] * m->vel[0] + m->vel[2] * m->vel[2]);
+            if (hs > 0.5f) {
+                m->forwardVel = hs;
+                m->faceAngle[1] = (s16) atan2s(m->vel[2], m->vel[0]);
             }
         }
         s_fuel -= JET_DRAIN;

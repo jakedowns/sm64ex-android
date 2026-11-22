@@ -34,6 +34,23 @@ static int s_init = 0;
 static s16 s_fpYaw;
 static s16 s_fpPitch;
 
+/* R-trigger "spring" recentre: a critically damped chase of the camera yaw
+ * towards directly behind Mario, like a racing-game chase cam. */
+static int s_spring;
+static float s_yawVel;
+static u32 s_prevOvlButtons;
+
+/* Scripted yaw override (chain finale): eases the camera to a chosen side of
+ * Mario without a cut.  Used so the goomba lemming loop is framed. */
+static int s_yawHintOn;
+static s16 s_yawHint;
+
+/* Scripted look target (chain demo): the camera position still follows Mario,
+ * only the focus pans smoothly towards this point. */
+static int s_hintOn;
+static Vec3f s_hintPos;
+static float s_hintW;
+
 static s16 approach_s16_cam(s16 cur, s16 target, s16 inc);
 static f32 clamps(f32 v, f32 lo, f32 hi);
 
@@ -123,6 +140,18 @@ void custom_camera_set_freelook(int on, const Vec3f pos, const Vec3f focus) {
 
 int custom_camera_freelook_active(void) {
     return s_freelook;
+}
+
+void custom_camera_set_yaw_hint(int on, s16 yaw) {
+    s_yawHintOn = on ? 1 : 0;
+    s_yawHint = yaw;
+}
+
+void custom_camera_set_focus_hint(int on, const Vec3f pos) {
+    s_hintOn = on ? 1 : 0;
+    if (on && pos != NULL) {
+        vec3f_copy(s_hintPos, pos);
+    }
 }
 
 void custom_camera_reset(void) {
@@ -233,7 +262,36 @@ void custom_camera_update(struct Camera *c) {
                                    -0x1C00, 0x3400);
         }
     }
-    if (inY > 12 || inY < -12) {
+    /* R shoulder: spring the camera behind Mario.  A strong stiffness with
+     * damping gives the lag/overshoot of a racing chase camera.  R is also the
+     * grapple retract, so leave it alone while the rope is attached. */
+    {
+        extern int movekit_state(void);
+        extern u32 gfx_ovl_buttons;
+        u32 now = gfx_ovl_buttons;
+        int pressed = (gPlayer1Controller != NULL
+                       && (gPlayer1Controller->buttonPressed & R_TRIG))
+                   || ((now & R_TRIG) && !(s_prevOvlButtons & R_TRIG));
+        s_prevOvlButtons = now;
+        if (pressed && !(movekit_state() & 8)) {
+            s_spring = 1;
+        }
+    }
+
+    if (s_yawHintOn) {
+        s_yaw = approach_s16_cam(s_yaw, s_yawHint, 0x600);
+    } else if (s_spring) {
+        s16 behind = (s16)(gMarioState->faceAngle[1] + 0x8000);
+        float diff = (float)(s16)(behind - s_yaw);
+        s_yawVel += diff * 0.20f;
+        s_yawVel *= 0.82f;
+        s_yaw = (s16)(s_yaw + (s16)s_yawVel);
+        if (fabsf(diff) < 80.0f && fabsf(s_yawVel) < 40.0f) {
+            s_spring = 0;
+            s_yawVel = 0.0f;
+            s_yaw = behind;
+        }
+    } else if (inY > 12 || inY < -12) {
         // stick is being used: no auto recentre
     } else {
         // Gently recentre behind Mario while he is running.
@@ -284,10 +342,21 @@ void custom_camera_update(struct Camera *c) {
     }
 
     vec3f_copy(c->pos, s_pos);
-    vec3f_copy(c->focus, target);
     gLakituState.pos[0] = s_pos[0];
     gLakituState.pos[1] = s_pos[1];
     gLakituState.pos[2] = s_pos[2];
+
+    /* Optional scripted pan: ease the look-at point towards a hint (grapple
+     * anchor, ball target, goomba) without moving the camera itself. */
+    s_hintW += ((s_hintOn ? 1.0f : 0.0f) - s_hintW) * 0.12f;
+    if (s_hintW > 0.01f) {
+        float w = s_hintW * 0.85f;
+        target[0] += (s_hintPos[0] - target[0]) * w;
+        target[1] += (s_hintPos[1] - target[1]) * w;
+        target[2] += (s_hintPos[2] - target[2]) * w;
+    }
+
+    vec3f_copy(c->focus, target);
     gLakituState.focus[0] = target[0];
     gLakituState.focus[1] = target[1];
     gLakituState.focus[2] = target[2];

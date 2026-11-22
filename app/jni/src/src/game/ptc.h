@@ -39,6 +39,7 @@ void ptc_mario_input_override(struct MarioState *m);
 int  ptc_star_collected(void);          // star 0 (primary traversal)
 int  ptc_star2_collected(void);         // star 1 (momentum test)
 int  ptc_star_collected_index(int index);
+void ptc_chain_state(int *phase, int *flags, int *crossings, int *star0, int *star1);
 void ptc_star_mark_collected(void);
 void ptc_star_mark_collected_index(int index);
 void ptc_star_reset(void);

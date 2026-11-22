@@ -98,14 +98,21 @@ adb shell "$B --es cmd ptc --es action run"    # portal traversal smoke test
 adb shell "$B --es cmd ptc --es action povcam" # Mario-in-portal rig, view A
 adb shell "$B --es cmd ptc --es action povoff"
 adb shell "$B --es cmd set --ei k 21 --ei v 1" # stereo_2d = 1 (flat)
+adb shell "$B --es cmd note --es text 'what you are testing / expect'"
 ```
 
 Quoting matters: `am broadcast ... --es action 'knob pov.dist 400'` needs the
 inner quotes so the device shell keeps the spaces.
 
 `cmd` values: `set`, `fx`, `shadow`, `pad`, `kill`, `level`, `toggle`, `fps`,
-`portal`, `ptc`, `uncapped`, `hz`, `givegun`, `busy`, `logo`, `reinit`,
-`reset`, `dump`.
+`portal`, `ptc`, `uncapped`, `runticks`, `trace`, `hz`, `givegun`, `busy`,
+`logo`, `reinit`, `reset`, `note`, `dump`.
+
+`cmd note --es text "..."` writes the **green test line** in the Android debug
+panel.  Use it to say what is being tested and the expected outcome, e.g.
+`"WALLRUN: expect action=0x0300089A for 52 ticks"`.  Scripted tests (the ninja
+chain, POV rig, gun-aim test) set it automatically; the chain updates it each
+phase.  Grep it from a screenshot or read `nativeGetDebugNote()` in the panel.
 
 PTC actions used most: `povcam`/`povcam2`/`povoff`, `cornerportal`,
 `portaltest`/`portalcolor`/`portalalign`/`portalblit`, `goomba`,
@@ -195,6 +202,10 @@ and the portal-pass block in `app/jni/src/src/pc/gfx/gfx_pc.c`.
   smoothed towards the goal over several frames.
 - Vanilla zooms FOV 45→30 while Mario is `ACT_SLEEPING`; custom/first-person
   now pin 45 so it does not read as a camera "tuck".
+- In the custom camera, **R shoulder** springs the camera behind Mario with a
+  racing-game lag.  R is ignored while the grapple is attached (retract button).
+- Scripted pans use `custom_camera_set_focus_hint(on, point)`: the camera keeps
+  following Mario, only the look-at point eases to the target (no cuts).
 - Portal mapping preserves **height relative to the portal centre**. If the
   camera is at Mario's mid-body height (≈90) but the portals are aimed at
   y=200, the relay camera looks over his head and the window shows wall.
@@ -312,3 +323,82 @@ Include in the prompt:
 - that screenshot evaluation should use shapes/fiducials, not colour patches;
 - "leave changes in the working tree, do not commit" unless you want a commit;
 - finish with a **normal** device-lock call so the tablet sleeps.
+
+## 12. Fast-forward runner (`runticks` + `trace`)
+
+The engine can run a batch of simulation ticks back to back on the game
+thread, without waiting for real time or presenting every tick.  This is the
+first thing to try when tuning chain logic; keep normal mode for visuals.
+
+```bash
+B="am broadcast -n com.vdavid003.sm64port/.DebugReceiver -a com.vdavid003.sm64port.CMD"
+
+adb shell "$B --es cmd level --ei n 38"
+adb shell "$B --es cmd ptc --es action chainbox"   # start the section normally
+sleep 1
+adb shell "$B --es cmd runticks --ei n 200"        # 200 ticks, ~6.7 s of gameplay
+sleep 1
+adb shell "$B --es cmd trace"                      # dump the trace to SM64Leia logcat
+```
+
+`runticks` queues the count for the next `produce_one_frame()` call, which then
+sets `gfx_test_uncapped=1`, runs exactly N `game_loop_one_iteration()` steps
+(no OpenGL pass, no audio buffer), restores `gfx_test_uncapped=0` and renders
+one normal frame of the final state.  The app stays responsive afterwards; the
+screen shows the fast-forwarded result.
+
+Trace line (one every 15 ticks, plus the final state):
+
+```
+t=120 ph=12 fl=0x020 act=0x0300089A pos=-408,509,-1536 st=10 gx=0 cm=3
+```
+
+| field | meaning |
+| --- | --- |
+| `t` | `gGlobalTimer` (30 Hz simulation ticks) |
+| `ph` | chain phase (`ptc_chain_state`) |
+| `fl` | chain flags bitmask (hex) |
+| `act` | Mario action id |
+| `pos` | Mario position, rounded to N64 units |
+| `st` | star0 / star1 collected as two digits |
+| `gx` | goomba portal crossings |
+| `cm` | `gfx_cam_mode` (3 = custom camera) |
+
+Footers: `# done ran=<n> sim_ms=<device ms> real30_ms=<n/30 s>` and
+`# speedup_x100=<real/sim>`.  The batch completion is also logged as
+`PTC runticks done n=<n> ms=<device ms>`.
+
+Caveats:
+
+- No rendering during the batch, so no portal FBO/decal/screenshot evidence;
+  screenshots still come from normal mode (or the one frame rendered at the
+  end).
+- Audio buffers are not produced during the batch; expect a short gap.
+- The display-list pools are reset per tick by `config_gfx_pool()`, so N ticks
+  do not leak display lists.  Requests are clamped to **2400** ticks to bound
+  the time without a present.
+- The 16 KB trace keeps its tail: for long runs the oldest lines are dropped.
+- `runticks` leaves `gfx_test_uncapped` off, even if it was on before.
+
+Recommended workflow: `scripts/ninja-chain-test.py --fast --section <sec>
+--ticks <n>` for logic/flag iteration, then the default real-time mode for
+screenshots and the final visual pass.
+
+## Ninja chain (continuous systems showcase)
+
+`NINJA-CHAIN.md` (project root) has the full brief, course table, phases and
+per-section commands.  Quick reference:
+
+```bash
+adb shell "$B --es cmd level --ei n 38"
+adb shell "$B --es cmd ptc --es action chain"        # full continuous run
+adb shell "$B --es cmd dump"                         # chain=<phase>,<timer>,<flags>,<gcross>,<cubes>
+```
+
+Flags: 1 ball, 2 punch, 4 kick, 8 slam, 16 jetpack, 32 wallrun, 64 grapple,
+128 portal, 256 star1, 512 star2, 1024 goomba.  Each section can be started
+alone (`chainbox`, `chainwall`, `chaingrapple`, `chainjet`, `chainportal`,
+`chaingoomba`) for tuning.  The run always starts in the **custom camera** (`ptc_chain_setup()` calls
+`custom_camera_apply_mode(3)`), and the dump prints `cmode=3`; the green panel
+line tracks the current step and expected outcome.  R springs the custom camera
+back behind Mario (racing lag) unless the grapple rope is attached.

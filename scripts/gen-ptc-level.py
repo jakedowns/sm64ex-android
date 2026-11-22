@@ -51,6 +51,21 @@ PLATFORMS = [
     ("JP_N",  2600,    0,  3000,   60, 1200, (150, 165, 205), (80, 90, 120)),
     ("JP_PAD",2650, -350,  2950,  -50, 1200, (120, 240, 150), (60, 140, 85)),
     ("P9",  -300,   150, 300,   560,  950, (230, 190, 90), (140, 110, 45)),
+    # --- NINJA COURSE (south wing) --------------------------------------
+    # Jetpack launch pad: the first flight lifts Mario to the wall-run height.
+    ("L1",  -1100, -1600, -600, -1400, 450, (110, 200, 230), (60, 110, 130)),
+    # Wall-run wall (west face x=-360) and its catch platform.
+    ("N1",  -360, -2350, -300, -1400, 700, (150, 150, 165), (80, 80, 95)),
+    ("N2",  -950, -2700, -360, -2350, 330, (225, 150, 90), (130, 85, 50)),
+    # Tall grapple pillar rising out of the big catch platform.
+    ("N3",  -150, -2850,  -90, -2790, 950, (200, 120, 220), (110, 60, 130)),
+    ("N4",  -200, -3200, 1000, -2600, 200, (90, 200, 200), (50, 115, 120)),
+    # Jetpack target and its portal tower.
+    ("N5",  1200, -3150, 2100, -2600, 900, (220, 200, 90), (125, 110, 45)),
+    ("N7",  1900, -3000, 2100, -2800, 1700, (150, 190, 150), (80, 110, 85)),
+    # Final tower reached through the ceiling portal, plus the goomba gate.
+    ("N6",  -900, -3200, -300, -2700, 1500, (170, 170, 210), (95, 95, 130)),
+    ("N8",  -450, -3100, -390, -2900, 2100, (190, 150, 120), (105, 80, 60)),
 ]
 
 # 45-degree launch ramp: surface y = -z - 50, x in [-250,250], z in [-850,-550].
@@ -81,6 +96,10 @@ LABELS = [
     ("b",  "B",       0, 1050, 1199, 100, 50),
     ("p7", "P7",      0, 1000, -1501, 120, 60),
     ("p9", "P9",      0,  850,   149, 120, 60),
+    ("n2", "N2",   -650,  560, -2351, 100, 50),
+    ("n3", "N3",   -120, 1040, -2791, 100, 50),
+    ("n5", "N5",   1650,  990, -2601, 100, 50),
+    ("n6", "N6",   -600, 1590, -2701, 100, 50),
 ]
 
 TEXTURE_SCALE = 8                 # 8 texels per world unit = 1 unit per 8px check
@@ -818,6 +837,7 @@ const GeoLayout ptc_geo[] = {
 #include "levels/scripts.h"
 #include "levels/ptc/header.h"
 #include "levels/ptc/ptc_level.h"
+#include "actors/common0.h"
 
 #include "make_const_nonconst.h"
 
@@ -826,6 +846,8 @@ const LevelScript level_ptc_entry[] = {
     LOAD_MIO0(/*seg*/ 0x07, _ptc_segment_7SegmentRomStart, _ptc_segment_7SegmentRomEnd),
     LOAD_RAW(/*seg*/ 0x13, _behaviorSegmentRomStart, _behaviorSegmentRomEnd),
     ALLOC_LEVEL_POOL(),
+    /* The goomba-lemming finale needs this model. */
+    LOAD_MODEL_FROM_GEO(MODEL_GOOMBA, goomba_geo),
     MARIO(/*model*/ MODEL_MARIO, /*behParam*/ 0x00000001, /*beh*/ bhvMario),
 
     AREA(/*index*/ 1, ptc_geo),

@@ -2172,6 +2172,30 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         Log.i(TAG, "UNCAPPED_TEST=" + uncappedTestOn);
     }
 
+    /** Fast-forward: queue N simulation ticks for the game thread. */
+    void debugRunTicks(int n) {
+        nativeRunTicks(n);
+        Log.i(TAG, "RUNTICKS " + n + " requested");
+    }
+
+    /** Log the trace of the last runticks batch, one line per log record. */
+    void debugTrace() {
+        String trace = nativePtcTrace();
+        if (trace == null || trace.trim().isEmpty()) {
+            Log.i(TAG, "PTC trace: (empty)");
+            return;
+        }
+        Log.i(TAG, "PTC trace begin");
+        int lines = 0;
+        for (String line : trace.split("\n")) {
+            if (!line.isEmpty()) {
+                Log.i(TAG, line);
+                lines++;
+            }
+        }
+        Log.i(TAG, "PTC trace end lines=" + lines);
+    }
+
     // ---- realtime shadow widgets (nativeSetShadow channel) ----
 
     private void addShadowSlider(String name, int min, int max, int initial, String unit,
@@ -2842,7 +2866,9 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                     }
                 }
                 debugView.setTextColor(busyOn ? 0xFFFF5555 : 0xFFAAFFAA);
-                debugView.setText((busyOn ? "BUSY - hands off  |  " : "FREE  |  ")
+                String note = nativeGetDebugNote();
+                debugView.setText((note == null || note.isEmpty() ? "" : note + "\n")
+                        + (busyOn ? "BUSY - hands off  |  " : "FREE  |  ")
                         + BUILD_NAME + "  " + buildBranch());
                 h.postDelayed(this, 500);
             }
@@ -2879,6 +2905,12 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     }
     private native int nativeGetEyeWidth();
     private native int nativeGetFps();
+    private native void nativeSetDebugNote(String text);
+    private native String nativeGetDebugNote();
+
+    void debugNote(String text) {
+        nativeSetDebugNote(text);
+    }
 
     static native void nativeOverlayInput(int active, int sx, int sy, int buttons);
     static native void nativeSetFpsMode(int mode);
@@ -2917,6 +2949,8 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     static native String nativePtcStatus();
     static native int nativePtcPhase();
     static native int nativePtcStar();
+    static native void nativeRunTicks(int n);
+    static native String nativePtcTrace();
     static native void nativeSetUncappedTest(int on);
     static native int nativeGetUncappedTest();
     static native void nativeOverlayStick2(int rx, int ry, int active);

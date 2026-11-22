@@ -38,6 +38,7 @@
 #include "src/pc/controller/controller_touchscreen.h"
 
 #include "game/ptc.h"
+#include "game/ptc_trace.h"
 
 // TODO: figure out if this shit even works
 #ifdef VERSION_EU
@@ -461,6 +462,21 @@ Java_com_vdavid003_sm64port_sm64portActivity_nativePtcStar(JNIEnv *env, jclass c
     return ptc_star_collected();
 }
 
+/* Queue N simulation ticks for the game loop (see game/ptc_trace.c). */
+JNIEXPORT void JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeRunTicks(JNIEnv *env, jclass clazz, jint n) {
+    (void) env; (void) clazz;
+    ptc_trace_request_ticks((int) n);
+}
+
+/* Trace text accumulated by the last runticks batch. */
+JNIEXPORT jstring JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativePtcTrace(JNIEnv *env, jclass clazz) {
+    (void) clazz;
+    const char *trace = ptc_trace_get();
+    return (*env)->NewStringUTF(env, trace != NULL ? trace : "");
+}
+
 JNIEXPORT void JNICALL
 Java_com_vdavid003_sm64port_sm64portActivity_nativeSetCamMode2(JNIEnv *env, jclass clazz, jint mode) {
     (void) env; (void) clazz;
@@ -539,6 +555,40 @@ JNIEXPORT jint JNICALL
 Java_com_vdavid003_sm64port_sm64portActivity_nativeGetFps(JNIEnv *env, jobject thiz) {
     (void) env; (void) thiz;
     return (jint) (gfx_stereo_fps + 0.5f);
+}
+
+/* Test note shown on the green line in the Android debug panel.  adb can set
+ * it, and scripted tests update it per step ("what is being tested / what
+ * should happen"). */
+static char s_debug_note[160];
+
+void gfx_set_debug_note(const char *s) {
+    if (s == NULL) {
+        s = "";
+    }
+    strncpy(s_debug_note, s, sizeof(s_debug_note) - 1);
+    s_debug_note[sizeof(s_debug_note) - 1] = '\0';
+}
+
+const char *gfx_get_debug_note(void) {
+    return s_debug_note;
+}
+
+JNIEXPORT void JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeSetDebugNote(JNIEnv *env, jclass clazz,
+                                                                jstring text) {
+    const char *c = text ? (*env)->GetStringUTFChars(env, text, NULL) : NULL;
+    (void) clazz;
+    gfx_set_debug_note(c);
+    if (c != NULL) {
+        (*env)->ReleaseStringUTFChars(env, text, c);
+    }
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeGetDebugNote(JNIEnv *env, jclass clazz) {
+    (void) clazz;
+    return (*env)->NewStringUTF(env, s_debug_note);
 }
 
 JNIEXPORT jint JNICALL

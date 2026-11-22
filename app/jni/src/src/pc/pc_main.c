@@ -34,6 +34,14 @@
 #include "game/game_init.h"
 #include "game/main.h"
 #include "game/thread6.h"
+#include "game/ptc_trace.h"
+
+#ifdef __ANDROID__
+#include <android/log.h>
+#define PTC_FF_LOGI(...) __android_log_print(ANDROID_LOG_INFO, "SM64Leia", __VA_ARGS__)
+#else
+#define PTC_FF_LOGI(...) ((void) 0)
+#endif
 
 #ifdef DISCORDRPC
 #include "pc/discord/discordrpc.h"
@@ -89,7 +97,55 @@ void send_display_list(struct SPTask *spTask) {
 
 #define printf
 
+/* Present the display list produced by the last fast-forward tick.
+ * gfx_current_dlist stays valid until the next simulated tick, and
+ * config_gfx_pool() resets the display-list head on every tick, so nothing is
+ * accumulated while the batch runs. */
+static void present_last_display_list(void) {
+    extern Gfx *gfx_current_dlist;
+    extern float gfx_render_alpha;
+    extern float gfx_render_delta;
+    extern void gfx_patch_frame(float);
+    extern void gfx_run(Gfx *commands);
+    extern void gfx_start_frame(void);
+    extern void gfx_end_frame(void);
+
+    gfx_render_alpha = 1.0f;
+    gfx_render_delta = 0.0f;
+    gfx_start_frame();
+    if (gfx_current_dlist != NULL) {
+        gfx_patch_frame(gfx_render_alpha);
+        gfx_run(gfx_current_dlist);
+    }
+    gfx_end_frame();
+}
+
 void produce_one_frame(void) {
+    /* In-engine fast-forward requested by `cmd runticks`.  Runs exactly N
+     * simulation ticks back to back (no present, no audio buffer), then
+     * renders one normal frame of the resulting state.  This only ever runs
+     * on the game thread. */
+    int ff_ticks = ptc_trace_take_ticks();
+
+    if (ff_ticks > 0) {
+        extern int gfx_test_uncapped;
+
+        gfx_test_uncapped = 1;
+        for (int i = 0; i < ff_ticks; i++) {
+            game_loop_one_iteration();
+            ptc_trace_tick();
+        }
+        gfx_test_uncapped = 0;
+
+        {
+            int ms = ptc_trace_finish(ff_ticks);
+            PTC_FF_LOGI("PTC runticks done n=%d ms=%d", ff_ticks, ms);
+        }
+
+        present_last_display_list();
+        return;
+    }
+
     gfx_start_frame();
 
     const f32 master_mod = (f32)configMasterVolume / 127.0f;
