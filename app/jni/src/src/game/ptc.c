@@ -336,6 +336,9 @@ static void ptc_chain_input(struct MarioState *m);
 static const char *ptc_chain_note(int ph);
 static int s_chainFlags;
 static int s_chainGoombaCross;
+static int s_cineOn;
+static int s_cineInit;
+static int s_cineSavedFov;
 /* Green test note in the Android debug panel (gfx_sdl2.c). */
 extern void gfx_set_debug_note(const char *s);
 extern int gfx_cam_mode;
@@ -556,7 +559,13 @@ void ptc_reset(void) {
     {
         extern void custom_camera_set_focus_hint(int on, const Vec3f pos);
         extern void custom_camera_set_yaw_hint(int on, s16 yaw);
+        extern void custom_camera_set_freelook(int on, const Vec3f pos, const Vec3f focus);
+        extern int gfx_stereo_fov_pct;
         s_chainMode = 0;
+        s_cineOn = 0;
+        s_cineInit = 0;
+        custom_camera_set_freelook(0, NULL, NULL);
+        gfx_stereo_fov_pct = 100;
         movekit_force_trigger(0);
         custom_camera_set_focus_hint(0, NULL);
         custom_camera_set_yaw_hint(0, 0);
@@ -1560,6 +1569,12 @@ static void ptc_chain_setup(void) {
     s_chainMode = CH_BOX_BALL;
     s_chainTimer = 0;
     s_chainFlags = 0;
+    s_cineOn = 1;
+    s_cineInit = 0;
+    {
+        extern int gfx_stereo_fov_pct;
+        s_cineSavedFov = gfx_stereo_fov_pct;
+    }
     s_chainJumped = 0;
     s_chainGoombaState = 0;
     s_chainGoombaCross = 0;
@@ -1803,12 +1818,169 @@ static void ptc_chain_goomba_start(void) {
     ptc_chain_hint(1, -600.0f, 1650.0f, -2980.0f);
 }
 
+/* ------------------------------------------------ cinematic camera track */
+
+/* The trailer camera: one continuous, eased path.  Each chain phase asks for a
+ * shot (position / look-at / FOV); the path glides between them, so the run is
+ * a single take with no cuts.  Freelook is used so the framer is not fighting
+ * the gameplay chase camera; WALL NOCLIP keeps walls out of the way. */
+static int s_cineOn;
+static int s_cineInit;
+static int s_cineSavedFov = 100;
+static Vec3f s_cinePos;
+static Vec3f s_cineFocus;
+static float s_cineFov = 120.0f;
+
+static void chain_cam_ease(Vec3f dst, Vec3f src, float k) {
+    dst[0] += (src[0] - dst[0]) * k;
+    dst[1] += (src[1] - dst[1]) * k;
+    dst[2] += (src[2] - dst[2]) * k;
+}
+
+static void ptc_chain_camera(struct MarioState *m) {
+    extern void custom_camera_set_freelook(int on, const Vec3f pos, const Vec3f focus);
+    extern int gfx_stereo_fov_pct;
+    Vec3f pos, focus, mpos;
+    float fov, k;
+    int ph = s_chainMode;
+
+    if (!s_cineOn || m == NULL) {
+        return;
+    }
+    vec3f_copy(mpos, m->pos);
+    mpos[1] += 70.0f;
+
+    k = 0.12f;
+    fov = 130.0f;
+    pos[0] = -150.0f; pos[1] = 230.0f; pos[2] = -820.0f;
+    focus[0] = CH_BOX_X; focus[1] = 120.0f; focus[2] = -1280.0f;
+
+    switch (ph) {
+        case CH_BOX_BALL:
+        case CH_BOX_BALL_WAIT:
+            /* Hero wide of the cube stack, player in the foreground. */
+            pos[0] = -150.0f; pos[1] = 240.0f; pos[2] = -810.0f;
+            focus[0] = CH_BOX_X; focus[1] = 110.0f; focus[2] = -1290.0f;
+            fov = 145.0f; k = 0.10f;
+            break;
+        case CH_BOX_WALK_PUNCH:
+        case CH_BOX_PUNCH:
+            pos[0] = -70.0f; pos[1] = 185.0f; pos[2] = -940.0f;
+            focus[0] = CH_BOX_X; focus[1] = 110.0f; focus[2] = -1270.0f;
+            fov = 125.0f; k = 0.14f;
+            break;
+        case CH_BOX_WALK_KICK:
+        case CH_BOX_KICK:
+            pos[0] = -820.0f; pos[1] = 220.0f; pos[2] = -960.0f;
+            focus[0] = CH_BOX_X; focus[1] = 130.0f; focus[2] = -1290.0f;
+            fov = 125.0f; k = 0.12f;
+            break;
+        case CH_BOX_WALK_SLAM:
+        case CH_BOX_SLAM_JUMP:
+        case CH_BOX_SLAM:
+            /* Low, wide impact shot. */
+            pos[0] = -430.0f; pos[1] = 70.0f; pos[2] = -1000.0f;
+            focus[0] = CH_BOX_X; focus[1] = 45.0f; focus[2] = -1330.0f;
+            fov = 190.0f; k = 0.16f;
+            break;
+
+        case CH_JET_L1:
+            pos[0] = -340.0f; pos[1] = 120.0f; pos[2] = -1310.0f;
+            vec3f_copy(focus, mpos);
+            fov = 165.0f; k = 0.12f;
+            break;
+
+        case CH_RUN_WALL:
+        case CH_WALLRUN:
+        case CH_WALL_LAND:
+            /* Side tracking shot west of the wall; the camera trails in z. */
+            pos[0] = -730.0f; pos[1] = 300.0f; pos[2] = mpos[2] + 230.0f;
+            vec3f_copy(focus, mpos);
+            focus[1] = mpos[1] - 10.0f;
+            fov = 150.0f; k = 0.22f;
+            break;
+
+        case CH_GRAPPLE_AIM:
+        case CH_GRAPPLE_FIRE:
+            /* Wide shot showing the gap and the anchor. */
+            pos[0] = -1120.0f; pos[1] = 640.0f; pos[2] = -2260.0f;
+            focus[0] = -150.0f; focus[1] = 800.0f; focus[2] = -2820.0f;
+            fov = 175.0f; k = 0.10f;
+            break;
+        case CH_GRAPPLE_HOLD:
+        case CH_GRAPPLE_RELEASE:
+            pos[0] = -980.0f; pos[1] = 560.0f; pos[2] = -2360.0f;
+            vec3f_copy(focus, mpos);
+            fov = 160.0f; k = 0.12f;
+            break;
+        case CH_LAND_N4:
+        case CH_STAR1:
+            pos[0] = 700.0f; pos[1] = 520.0f; pos[2] = -2680.0f;
+            vec3f_copy(focus, mpos);
+            fov = 95.0f; k = 0.12f;
+            break;
+
+        case CH_JET_N5:
+            pos[0] = 620.0f; pos[1] = 340.0f; pos[2] = -2280.0f;
+            vec3f_copy(focus, mpos);
+            fov = 165.0f; k = 0.12f;
+            break;
+        case CH_LAND_N5:
+            pos[0] = 1250.0f; pos[1] = 780.0f; pos[2] = -2480.0f;
+            vec3f_copy(focus, mpos);
+            fov = 140.0f; k = 0.12f;
+            break;
+
+        case CH_PORTAL_RUN:
+            pos[0] = 1500.0f; pos[1] = 1160.0f; pos[2] = -2440.0f;
+            focus[0] = 1900.0f; focus[1] = 1050.0f; focus[2] = -2900.0f;
+            fov = 155.0f; k = 0.12f;
+            break;
+        case CH_PORTAL_FALL:
+            /* Pan up to the ceiling portal and catch him coming out. */
+            pos[0] = -40.0f; pos[1] = 1880.0f; pos[2] = -2600.0f;
+            focus[0] = -470.0f; focus[1] = 2380.0f; focus[2] = -2980.0f;
+            fov = 175.0f; k = 0.10f;
+            break;
+        case CH_STAR2:
+            pos[0] = -300.0f; pos[1] = 1730.0f; pos[2] = -2800.0f;
+            vec3f_copy(focus, mpos);
+            fov = 95.0f; k = 0.12f;
+            break;
+
+        case CH_GOOMBA_SETUP:
+        case CH_GOOMBA_LOOP:
+            /* Low north-side spectator of the lemming loop. */
+            pos[0] = -660.0f; pos[1] = 1830.0f; pos[2] = -2800.0f;
+            focus[0] = -600.0f; focus[1] = 1660.0f; focus[2] = -2990.0f;
+            fov = 135.0f; k = 0.08f;
+            break;
+
+        default:
+            break;
+    }
+
+    if (!s_cineInit) {
+        vec3f_copy(s_cinePos, pos);
+        vec3f_copy(s_cineFocus, focus);
+        s_cineFov = fov;
+        s_cineInit = 1;
+    } else {
+        chain_cam_ease(s_cinePos, pos, k);
+        chain_cam_ease(s_cineFocus, focus, k * 1.15f);
+        s_cineFov += (fov - s_cineFov) * 0.09f;
+    }
+    custom_camera_set_freelook(1, s_cinePos, s_cineFocus);
+    gfx_stereo_fov_pct = (int) (s_cineFov + 0.5f);
+}
+
 static void ptc_chain_update(void) {
     struct MarioState *m = gMarioState;
 
     if (s_chainMode == CH_OFF || m == NULL) {
         return;
     }
+    ptc_chain_camera(m);
     s_chainTimer++;
 
     switch (s_chainMode) {
@@ -2393,7 +2565,13 @@ static void ptc_apply_command(const char *action) {
     } else if (strcmp(action, "chainoff") == 0) {
         extern void custom_camera_set_focus_hint(int on, const Vec3f pos);
         extern void custom_camera_set_yaw_hint(int on, s16 yaw);
+        extern void custom_camera_set_freelook(int on, const Vec3f pos, const Vec3f focus);
+        extern int gfx_stereo_fov_pct;
         s_chainMode = 0;
+        s_cineOn = 0;
+        s_cineInit = 0;
+        custom_camera_set_freelook(0, NULL, NULL);
+        gfx_stereo_fov_pct = 100;
         movekit_force_trigger(0);
         custom_camera_set_focus_hint(0, NULL);
         custom_camera_set_yaw_hint(0, 0);
