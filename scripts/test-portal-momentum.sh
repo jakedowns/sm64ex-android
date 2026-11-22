@@ -112,10 +112,26 @@ echo "$STATE" >"$OUT/final-state.txt"
 
 ENTRY=$(kv "$STATE" mom_enter)
 EXIT=$(kv "$STATE" mom_exit)
+RATIO=$(kv "$STATE" mom_ratio)
+TURN=$(kv "$STATE" mom_turn)
+HOLD=$(kv "$STATE" mom_hold)
+HCOS=$(kv "$STATE" mom_hcos)
 [ -n "$ENTRY" ] && awk "BEGIN { exit !($ENTRY >= 55.0) }" \
     || fail "entrance velocity below momentum threshold ($ENTRY < 55)"
 [ -n "$EXIT" ] && awk "BEGIN { exit !($EXIT >= 55.0) }" \
     || fail "exit velocity below momentum threshold ($EXIT < 55)"
+# A portal is an orthonormal transform: the mapped exit must keep the entry
+# speed exactly and turn the vector by the pair's fixed angle.
+[ -n "$RATIO" ] && awk "BEGIN { exit !($RATIO >= 0.999 && $RATIO <= 1.001) }" \
+    || fail "portal changed the crossing speed (ratio $RATIO)"
+[ -n "$TURN" ] && awk "BEGIN { exit !($TURN >= -0.72 && $TURN <= -0.70) }" \
+    || fail "portal turn did not match the floor/45-degree pair (dot $TURN)"
+# One physics tick later the airborne state must still be flying along the
+# mapped exit, not have been rewritten to a standing/walking velocity.
+[ -n "$HCOS" ] && awk "BEGIN { exit !($HCOS >= 0.99) }" \
+    || fail "air state lost the exit direction (cos $HCOS)"
+[ -n "$HOLD" ] && awk "BEGIN { exit !($HOLD >= 0.9 * $ENTRY) }" \
+    || fail "exit speed lost on the next tick ($HOLD vs $ENTRY)"
 [ "$(kv "$STATE" stars)" = "$BEFORE_STARS" ] || fail "real star count changed"
 [ "$(kv "$STATE" save)" = "$BEFORE_SAVE" ] || fail "save star count changed"
 

@@ -398,6 +398,15 @@ static f32 s_momExitY;
 static f32 s_momExitVX;
 static f32 s_momExitVY;
 static f32 s_momExitVZ;
+/* Portal-momentum telemetry: the mapped exit vector the portal installed, the
+ * velocity Mario still had one physics tick later, and how well they agree. */
+static f32 s_momMappedVX;
+static f32 s_momMappedVY;
+static f32 s_momMappedVZ;
+static f32 s_momHoldSpeed;
+static f32 s_momHoldCos;
+static f32 s_momRatio;
+static f32 s_momTurnDot;
 static int s_realStarsBefore;
 static int s_realStarsAfter;
 static int s_saveStarsBefore;
@@ -691,6 +700,13 @@ void ptc_reset(void) {
     s_momExitVX = 0.0f;
     s_momExitVY = 0.0f;
     s_momExitVZ = 0.0f;
+    s_momMappedVX = 0.0f;
+    s_momMappedVY = 0.0f;
+    s_momMappedVZ = 0.0f;
+    s_momHoldSpeed = 0.0f;
+    s_momHoldCos = 1.0f;
+    s_momRatio = 1.0f;
+    s_momTurnDot = 1.0f;
 
     portal_reset();
     portal_give_gun();
@@ -789,6 +805,31 @@ static void ptc_momentum_place_mario(void) {
     set_mario_action(m, ACT_IDLE, 0);
 }
 
+/* Fixed side-on shot for the momentum demo: the floor portal on the left, the
+ * 45-degree exit ramp and the whole launch arc read in one frame.  Pinned via
+ * the custom camera's freelook override, which portal.c leaves alone on the
+ * crossing frame. */
+static void ptc_momentum_camera_on(void) {
+    extern void custom_camera_apply_mode(int mode);
+    extern void custom_camera_set_freelook(int on, const Vec3f pos, const Vec3f focus);
+    extern int gfx_stereo_fov_pct;
+    Vec3f pos = { 2400.0f, 900.0f, -850.0f };
+    Vec3f focus = { 0.0f, 520.0f, -900.0f };
+
+    custom_camera_apply_mode(3);
+    custom_camera_set_freelook(1, pos, focus);
+    gfx_stereo_fov_pct = 140;
+    /* Same choice as the trailer: the relay window goes black when the exit
+     * faces open air, so draw the coloured portal fans for the demo. */
+    portal_view_set(0);
+}
+
+static void ptc_momentum_camera_off(void) {
+    extern void custom_camera_set_freelook(int on, const Vec3f pos, const Vec3f focus);
+    custom_camera_set_freelook(0, NULL, NULL);
+    portal_view_set(1);
+}
+
 void ptc_momentum_start(void) {
     ptc_reset();
     s_testMode = 1;
@@ -800,12 +841,12 @@ void ptc_momentum_start(void) {
     s_momExitSpeed = 0.0f;
     s_momApex = 0.0f;
     s_momPrevSpeed = 0.0f;
-
     if (!ptc_in_level()) {
         ptc_fail("not in Portal Test Chamber (level 38 area 1)");
         return;
     }
     ptc_momentum_place_mario();
+    ptc_momentum_camera_on();
 }
 
 /* --------------------------------------------------- portal walk-through */
@@ -1257,9 +1298,16 @@ static void ptc_momentum_update(void) {
             if (s_teleportSeen) {
                 /* Do NOT zero here: the teleport just installed the rotated
                  * launch velocity for the next phase. */
+                Vec3f pEntry, pMapped;
                 s_momEntrySpeed = s_momPrevSpeed;
                 s_momExitSpeed = sqrtf(m->vel[0] * m->vel[0] + m->vel[1] * m->vel[1]
                                        + m->vel[2] * m->vel[2]);
+                portal_last_velocities(pEntry, pMapped);
+                s_momMappedVX = pMapped[0];
+                s_momMappedVY = pMapped[1];
+                s_momMappedVZ = pMapped[2];
+                s_momRatio = portal_last_speed_ratio();
+                s_momTurnDot = portal_last_turn_dot();
                 s_momExitY = m->pos[1];
                 s_momExitVX = m->vel[0];
                 s_momExitVY = m->vel[1];
@@ -1284,6 +1332,23 @@ static void ptc_momentum_update(void) {
             break;
 
         case PTC_PHASE_MOM_FLY:
+            /* The teleport happens in portal_update(), after Mario's physics.
+             * Sample one tick later: if the airborne state rebuilt the launch
+             * from forwardVel/faceAngle correctly, the velocity should still
+             * point along the mapped exit and keep (almost all of) its speed. */
+            if (s_phaseTimer == 1) {
+                float len = sqrtf(m->vel[0] * m->vel[0] + m->vel[1] * m->vel[1]
+                                  + m->vel[2] * m->vel[2]);
+                float mappedLen = sqrtf(s_momMappedVX * s_momMappedVX
+                                      + s_momMappedVY * s_momMappedVY
+                                      + s_momMappedVZ * s_momMappedVZ);
+                s_momHoldSpeed = len;
+                if (len > 1e-4f && mappedLen > 1e-4f) {
+                    float dot = m->vel[0] * s_momMappedVX + m->vel[1] * s_momMappedVY
+                              + m->vel[2] * s_momMappedVZ;
+                    s_momHoldCos = dot / (len * mappedLen);
+                }
+            }
             if (m->pos[1] > s_momApex) {
                 s_momApex = m->pos[1];
             }
@@ -1313,7 +1378,14 @@ static void ptc_momentum_update(void) {
             if (ptc_star2_collected()) {
                 if (s_momEntrySpeed < 55.0f) {
                     ptc_fail("entrance velocity was below the momentum threshold");
+                } else if (s_momRatio < 0.999f || s_momRatio > 1.001f) {
+                    ptc_fail("portal changed the speed of the crossing");
+                } else if (s_momHoldCos < 0.99f) {
+                    ptc_fail("air state lost the portal exit direction");
+                } else if (s_momHoldSpeed < s_momEntrySpeed * 0.90f) {
+                    ptc_fail("portal exit speed was lost on the next tick");
                 } else {
+                    ptc_momentum_camera_off();
                     ptc_finish_ok();
                 }
             } else if (s_phaseTimer > 180) {
@@ -2406,6 +2478,15 @@ static const char *ptc_chain_caption(int ph) {
 void ptc_chain_hud_text(void) {
     extern void print_caption(s32 x, s32 y, const char *str);
     const char *cap;
+    /* Momentum demo: label the drop and the launch even though it is not part
+     * of the cinematic chain (this is the playable proof that portals preserve
+     * velocity). */
+    if (s_testMode == 1 && s_testActive
+        && s_phase >= PTC_PHASE_MOM_DROP && s_phase <= PTC_PHASE_MOM_FLY) {
+        print_caption(SCREEN_WIDTH / 2, 168,
+                      s_phase == PTC_PHASE_MOM_FLY ? "MOMENTUM" : "PORTAL LAUNCH");
+        return;
+    }
     if (s_chainMode == CH_OFF || !s_cineOn) {
         return;
     }
@@ -3281,7 +3362,7 @@ static void ptc_apply_command(const char *action) {
         ptc_reset();
     } else if (strcmp(action, "calibrate") == 0) {
         ptc_calibrate_start();
-    } else if (strcmp(action, "momentum") == 0) {
+    } else if (strcmp(action, "momentum") == 0 || strcmp(action, "launch") == 0) {
         ptc_momentum_start();
     } else if (strcmp(action, "place") == 0) {
         ptc_place_portals();
@@ -3610,7 +3691,8 @@ void ptc_format_status(char *buf, int len) {
              "PTC level=%d area=%d phase=%d mode=%d active=%d fail=%d reason=\"%s\" "
              "star=%d star2=%d star_visible=%d portals=%d shotA=%d shotB=%d pdbg=%d "
              "view=%d vsrc=%d "
-             "mom_enter=%.1f mom_exit=%.1f mom_apex=%.1f momy=%.1f momv=%.1f,%.1f,%.1f walltest=0x%X "
+             "mom_enter=%.1f mom_exit=%.1f mom_apex=%.1f momy=%.1f momv=%.1f,%.1f,%.1f "
+             "mom_hold=%.1f mom_hcos=%.3f mom_ratio=%.3f mom_turn=%.3f walltest=0x%X "
              "p0=%.1f,%.1f,%.1f n0=%.3f,%.3f,%.3f p1=%.1f,%.1f,%.1f n1=%.3f,%.3f,%.3f "
              "tele=%d src=%d dst=%d onplat=%d "
              "mario=%.2f,%.2f,%.2f vel=%.2f,%.2f,%.2f fv=%.1f iy=%d in=0x%04X im=%.1f hook=%d action=0x%08X floor=%.2f "
@@ -3626,7 +3708,8 @@ void ptc_format_status(char *buf, int len) {
              s_starCollected[0], s_starCollected[1], ptc_star_visible(), portal_count(), s_shotA, s_shotB, g_portal_debug,
              g_portal_view.active, g_portal_view.source,
              s_momEntrySpeed, s_momExitSpeed, s_momApex,
-             s_momExitY, s_momExitVX, s_momExitVY, s_momExitVZ, s_wallTest,
+             s_momExitY, s_momExitVX, s_momExitVY, s_momExitVZ,
+             s_momHoldSpeed, s_momHoldCos, s_momRatio, s_momTurnDot, s_wallTest,
              hasA ? pa[0] : 0.0f, hasA ? pa[1] : 0.0f, hasA ? pa[2] : 0.0f,
              hasA ? na[0] : 0.0f, hasA ? na[1] : 0.0f, hasA ? na[2] : 0.0f,
              hasB ? pb[0] : 0.0f, hasB ? pb[1] : 0.0f, hasB ? pb[2] : 0.0f,

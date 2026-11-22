@@ -56,6 +56,11 @@ int  portal_get(int which, Vec3f pos, Vec3f normal);
 int  portal_last_src(void);
 int  portal_last_dst(void);
 int  portal_teleport_count(void);
+/* Momentum telemetry for the last teleport: the velocity Mario carried in,
+ * the mapped velocity on the exit side, and the transform's scale / turn. */
+void portal_last_velocities(Vec3f entry, Vec3f exitVel);
+float portal_last_speed_ratio(void);
+float portal_last_turn_dot(void);
 int  portal_test_walls(void);   // bitmask: front/back/left/right wall accepted
 
 /* Aiming reticle drawn in the N64 UI pass with its own stereo depth. */

@@ -83,6 +83,14 @@ static int s_ticksInArea = 0;
 static int s_lastTeleportSrc = -1;
 static int s_lastTeleportDst = -1;
 static int s_teleportCount = 0;
+/* Momentum telemetry: the velocity Mario carried into the portal and the
+ * velocity the portal mapping produced on the other side.  The ratio/dot are
+ * exposed so the deterministic tests can prove that a portal preserves both
+ * speed and direction instead of just repositioning Mario. */
+static Vec3f s_lastEntryVel;
+static Vec3f s_lastExitVel;
+static float s_lastSpeedRatio = 1.0f;
+static float s_lastTurnDot = 1.0f;
 
 /* ------------------------------------------------------------------ math */
 
@@ -370,6 +378,8 @@ static void portal_clear(void) {
     s_cooldown = 0;
     s_lastTeleportSrc = -1;
     s_lastTeleportDst = -1;
+    s_lastSpeedRatio = 1.0f;
+    s_lastTurnDot = 1.0f;
 }
 
 void portal_reset(void) {
@@ -437,6 +447,24 @@ static void portal_teleport(int srcIdx, const Vec3f at) {
     vel[2] = gMarioState->vel[2];
     portal_rotate_vec(src, dst, vel, newVel);
     vec3f_copy(gMarioState->vel, newVel);
+
+    /* Momentum telemetry: record what went in and what came out.  The portal
+     * mapping is orthonormal, so speed must survive exactly and the direction
+     * must turn by the pair's fixed angle; the deterministic tests assert
+     * these numbers and then sample Mario again one physics tick later to make
+     * sure the air state did not throw the launch away. */
+    vec3f_copy(s_lastEntryVel, vel);
+    vec3f_copy(s_lastExitVel, newVel);
+    {
+        float inLen = sqrtf(vdot3(vel, vel));
+        float outLen = sqrtf(vdot3(newVel, newVel));
+        s_lastSpeedRatio = (inLen > 1e-4f) ? (outLen / inLen) : 1.0f;
+        if (inLen > 1e-4f && outLen > 1e-4f) {
+            s_lastTurnDot = vdot3(vel, newVel) / (inLen * outLen);
+        } else {
+            s_lastTurnDot = 1.0f;
+        }
+    }
 
     // This fork rebuilds the horizontal air velocity from forwardVel every
     // tick (update_air_without_turn), which would erase a portal launch.
@@ -555,10 +583,28 @@ void portal_update(void) {
         // Proximity trigger, not a plane crossing: solid walls stop Mario a
         // body-radius short of the portal, so his centre never crosses the
         // plane. Entering means "inside the ellipse and close to the plane".
+        // Also accept a swept crossing, because a fast launch (portal
+        // momentum, grapple, jetpack) can jump the whole proximity band in a
+        // single 30 Hz tick and would otherwise skip the portal entirely.
         if (s_portal[0].active && s_portal[1].active && s_cooldown == 0) {
             for (int i = 0; i < 2; i++) {
                 struct Portal *p = &s_portal[i];
                 float d = vdot3(com, p->normal) - vdot3(p->pos, p->normal);
+                float dPrev = s_havePrevCom
+                    ? vdot3(s_prevCom, p->normal) - vdot3(p->pos, p->normal)
+                    : d;
+
+                if (s_havePrevCom && dPrev > 0.0f && d <= 0.0f) {
+                    float t = dPrev / (dPrev - d);
+                    Vec3f cross;
+                    cross[0] = s_prevCom[0] + (com[0] - s_prevCom[0]) * t;
+                    cross[1] = s_prevCom[1] + (com[1] - s_prevCom[1]) * t;
+                    cross[2] = s_prevCom[2] + (com[2] - s_prevCom[2]) * t;
+                    if (portal_point_inside(p, cross)) {
+                        portal_teleport(i, cross);
+                        break;
+                    }
+                }
                 if (d > 0.0f && d < PORTAL_ENTER_DIST && portal_point_inside(p, com)) {
                     portal_teleport(i, com);
                     break;
@@ -1292,4 +1338,17 @@ int portal_last_dst(void) {
 
 int portal_teleport_count(void) {
     return s_teleportCount;
+}
+
+void portal_last_velocities(Vec3f entry, Vec3f exitVel) {
+    vec3f_copy(entry, s_lastEntryVel);
+    vec3f_copy(exitVel, s_lastExitVel);
+}
+
+float portal_last_speed_ratio(void) {
+    return s_lastSpeedRatio;
+}
+
+float portal_last_turn_dot(void) {
+    return s_lastTurnDot;
 }

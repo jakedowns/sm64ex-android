@@ -481,6 +481,40 @@ Each rig places Mario 300 units short of the entry portal, waits 90 ticks so
 the chase camera is settled, then holds `forwardVel=32` through the crossing
 and keeps walking out of the destination.
 
+### Portal momentum (movement mechanic)
+
+A portal pair is an orthonormal transform: speed is preserved exactly and the
+velocity vector is rotated by the pair's fixed angle, so a fast entry becomes a
+fast exit instead of a slow step-through. The portal trigger accepts both the
+proximity band and a swept plane crossing, so a launch cannot skip the portal
+between two 30 Hz ticks.
+
+`ptc momentum` (alias `ptc launch`) is the deterministic demo/regression: a
+floor portal at `(0,4,-1042)` and a 45-degree ramp portal at
+`(0,653,-697) n=(0,.707,.707)`. Mario free-falls into the floor portal at
+terminal speed, exits the ramp at the same speed, and must reach the P9 debug
+star. The camera is pinned side-on so the drop, the ramp and the arc read in one
+frame; captions show `PORTAL LAUNCH` then `MOMENTUM`.
+
+```bash
+scripts/test-portal-momentum.sh        # runs inside agent-lock.sh device
+```
+
+Dump tokens:
+
+| token | meaning |
+| --- | --- |
+| `mom_enter` / `mom_exit` | speed at the crossing / mapped exit speed |
+| `mom_hold` | speed one physics tick after the teleport |
+| `mom_ratio` | mapped / entry speed (must be 1.000) |
+| `mom_turn` | dot(entry, exit); `-0.707` for this 90-degree pair |
+| `mom_hcos` | cos(actual post-tick velocity, mapped exit); must be ~1 |
+| `momv` | the mapped exit vector `x,y,z` |
+
+The engine also fails the test itself if the ratio leaves 0.999..1.001, the
+post-tick direction drifts (`mom_hcos < 0.99`) or the launch loses more than 10%
+of its speed on the next tick, so a regression is visible in `reason="..."`.
+
 ### Mario portal walk loop (smoke test)
 
 `ptc marioportalwalkloop` places two portals side by side on the west wall —
