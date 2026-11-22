@@ -380,6 +380,14 @@ Java_com_vdavid003_sm64port_sm64portActivity_nativeStepTicks(JNIEnv *env, jclass
     game_step_ticks((int) n);
 }
 
+/* Trailer audio tap (see pc/audio/audio_sdl.c). */
+extern void audio_sdl_record(int on);
+JNIEXPORT void JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeSetAudioRec(JNIEnv *env, jclass clazz, jint on) {
+    (void) env; (void) clazz;
+    audio_sdl_record(on ? 1 : 0);
+}
+
 JNIEXPORT void JNICALL
 Java_com_vdavid003_sm64port_sm64portActivity_nativeSetHardPause(JNIEnv *env, jclass clazz, jint on) {
     (void) env; (void) clazz;

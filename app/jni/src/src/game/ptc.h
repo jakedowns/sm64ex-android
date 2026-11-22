@@ -47,6 +47,10 @@ int  ptc_star_visible(void);
 int  ptc_star_visible_index(int index);
 void ptc_momentum_start(void);
 
+/* Endless A<->B walk loop through two adjacent portals (smoke test). */
+void ptc_mario_portal_walk_loop_start(void);
+void ptc_mario_portal_walk_loop_stop(void);
+
 /* Headless diagnostics.  ptc_format_status() returns one parseable line. */
 void ptc_debug_command(const char *action);
 void ptc_format_status(char *buf, int len);

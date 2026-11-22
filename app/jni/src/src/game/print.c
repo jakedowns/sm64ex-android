@@ -31,6 +31,24 @@ struct TextLabel {
 struct TextLabel *sTextLabels[256];
 s16 sTextLabelsCount = 0;
 
+/* One small caption line (used by the PTC trailer feature labels), drawn at
+ * half the HUD glyph size so it does not dominate the frame. */
+static char sCaptionText[64];
+static s32 sCaptionX = 160, sCaptionY = 160;
+static s32 sCaptionLen = 0;
+
+void print_caption(s32 x, s32 y, const char *str) {
+    s32 n = 0;
+    while (str[n] != 0 && n < 63) {
+        sCaptionText[n] = str[n];
+        n++;
+    }
+    sCaptionText[n] = 0;
+    sCaptionLen = n;
+    sCaptionX = x;
+    sCaptionY = y;
+}
+
 /**
  * Returns n to the exponent power, only for non-negative powers.
  */
@@ -418,6 +436,27 @@ void render_text_labels(void) {
     gSPPerspNormalize((Gfx *) (gDisplayListHead++), 0xFFFF);
     gSPMatrix(gDisplayListHead++, VIRTUAL_TO_PHYSICAL(mtx), G_MTX_PROJECTION | G_MTX_LOAD | G_MTX_NOPUSH);
     gSPDisplayList(gDisplayListHead++, dl_hud_img_begin);
+
+    if (sCaptionLen > 0) {
+        const f32 sc = 0.5f;
+        s32 startX = sCaptionX - (s32) (sCaptionLen * 12 * sc / 2.0f);
+        s32 cy = 224 - sCaptionY;
+        for (j = 0; j < sCaptionLen; j++) {
+            glyphIndex = char_to_glyph_index(sCaptionText[j]);
+            if (glyphIndex != GLYPH_SPACE) {
+                s32 rx = startX + (s32) (j * 12 * sc);
+                add_glyph_texture(glyphIndex);
+                /* Half-size rect: double the per-pixel texture step so the
+                 * whole 16x16 glyph is still covered (a smaller step samples
+                 * only part of the texture and crops the letters). */
+                gSPTextureRectangle(gDisplayListHead++, rx << 2, cy << 2,
+                                    (rx + (s32) (16 * sc)) << 2,
+                                    (cy + (s32) (16 * sc)) << 2,
+                                    G_TX_RENDERTILE, 0, 0, 8 << 10, 2 << 10);
+            }
+        }
+        sCaptionLen = 0;
+    }
 
     for (i = 0; i < sTextLabelsCount; i++) {
         for (j = 0; j < sTextLabels[i]->length; j++) {

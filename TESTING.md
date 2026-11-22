@@ -68,6 +68,33 @@ feature's token (for example `pov=600/90/400/1/0`) or a changed knob-dump
 format. If it is missing, install again. Also `force-stop` before `am start`;
 two app instances make broadcasts land on the wrong one.
 
+## 1b. Screen recording and audio capture (mandatory)
+
+1. **Never unmute the test device.** Keep test devices muted or on silent
+   during automated test runs. Android captures internal system audio directly
+   from the audio stream prior to speaker output, so device volume does not
+   need to be turned up to record sound.
+2. **Do not use native `adb shell screenrecord` for audio.** Standard
+   `adb shell screenrecord` only captures video and does not support audio
+   streams.
+3. **Use `scrcpy` over ADB for screen + audio capture.** To programmatically
+   record both screen video and internal device audio (Android 11+), run
+   `scrcpy` in headless mode:
+
+   ```bash
+   scrcpy --no-playback --record=recording.mp4
+   ```
+
+   Stop the recording by sending SIGINT (`Ctrl+C`) to the process. Apps with
+   DRM/`FLAG_SECURE` audio restrictions will still produce silent audio tracks
+   regardless of volume or capture method.
+
+Environment note (this host): there is no aarch64 Linux `scrcpy` release and
+the tablet is Android 12, so trailer recordings currently use the in-app PCM
+tap as a fallback: `cmd audiorec --ei v 1|0` writes `files/audio_rec.wav`
+(pulled with `adb exec-out run-as com.vdavid003.sm64port cat ...`). The rules
+above still apply — never raise the device volume for a recording.
+
 ## 2. Capture pipeline
 
 - Unlock: `/media/share/lp2-test/scripts/unlock.sh`.
@@ -453,6 +480,27 @@ Walk rigs (`ptc` actions, all in `ptc.c`):
 Each rig places Mario 300 units short of the entry portal, waits 90 ticks so
 the chase camera is settled, then holds `forwardVel=32` through the crossing
 and keeps walking out of the destination.
+
+### Mario portal walk loop (smoke test)
+
+`ptc marioportalwalkloop` places two portals side by side on the west wall —
+A `(-2596,140,-2000)` and B `(-2596,140,-1820)`, 180 units apart, both normals
+`+X` into the room — puts Mario on the floor at `(-2300,0,-2000)` facing west
+and walks him through A, out of B, then right and back into B, out of A, and so
+on forever.  Every pass is a real portal teleport.  It is deterministic (fresh
+`ptc_reset()` + fixed hitscan targets, no camera aim) and can be restarted at
+any time by sending the action again.
+
+```bash
+adb shell "$B --es cmd ptc --es action marioportalwalkloop"
+adb shell "$B --es cmd ptc --es action marioportalwalkstop"
+```
+
+`cmd dump` exposes `mpw=<active>,<passes>,<phase>,<target>,<timer>,<src>,<dst>`
+(phase 0 settle, 1 walk in, 2 right turn, 3 stalled).  Assert `mpw` passes > 3
+and that `src`/`dst` alternate 0,1 / 1,0.  The same actions back the
+`MARIO PORTAL WALK LOOP` / `STOP PORTAL WALK LOOP` buttons in ENH → PORTAL →
+PORTAL TESTS.
 
 Why hard pause: `cmd runticks N` renders only the final state, and between adb
 commands the real-time game loop keeps ticking (~30 ticks/s), so a `runticks 1`

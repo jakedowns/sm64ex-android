@@ -143,6 +143,59 @@ Take: `/tmp/opencode/ninja-feedback-30s.mp4` (30.0 s, HUD-free), full capture
 `/tmp/opencode/fb-take4.mp4`; beat sheet `/tmp/opencode/ninja-beats-feedback.png`.
 Fast chain on this build: **PASS 8/8** (flags=0x7ff, stars 1/1, crossings 117).
 
+### Feedback v3 (presentation) - in progress
+
+| note | change |
+| --- | --- |
+| Mario floated on an invisible platform in the goomba finale | Root cause: the ninja-course display lists (`ptc_dl_l1`, `ptc_dl_n1..n8`) existed but were never referenced by the level geo. They are now GEO_DISPLAY_LIST nodes, so L1/N1-N8 (including N6) are visible. |
+| goomba section should be a portal timing gag | One goomba walks at Mario; the chain shoots a **floor portal** between them just before it arrives and a **ceiling portal** above it. The goomba drops through the floor, comes out of the ceiling and dies on the ~1290-unit fall, then the next one respawns. New two-shot finale camera: stand-off, then tilt up for the drop. |
+| wall-run looked like running in mid-air | ACT_WALLRUN now rolls Mario's model onto the wall plane (faceAngle[2]/gfx.angle[2] = side * 90 deg) and resets on exit, so his feet read as planted. |
+| section captions mid-video | `ptc_chain_hud_text()` prints short labels in the game's HUD lettering via `print_text_centered` from `render_hud`: BOX3D PYRAMID, GROUND POUND, PUNCH, KICK, ROCKET (J has no glyph), WALL RUN, CEILING GRAPPLE, PORTALS, STAR, GOOMBA LOOP. |
+| grapple should swing from the ceiling like Spider-Man | Scripted pendulum under the ceiling anchor: R 2450 -> 2070, angle -6 -> +16 deg, wide side camera; releases onto N4/star 1. |
+| sound | Not capturable with current tooling: Android 12, `screenrecord` has no audio, no aarch64 scrcpy build, and shell RECORD_AUDIO + tinycap still writes a header-only wav. The deliverable stays silent. |
+| next video portrait | Superseded by the user: no portrait crop; re-encode to 60 fps only. |
+
+### Take 10 - presentation cut (landscape, 60 fps)
+
+- `/tmp/opencode/g-take10.mp4` - raw 38 s screenrecord (1600x1000, ~95 fps).
+- `/tmp/opencode/ninja-final-60fps.mp4` - 37.1 s, **1600x1000, 60 fps** re-encode
+  (no portrait crop): https://gofile.io/d/4hzBk3J0
+- Run proof: `chain=26,469,0x7ff,3,0`, `star=1 star2=1 cmode=3`.
+- Includes: visible L1/N1-N8 platforms, ground pound on the pyramid then
+  punch/kick, ROCKET/WALL RUN/CEILING GRAPPLE/PORTALS/GOOMBA LOOP captions in
+  the HUD lettering, wall-run body roll, goomba floor->ceiling portal gag with
+  the two-shot finale camera.
+- Audio: none. Android 12 screenrecord has no audio; no aarch64 scrcpy build;
+  shell RECORD_AUDIO + tinycap writes a header-only wav.
+
+### Take 14 - audio + polish cut
+
+- `/tmp/opencode/g-take14.mp4` + `g-take14.wav` (38 s) -> 
+  `/tmp/opencode/ninja-final-audio-60fps.mp4`: 37.15 s, 1600x1000, **60 fps,
+  AAC stereo audio**: https://gofile.io/d/LXhOBCUf
+- Fixes in this cut:
+  - goombas render again (the chain rig was using `bhvGoomba`; the AI
+    moved/despawned them while the dump still showed a live object. Switched to
+    `bhvStaticObject` with manual placement).
+  - goomba-loop camera is one continuous follow shot derived from the goomba's
+    live position (k=0.07), no more snap between floor/ceiling framings.
+  - captions are half-size and uncropped: the caption pass doubles the
+    per-pixel S/T step (`8<<10, 2<<10`) so the whole 16x16 glyph fits the 8x8
+    rect; SWING / RETRACT / RELEASE label the grapple phases.  RELEASE
+    evidence: `/tmp/opencode/release_caption.png` (phase 17 captured with
+    `cmd pause` + `cmd step`).
+  - L1/N1-N8 moved into the occluder fade system (GEO_ASM 30-38, mask bits
+    20-28, ray boxes), so course geometry can ghost instead of blocking.
+    Evidence: `ptc fadetest` puts N8 between the camera and Mario;
+    `/tmp/opencode/fade_off.png` (N8 opaque, Mario hidden) vs
+    `/tmp/opencode/fade_on.png` (N8 hidden, Mario visible).  Debug actions
+    `fadeon`/`fadeoff` toggle the system for before/after captures.
+  - audio: in-app PCM tap (`cmd audiorec --ei v 1|0`, `audio_sdl_play` writes
+    `files/audio_rec.wav`), muxed with the 60 fps video. Device volume was not
+    raised (see TESTING.md 1b).
+- Run proof: `chain=26,589,0x7ff,3,0`, `star=1 star2=1 cmode=3`; audio levels
+  mean -24.4 dB / max -0.5 dB.
+
 ### Next
 1. **Impact feel** (polish): short slow-mo/time-scale dip on the ground-pound,
    grapple apex and the two star grabs; a decaying camera shake on the slam.

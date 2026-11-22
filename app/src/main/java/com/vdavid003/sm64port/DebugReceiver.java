@@ -105,6 +105,12 @@ public class DebugReceiver extends BroadcastReceiver {
                 Log.i(TAG, "CMD runticks n=" + n);
                 break;
             }
+            case "audiorec": {
+                int v = intent.getIntExtra("v", 1);
+                a.debugSetAudioRec(v);
+                Log.i(TAG, "CMD audiorec v=" + v);
+                break;
+            }
             case "hud": {
                 int v = intent.getIntExtra("v", 1);
                 a.debugHideHud(v);

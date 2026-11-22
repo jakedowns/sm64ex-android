@@ -50,6 +50,26 @@ extern const Gfx ptc_dl_p9[];
 extern const Gfx ptc_dl_p9_fade[];
 extern const Gfx ptc_dl_ramp[];
 extern const Gfx ptc_dl_ramp_fade[];
+/* Ninja course: these display lists existed but were never referenced by the
+ * geo, so the platforms had collision and no geometry (Mario floated). */
+extern const Gfx ptc_dl_l1[];
+extern const Gfx ptc_dl_l1_fade[];
+extern const Gfx ptc_dl_n1[];
+extern const Gfx ptc_dl_n1_fade[];
+extern const Gfx ptc_dl_n2[];
+extern const Gfx ptc_dl_n2_fade[];
+extern const Gfx ptc_dl_n3[];
+extern const Gfx ptc_dl_n3_fade[];
+extern const Gfx ptc_dl_n4[];
+extern const Gfx ptc_dl_n4_fade[];
+extern const Gfx ptc_dl_n5[];
+extern const Gfx ptc_dl_n5_fade[];
+extern const Gfx ptc_dl_n6[];
+extern const Gfx ptc_dl_n6_fade[];
+extern const Gfx ptc_dl_n7[];
+extern const Gfx ptc_dl_n7_fade[];
+extern const Gfx ptc_dl_n8[];
+extern const Gfx ptc_dl_n8_fade[];
 extern const Collision ptc_collision[];
 extern const LevelScript level_ptc_entry[];
 

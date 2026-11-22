@@ -1409,6 +1409,8 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addEnhButton("WARP TO PTC", () -> debugLevel(38));
         addEnhButton("PORTAL SMOKE TEST", () -> debugPtc("run"));
         addEnhButton("MOMENTUM TEST", () -> debugPtc("momentum"));
+        addEnhButton("MARIO PORTAL WALK LOOP", () -> debugPtc("marioportalwalkloop"));
+        addEnhButton("STOP PORTAL WALK LOOP", () -> debugPtc("marioportalwalkstop"));
         addEnhButton("RESET TEST", () -> debugPtc("reset"));
         addEnhButton("CALIBRATE JUMPS", () -> debugPtc("calibrate"));
         portalGunButton = addEnhButton(portalGunLabel(), this::togglePortalGun);
@@ -2214,6 +2216,12 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         Log.i(TAG, "HUD hidden=" + forceHudHidden);
     }
 
+    /** Trailer capture: tap the game's PCM output into files/audio_rec.wav. */
+    void debugSetAudioRec(int on) {
+        nativeSetAudioRec(on != 0 ? 1 : 0);
+        Log.i(TAG, "AUDIOREC " + (on != 0 ? "start" : "stop"));
+    }
+
     /** Hard pause: skip the level script (all simulation) but keep rendering. */
     void debugSetPause(int on) {
         hardPaused = on != 0;
@@ -3008,6 +3016,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     static native void nativeGivePortalGun();
     static native int nativeHwInputAgeMs();
     static native void nativeSetHardPause(int on);
+    static native void nativeSetAudioRec(int on);
     static native void nativeStepTicks(int n);
     static native void nativeResetToIntro();
     static native void nativeDropPortalGun();

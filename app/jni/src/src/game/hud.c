@@ -420,12 +420,14 @@ void render_hud_camera_status(void) {
  * excluding the cannon reticle which detects a camera preset for it.
  */
 void render_hud(void) {
+    extern void ptc_chain_hud_text(void);
     s16 hudDisplayFlags;
 #ifdef VERSION_EU
     Mtx *mtx;
 #endif
 
     hudDisplayFlags = gHudDisplay.flags;
+    ptc_chain_hud_text();
 
     if (hudDisplayFlags == HUD_DISPLAY_NONE) {
         sPowerMeterHUD.animation = POWER_METER_HIDDEN;

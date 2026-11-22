@@ -171,6 +171,11 @@ u32 movekit_act_wallrun(struct MarioState *m) {
 
     if (m->actionTimer == 0 || !s_wallrun_on) {
         s_roll = 0;
+        if (m->marioObj != NULL) {
+            m->marioObj->header.gfx.angle[2] = 0;
+            m->marioObj->oMoveAngleRoll = 0;
+        }
+        m->faceAngle[2] = 0;
         s_cooldown = 20;
         return set_mario_action(m, ACT_FREEFALL, 0);
     }
@@ -235,6 +240,13 @@ u32 movekit_act_wallrun(struct MarioState *m) {
 
     // Camera cant, mirrored per wall side.
     s_roll = (s16)(side * WALLRUN_ROLL);
+    /* Roll the body onto the wall plane: the run animation then reads as feet
+     * planted on the surface instead of running in mid-air beside it. */
+    if (m->marioObj != NULL) {
+        m->marioObj->header.gfx.angle[2] = (s16)(side * 0x4000);
+        m->marioObj->oMoveAngleRoll = (s16)(side * 0x4000);
+    }
+    m->faceAngle[2] = (s16)(side * 0x4000);
 
     perform_air_step(m, 0);
 
@@ -247,6 +259,11 @@ u32 movekit_act_wallrun(struct MarioState *m) {
         m->vel[2] = tz * speed * 1.12f - wall->normal.z * WALLRUN_JUMP_NORMAL;
         m->vel[1] = WALLRUN_JUMP_UP;
         s_roll = 0;
+        if (m->marioObj != NULL) {
+            m->marioObj->header.gfx.angle[2] = 0;
+            m->marioObj->oMoveAngleRoll = 0;
+        }
+        m->faceAngle[2] = 0;
         s_cooldown = 18;
         return set_mario_action(m, ACT_WALL_KICK_AIR, 0);
     }

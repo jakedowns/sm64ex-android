@@ -110,6 +110,8 @@ adb shell $B --es cmd ptc --es action reset      # level, Mario, portals, star
 adb shell $B --es cmd ptc --es action run        # full automated traversal
 adb shell $B --es cmd ptc --es action calibrate  # measure single/double/triple
 adb shell $B --es cmd ptc --es action place      # place the two test portals
+adb shell $B --es cmd ptc --es action marioportalwalkloop  # endless A<->B walk loop
+adb shell $B --es cmd ptc --es action marioportalwalkstop  # stop the walk loop
 adb shell $B --es cmd ptc --es action stop
 adb shell $B --es cmd uncapped --ei v 1          # debug-only test execution
 adb shell $B --es cmd hz --ei v 60               # physical panel 60/120 Hz mode
