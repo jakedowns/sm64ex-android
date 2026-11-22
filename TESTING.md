@@ -515,6 +515,25 @@ The engine also fails the test itself if the ratio leaves 0.999..1.001, the
 post-tick direction drifts (`mom_hcos < 0.99`) or the launch loses more than 10%
 of its speed on the next tick, so a regression is visible in `reason="..."`.
 
+### Tool swap (portal gun <-> grapple)
+
+One press swaps the hand tool: the overlay `TOOL` button (green = grapple,
+blue = portal gun), controller **Y**, or `ptc toolswap`.  `ptc toolgun` /
+`ptc toolgrapple` set it explicitly.  The L trigger drives the grapple only
+while it is equipped; the bumpers only fire portals while the gun is equipped,
+and the held-gun model / reticle hide otherwise.  Forced test triggers bypass
+the gate, so the chain and PTC tests are unaffected.  `cmd dump` exposes
+`tool=0|1`.
+
+### Reticle ray starts at the hand
+
+The camera ray still defines where the crosshair points, but the authoritative
+placement ray starts at the gun muzzle (Mario's hand).  A surface hit closer
+to the camera than Mario is discarded — that is the case where a wall or an
+invisible occluder sits between the camera and Mario — and the ray is re-cast
+from the hand along the camera's view direction.  This makes `cmd portal`
+ignore the occluder and land on the surface behind Mario.
+
 ### Mario portal walk loop (smoke test)
 
 `ptc marioportalwalkloop` places two portals side by side on the west wall —

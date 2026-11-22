@@ -103,6 +103,12 @@ public class TouchOverlay extends View {
     private int portalPressed = -1;
     private int portalPointer = -1;
 
+    // One-press swap between the portal gun and the grappling hook.
+    private final float[] toolPos = new float[2];
+    private final float toolRadius = 46f;
+    private boolean toolDown;
+    private int toolPointer = -1;
+
     // Overall opacity of the control layer (0.1 .. 1.0).
     private float overlayAlpha = 1f;
 
@@ -165,6 +171,9 @@ public class TouchOverlay extends View {
         portalPos[0][0] = w * 0.93f; portalPos[0][1] = h * 0.27f;   // P1 (blue)
         portalPos[1][0] = w * 0.84f; portalPos[1][1] = h * 0.19f;   // P2 (orange)
 
+        // Tool swap: one button between the camera and portal clusters.
+        toolPos[0] = w * 0.75f; toolPos[1] = h * 0.27f;
+
         // C-buttons / analog-camera toggle, below the C cluster.
         modePos[0] = w * 0.68f; modePos[1] = h * 0.88f;
     }
@@ -184,6 +193,11 @@ public class TouchOverlay extends View {
             if (dx * dx + dy * dy <= (portalRadius * 1.25f) * (portalRadius * 1.25f)) return i;
         }
         return -1;
+    }
+
+    private boolean hitToolButton(float x, float y) {
+        float dx = x - toolPos[0], dy = y - toolPos[1];
+        return dx * dx + dy * dy <= (toolRadius * 1.25f) * (toolRadius * 1.25f);
     }
 
     private boolean hitFreecamToggle(float x, float y) {
@@ -324,7 +338,8 @@ public class TouchOverlay extends View {
                 int b = hitButton(px, py);
                 int cb = b < 0 ? hitCButton(px, py) : -1;
                 int cam = (b < 0 && cb < 0) ? hitCamButton(px, py) : -1;
-                int pb = (b < 0 && cb < 0 && cam < 0 && portalGunHeld())
+                boolean tb = (b < 0 && cb < 0 && cam < 0) && hitToolButton(px, py);
+                int pb = (b < 0 && cb < 0 && cam < 0 && !tb && portalGunHeld())
                         ? hitPortalButton(px, py) : -1;
                 if (b >= 0) {
                     buttons |= btnIds[b];
@@ -335,6 +350,11 @@ public class TouchOverlay extends View {
                 } else if (cam >= 0) {
                     buttons |= camIds[cam];
                     camPressed[cam] = id;
+                } else if (tb) {
+                    toolDown = true;
+                    toolPointer = id;
+                    sm64portActivity.nativeToolToggle();
+                    invalidate();
                 } else if (pb >= 0) {
                     sm64portActivity.nativeShootPortal(pb);
                     portalPressed = pb;
@@ -437,6 +457,11 @@ public class TouchOverlay extends View {
                     portalPointer = -1;
                     invalidate();
                 }
+                if (id == toolPointer) {
+                    toolDown = false;
+                    toolPointer = -1;
+                    invalidate();
+                }
                 for (int b = 0; b < btnIds.length; b++) {
                     if (pressedPointer[b] == id) {
                         buttons &= ~btnIds[b];
@@ -488,6 +513,15 @@ public class TouchOverlay extends View {
             return;
         }
         if (btnPos[0][0] == 0) layoutButtons();
+
+        // 0 = portal gun, 1 = grapple.  Read once so the portal buttons and
+        // the tool button agree within a frame.
+        int toolState = 0;
+        try {
+            toolState = sm64portActivity.nativeGetTool();
+        } catch (Throwable ignored) {
+        }
+        boolean grappleEquipped = toolState == 1;
 
         // One layer for the whole control set so "Ctl opacity" can fade it.
         int layer = c.saveLayerAlpha(0f, 0f, getWidth(), getHeight(),
@@ -574,7 +608,7 @@ public class TouchOverlay extends View {
         }
 
         // Portal gun: two colour buttons (the reticle is drawn in-game).
-        if (portalGunHeld()) {
+        if (portalGunHeld() && !grappleEquipped) {
             paint.setTextSize(38f);
             for (int i = 0; i < 2; i++) {
                 boolean on = portalPressed == i;
@@ -594,6 +628,24 @@ public class TouchOverlay extends View {
                         portalPos[i][0] - 22f, portalPos[i][1] + 14f, paint);
             }
 
+        }
+
+        // Tool swap: always visible.  Green when the grapple is in hand, blue
+        // when the portal gun is; a tap toggles and the HUD note confirms.
+        {
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(grappleEquipped ? 0xCC33CC66 : 0xCC3366FF);
+            c.drawCircle(toolPos[0], toolPos[1], toolRadius, paint);
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setColor(0xCCFFFFFF);
+            paint.setStrokeWidth(4f);
+            c.drawCircle(toolPos[0], toolPos[1], toolRadius, paint);
+            paint.setStrokeWidth(6f);
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(Color.WHITE);
+            paint.setTextSize(30f);
+            c.drawText(grappleEquipped ? "HOOK" : "GUN",
+                    toolPos[0], toolPos[1] + 11f, paint);
         }
 
         // Jetpack fuel gauge: bottom-left, outside the opacity layer.

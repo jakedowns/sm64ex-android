@@ -27,4 +27,11 @@ void movekit_force_trigger(int on);
 void movekit_force_retract(int on);
 void movekit_force_anchor(float x, float y, float z);
 
+/** Equipped hand tool: 0 = portal gun, 1 = grapple.  L_TRIG follows it. */
+int  movekit_tool(void);
+int  movekit_tool_is_grapple(void);
+int  movekit_portal_equipped(void);
+void movekit_tool_set(int tool);
+void movekit_tool_toggle(void);
+
 #endif

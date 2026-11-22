@@ -3028,6 +3028,8 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     static native void nativeDebugLevel(int level);
     static native void nativeShootPortal(int which);
     static native int nativeGetPortalGun();
+    static native void nativeToolToggle();
+    static native int nativeGetTool();
     static native int nativeGetPortalCount();
     static native int nativeGetPortalDebug();
     static native int nativeGetMarioPos(int axis);

@@ -44,6 +44,14 @@
 static int s_wallrun_on = 1;
 static int s_grapple_on = 1;
 static int s_jetpack_on = 0;
+
+/* Equipped hand tool.  One-press toggle (controller Y / overlay TOOL / debug
+ * channel) so the portal gun and the grapple can be used interchangeably
+ * without opening a menu.  Tests keep working because the forced trigger path
+ * bypasses this gate. */
+#define TOOL_PORTAL_GUN 0
+#define TOOL_GRAPPLE    1
+static int s_tool = TOOL_PORTAL_GUN;
 static float s_fuel = 100.0f;
 static float s_fuel_max = 100.0f;
 static s16 s_roll = 0;
@@ -513,6 +521,7 @@ static void jetpack_update(struct MarioState *m, u32 down) {
 
 void movekit_update(struct MarioState *m) {
     u32 pressed, down;
+    u32 playerPressed, playerDown;
 
     if (m == NULL) {
         return;
@@ -529,10 +538,19 @@ void movekit_update(struct MarioState *m) {
         }
     }
 
+    /* The L trigger belongs to the equipped tool.  Forced test triggers are
+     * merged after this gate, so the PTC/chain keep driving the grapple. */
+    playerPressed = gPlayer1Controller->buttonPressed;
+    playerDown = gPlayer1Controller->buttonDown;
+    if (s_tool != TOOL_GRAPPLE) {
+        playerPressed &= ~L_TRIG;
+        playerDown &= ~L_TRIG;
+    }
+
     /* A forced trigger also produces a one-tick "press" edge, so the grapple
      * (which fires on press) can be exercised by the smoke test. */
-    pressed = (gPlayer1Controller->buttonPressed | (s_force_down & ~s_force_prev)) & L_TRIG;
-    down = (gPlayer1Controller->buttonDown | s_force_down) & L_TRIG;
+    pressed = (playerPressed | (s_force_down & ~s_force_prev)) & L_TRIG;
+    down = (playerDown | s_force_down) & L_TRIG;
     s_force_prev = s_force_down;
 
     if (s_jetpack_on) {
@@ -864,4 +882,44 @@ void movekit_set_flag(int which, int on) {
             }
             break;
     }
+}
+
+/* --------------------------------------------------------- tool switching */
+
+static void movekit_tool_note(void) {
+    extern void gfx_set_debug_note(const char *s);
+    gfx_set_debug_note(s_tool == TOOL_GRAPPLE
+        ? "TOOL: GRAPPLE  (L TRIGGER fires / reels)"
+        : "TOOL: PORTAL GUN  (L1 / R1)");
+}
+
+int movekit_tool(void) {
+    return s_tool;
+}
+
+int movekit_tool_is_grapple(void) {
+    return s_tool == TOOL_GRAPPLE;
+}
+
+int movekit_portal_equipped(void) {
+    return s_tool == TOOL_PORTAL_GUN;
+}
+
+void movekit_tool_set(int tool) {
+    int next = tool ? TOOL_GRAPPLE : TOOL_PORTAL_GUN;
+
+    if (next == s_tool) {
+        return;
+    }
+    if (s_attached) {
+        /* Holstering the grapple lets the rope snap back to the hand. */
+        s_attached = 0;
+        s_ropeRelease = 12;
+    }
+    s_tool = next;
+    movekit_tool_note();
+}
+
+void movekit_tool_toggle(void) {
+    movekit_tool_set(s_tool == TOOL_GRAPPLE ? TOOL_PORTAL_GUN : TOOL_GRAPPLE);
 }

@@ -75,6 +75,7 @@ B="am broadcast -n com.vdavid003.sm64port/.DebugReceiver -a com.vdavid003.sm64po
 adb shell $B --es cmd level --ei n 38       # Portal Test Chamber
 adb shell $B --es cmd ptc --es action annex # warp to the cube pyramid
 adb shell $B --es cmd ptc --es action launch # portal momentum launch demo
+adb shell $B --es cmd ptc --es action toolswap # portal gun <-> grapple
 adb shell $B --es cmd ptc --es action run   # smoke test
 adb shell $B --es cmd dump                  # status line in logcat (SM64Leia: PTC)
 adb shell $B --es cmd busy --ei v 1         # BUSY/red (device lock does this)

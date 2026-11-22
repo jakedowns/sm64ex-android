@@ -3364,6 +3364,12 @@ static void ptc_apply_command(const char *action) {
         ptc_calibrate_start();
     } else if (strcmp(action, "momentum") == 0 || strcmp(action, "launch") == 0) {
         ptc_momentum_start();
+    } else if (strcmp(action, "toolswap") == 0) {
+        movekit_tool_toggle();
+    } else if (strcmp(action, "toolgun") == 0) {
+        movekit_tool_set(0);
+    } else if (strcmp(action, "toolgrapple") == 0) {
+        movekit_tool_set(1);
     } else if (strcmp(action, "place") == 0) {
         ptc_place_portals();
     } else if (strcmp(action, "portalview") == 0) {
@@ -3700,7 +3706,7 @@ void ptc_format_status(char *buf, int len) {
              "wall=%d ceil=%d ledge=%d "
              "coins=%d stars=%d save=%d before=%d/%d "
              "cal=%.1f,%.1f,%.1f ledge_reach=%.1f goomba=%d,%.1f,%.1f gmodel=%d "
-             "gobj=%d,0x%x,%d,%d annex=%d,%d,%d gun=%d,%d,%d "
+             "gobj=%d,0x%x,%d,%d annex=%d,%d,%d gun=%d,%d,%d tool=%d "
              "chain=%d,%d,0x%x,%d,%d cmode=%d "
              "face=%.1f,%.1f,%.1f anim=%d mh=%.1f remap=%d cdbg=%d,%d,%d,%d,%d walk=%d,%d,%d "
              "mpw=%d,%d,%d,%d,%d,%d,%d fc=%d,%d,%d,%d cg=%d,%.0f,%.0f,%.0f,0x%x",
@@ -3736,7 +3742,7 @@ void ptc_format_status(char *buf, int len) {
              s_goombaIn != NULL ? (int) s_goombaIn->activeFlags : -1,
              s_annexMode, s_annexSeen, s_annexTimer,
              portal_gun_has(), portal_gun_aim_error_deg10(),
-             portal_gun_yaw_offset_deg10(),
+             portal_gun_yaw_offset_deg10(), movekit_tool(),
              s_chainMode, s_chainTimer, s_chainFlags,
              s_chainGoombaCross,
              boxphys_test_boxes_near(CH_BOX_X, 120.0f, CH_BOX_B_Z, 300.0f),

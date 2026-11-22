@@ -429,6 +429,20 @@ Java_com_vdavid003_sm64port_sm64portActivity_nativeGetPortalGun(JNIEnv *env, jcl
     return portal_gun_has();
 }
 
+JNIEXPORT void JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeToolToggle(JNIEnv *env, jclass clazz) {
+    (void) env; (void) clazz;
+    extern void movekit_tool_toggle(void);
+    movekit_tool_toggle();
+}
+
+JNIEXPORT jint JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeGetTool(JNIEnv *env, jclass clazz) {
+    (void) env; (void) clazz;
+    extern int movekit_tool(void);
+    return movekit_tool();
+}
+
 JNIEXPORT jint JNICALL
 Java_com_vdavid003_sm64port_sm64portActivity_nativeGetMarioPos(JNIEnv *env, jclass clazz, jint axis) {
     (void) env; (void) clazz;

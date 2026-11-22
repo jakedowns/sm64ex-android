@@ -251,6 +251,18 @@ static void controller_sdl_read(OSContPad *pad) {
         p2Prev = p2;
     }
 
+    /* Y swaps the equipped hand tool (portal gun <-> grapple). */
+    {
+        static int toolPrev = 0;
+        extern void movekit_tool_toggle(void);
+        int ty = SDL_GameControllerGetButton(sdl_cntrl, SDL_CONTROLLER_BUTTON_Y);
+        if (ty && !toolPrev) {
+            movekit_tool_toggle();
+            SDL_Log("tool swap");
+        }
+        toolPrev = ty;
+    }
+
     /* Select / Back: short press leaves first person; hold opens level select. */
     {
         static int backDown = 0, backHoldFired = 0;

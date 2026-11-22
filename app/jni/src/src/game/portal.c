@@ -33,6 +33,7 @@
 #include "game/area.h"
 #include "gfx_dimensions.h"
 #include "ptc_scene.h"
+#include "movekit.h"
 
 /* Generated low-poly portal-gun mesh + display list (CC0 model). */
 #include "ptc_gun_model.inc"
@@ -83,6 +84,10 @@ static int s_ticksInArea = 0;
 static int s_lastTeleportSrc = -1;
 static int s_lastTeleportDst = -1;
 static int s_teleportCount = 0;
+/* The hand-held gun's muzzle; the authoritative placement ray starts here so
+ * an invisible occluder between the camera and Mario is never selected. */
+static void portal_gun_muzzle(Vec3f out);
+static int portal_reticle_hit(Vec3f out);
 /* Momentum telemetry: the velocity Mario carried into the portal and the
  * velocity the portal mapping produced on the other side.  The ratio/dot are
  * exposed so the deterministic tests can prove that a portal preserves both
@@ -322,6 +327,9 @@ void portal_shoot(int which) {
     if (which < 0 || which > 1 || gMarioState == NULL) {
         return;
     }
+    if (!movekit_portal_equipped()) {
+        return;   /* grapple is in hand */
+    }
     if (!s_hasGun) {
         g_portal_debug = 4;
         return;
@@ -330,6 +338,23 @@ void portal_shoot(int which) {
     vec3f_copy(orig, gLakituState.pos);
     vec3f_copy(dir, gLakituState.focus);
     vec3f_sub(dir, orig);
+
+    /* Aim through the reticle, then fire from Mario's hand.  The reticle hit
+     * is computed with the hand as the authoritative origin, so a wall or
+     * platform between the camera and Mario (e.g. a faded occluder) cannot
+     * steal the shot. */
+    {
+        Vec3f muzzle, target;
+        portal_gun_muzzle(muzzle);
+        if (portal_reticle_hit(target)) {
+            dir[0] = target[0] - muzzle[0];
+            dir[1] = target[1] - muzzle[1];
+            dir[2] = target[2] - muzzle[2];
+        } else {
+            /* No surface: keep the camera's aim direction. */
+        }
+        vec3f_copy(orig, muzzle);
+    }
 
     /* Fire, then report whether the surface accepted the portal. */
     play_sound(SOUND_ACTION_THROW, gDefaultSoundArgs);
@@ -704,7 +729,8 @@ static void draw_held_gun(const Mat4 view) {
     int haveHit;
     s16 yaw;
 
-    if (!s_hasGun || m == NULL || m->marioObj == NULL) {
+    if (!s_hasGun || !movekit_portal_equipped() || m == NULL
+        || m->marioObj == NULL) {
         return;
     }
 
@@ -718,9 +744,7 @@ static void draw_held_gun(const Mat4 view) {
     fwd[1] = 0.0f;
     fwd[2] = coss(yaw);
 
-    pos[0] = m->pos[0] + right[0] * 26.0f + fwd[0] * 8.0f;
-    pos[1] = m->pos[1] + 92.0f;
-    pos[2] = m->pos[2] + right[2] * 26.0f + fwd[2] * 8.0f;
+    portal_gun_muzzle(pos);
 
     /* Barrel (the prop's local +Z) points at the reticle's world-space hit,
      * i.e. the same point the world-space crosshair is drawn on.  Falls back to
@@ -1038,8 +1062,33 @@ void portal_aim_override(int on, const Vec3f point) {
 
 /* Raycast for the reticle.  The ray is nudged up by the same amount the
  * crosshair sits above screen centre.  Fills `out` with the hit point. */
+/* World position of the held gun's muzzle: Mario's right hand, raised.  Used by
+ * the reticle/placement ray and by the held-gun model, so the shot and the
+ * barrel always agree. */
+static void portal_gun_muzzle(Vec3f out) {
+    struct MarioState *m = gMarioState;
+    s16 yaw;
+    float right[3], fwd[3];
+
+    if (m == NULL) {
+        out[0] = out[1] = out[2] = 0.0f;
+        return;
+    }
+    yaw = m->faceAngle[1];
+    right[0] = coss(yaw);
+    right[1] = 0.0f;
+    right[2] = -sins(yaw);
+    fwd[0] = sins(yaw);
+    fwd[1] = 0.0f;
+    fwd[2] = coss(yaw);
+
+    out[0] = m->pos[0] + right[0] * 26.0f + fwd[0] * 8.0f;
+    out[1] = m->pos[1] + 92.0f;
+    out[2] = m->pos[2] + right[2] * 26.0f + fwd[2] * 8.0f;
+}
+
 static int portal_reticle_hit(Vec3f out) {
-    Vec3f orig, fwd, right, up, dir, hit;
+    Vec3f camPos, fwd, right, up, dir, camHit, muzzle, toHit, hit;
     struct Surface *surf = NULL;
     float len;
 
@@ -1050,9 +1099,9 @@ static int portal_reticle_hit(Vec3f out) {
         vec3f_copy(out, s_aimPoint);
         return 1;
     }
-    vec3f_copy(orig, gLakituState.pos);
+    vec3f_copy(camPos, gLakituState.pos);
     vec3f_copy(fwd, gLakituState.focus);
-    vec3f_sub(fwd, orig);
+    vec3f_sub(fwd, camPos);
     len = sqrtf(vdot3(fwd, fwd));
     if (len < 0.001f) {
         return 0;
@@ -1074,11 +1123,57 @@ static int portal_reticle_hit(Vec3f out) {
     dir[1] = fwd[1] + up[1] * 0.055f;
     dir[2] = fwd[2] + up[2] * 0.055f;
     vnorm3(dir);
-    dir[0] *= PORTAL_RAY_DIST;
-    dir[1] *= PORTAL_RAY_DIST;
-    dir[2] *= PORTAL_RAY_DIST;
 
-    find_surface_on_ray(orig, dir, &surf, hit);
+    /* 1. Where does the reticle's camera ray land? */
+    {
+        Vec3f ray = { dir[0] * PORTAL_RAY_DIST, dir[1] * PORTAL_RAY_DIST,
+                      dir[2] * PORTAL_RAY_DIST };
+        find_surface_on_ray(camPos, ray, &surf, camHit);
+    }
+
+    portal_gun_muzzle(muzzle);
+
+    if (surf != NULL) {
+        /* 2. Ignore a surface that sits between the camera and Mario.  That is
+         * the invisible-occluder case: the camera (or an occluder fade) is
+         * behind a wall, so the reticle would otherwise stick to the wall in
+         * front of Mario instead of the surface he is aiming at. */
+        Vec3f marioMid;
+        float depthHit = vdot3((Vec3f){ camHit[0] - camPos[0], camHit[1] - camPos[1],
+                                        camHit[2] - camPos[2] }, dir);
+        float depthMario;
+        marioMid[0] = gMarioState->pos[0];
+        marioMid[1] = gMarioState->pos[1] + 70.0f;
+        marioMid[2] = gMarioState->pos[2];
+        depthMario = vdot3((Vec3f){ marioMid[0] - camPos[0], marioMid[1] - camPos[1],
+                                     marioMid[2] - camPos[2] }, dir);
+        if (depthHit >= depthMario - 60.0f) {
+            /* 3. Authoritative ray: from the hand to the reticle surface. */
+            toHit[0] = camHit[0] - muzzle[0];
+            toHit[1] = camHit[1] - muzzle[1];
+            toHit[2] = camHit[2] - muzzle[2];
+            len = sqrtf(vdot3(toHit, toHit));
+            if (len > 1.0f) {
+                struct Surface *surf2 = NULL;
+                find_surface_on_ray(muzzle, toHit, &surf2, hit);
+                if (surf2 != NULL) {
+                    vec3f_copy(out, hit);
+                    return 1;
+                }
+            }
+            vec3f_copy(out, camHit);
+            return 1;
+        }
+    }
+
+    /* 4. No usable camera hit (sky, or an occluder in front of Mario): shoot
+     * from the hand along the camera's view direction. */
+    {
+        Vec3f ray = { dir[0] * PORTAL_RAY_DIST, dir[1] * PORTAL_RAY_DIST,
+                      dir[2] * PORTAL_RAY_DIST };
+        surf = NULL;
+        find_surface_on_ray(muzzle, ray, &surf, hit);
+    }
     if (surf == NULL) {
         return 0;
     }
@@ -1095,7 +1190,8 @@ static void portal_draw_reticle(const Mat4 view) {
     Vtx *v;
     int b;
 
-    if (!s_hasGun || gMarioState == NULL || !portal_reticle_hit(hit)) {
+    if (!s_hasGun || !movekit_portal_equipped() || gMarioState == NULL
+        || !portal_reticle_hit(hit)) {
         return;
     }
 
