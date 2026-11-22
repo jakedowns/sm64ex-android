@@ -24,6 +24,10 @@ float gfx_cam_dist = 700.0f;         // orbit radius, world units
 float gfx_cam_height = 110.0f;       // look-at height above Mario's feet
 float gfx_cam_recentre_pct = 50.0f;  // recentre speed while running
 float gfx_cam_sens_pct = 100.0f;     // right-stick orbit sensitivity
+/* Custom camera: do not pull in when a wall is between Mario and the camera.
+ * The occluding PTC wall is hidden instead (see ptc.c), so the view stays on
+ * Mario.  Toggle in the CAMERA tab / adb key 52. */
+int gfx_cam_noclip = 1;
 
 static s16 s_yaw;
 static s16 s_pitch = 0x1800;
@@ -314,7 +318,16 @@ void custom_camera_update(struct Camera *c) {
     rayHit[0] = desired[0] - target[0];
     rayHit[1] = desired[1] - target[1];
     rayHit[2] = desired[2] - target[2];
-    find_surface_on_ray(target, rayHit, &surf, s_pos);
+    if (gfx_cam_noclip) {
+        /* No pull-in: ease straight to the orbit position and let ptc.c hide
+         * the wall we pass through. */
+        s_pos[0] += (desired[0] - s_pos[0]) * 0.35f;
+        s_pos[1] += (desired[1] - s_pos[1]) * 0.35f;
+        s_pos[2] += (desired[2] - s_pos[2]) * 0.35f;
+        surf = NULL;
+    } else {
+        find_surface_on_ray(target, rayHit, &surf, s_pos);
+    }
     if (surf != NULL) {
         f32 dx = target[0] - s_pos[0];
         f32 dy = target[1] - s_pos[1];

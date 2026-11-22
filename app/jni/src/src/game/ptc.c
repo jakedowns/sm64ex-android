@@ -96,6 +96,11 @@ static const Gfx *const s_ptc_wall_fade[4] = {
     ptc_dl_wall_2_fade, ptc_dl_wall_3_fade,
 };
 
+/* Drawn instead of a wall when the no-pull-in camera has passed through it. */
+static const Gfx s_ptc_empty_dl[] = {
+    gsSPEndDisplayList(),
+};
+
 /* GEO_ASM entry point: pick the opaque or translucent variant for the object
  * identified by the node parameter. */
 Gfx *ptc_geo_obj(s32 callContext, struct GraphNode *node, UNUSED void *context) {
@@ -122,6 +127,11 @@ Gfx *ptc_geo_obj(s32 callContext, struct GraphNode *node, UNUSED void *context) 
     }
     id -= 17;
     if (id >= 0 && id < 4) {
+        extern int gfx_cam_noclip;
+        if (gfx_cam_noclip && (g_ptc_fade_mask & (1u << (10 + id)))) {
+            /* The camera is through this wall: hide it completely. */
+            return (Gfx *) s_ptc_empty_dl;
+        }
         return (Gfx *)((g_ptc_fade_mask & (1u << (10 + id)))
                 ? s_ptc_wall_fade[id] : s_ptc_wall_dl[id]);
     }
@@ -252,17 +262,19 @@ static void ptc_occlusion_update(void) {
             g_ptc_fade_mask |= 1u << i;
         }
     }
-    /* Walls: 10 front (z-), 11 back (z+), 12 left (x-), 13 right (x+). */
-    if (ptc_ray_plane(o, d, 2, -2600.0f, -1200.0f, 2450.0f, 0.0f, 1400.0f)) {
+    /* Walls: 10 south/front (z=-3200), 11 north/back (z=1250),
+     * 12 west/left (x=-2600), 13 east/right (x=3200).  Room extents from
+     * scripts/gen-ptc-level.py; keep these in sync if the room changes. */
+    if (ptc_ray_plane(o, d, 2, -3200.0f, -2600.0f, 3200.0f, 0.0f, 2800.0f)) {
         g_ptc_fade_mask |= 1u << 10;
     }
-    if (ptc_ray_plane(o, d, 2, 1250.0f, -1200.0f, 2450.0f, 0.0f, 1400.0f)) {
+    if (ptc_ray_plane(o, d, 2, 1250.0f, -2600.0f, 3200.0f, 0.0f, 2800.0f)) {
         g_ptc_fade_mask |= 1u << 11;
     }
-    if (ptc_ray_plane(o, d, 0, -1200.0f, 0.0f, 1400.0f, -2600.0f, 1250.0f)) {
+    if (ptc_ray_plane(o, d, 0, -2600.0f, -3200.0f, 1250.0f, 0.0f, 2800.0f)) {
         g_ptc_fade_mask |= 1u << 12;
     }
-    if (ptc_ray_plane(o, d, 0, 2450.0f, 0.0f, 1400.0f, -2600.0f, 1250.0f)) {
+    if (ptc_ray_plane(o, d, 0, 3200.0f, -3200.0f, 1250.0f, 0.0f, 2800.0f)) {
         g_ptc_fade_mask |= 1u << 13;
     }
     ptc_fade_update();
@@ -1936,9 +1948,11 @@ static void ptc_chain_update(void) {
 
         case CH_GRAPPLE_AIM:
             if (s_chainTimer == 1) {
+                extern int gfx_cam_noclip;
+                gfx_cam_noclip = 0;   /* collision camera for the aim ray */
                 ptc_chain_hint(1, -150.0f, 800.0f, -2820.0f);
             }
-            if (s_chainTimer > 18) {
+            if (s_chainTimer > 24) {
                 movekit_force_trigger(0);
                 ptc_chain_advance(CH_GRAPPLE_FIRE);
             }
@@ -1951,13 +1965,16 @@ static void ptc_chain_update(void) {
             if (movekit_state() & 8) {
                 s_chainFlags |= CH_FLAG_GRAPPLE;
                 ptc_chain_advance(CH_GRAPPLE_HOLD);
-            } else if (s_chainTimer > 12) {
+            } else if (s_chainTimer > 20) {
                 movekit_force_trigger(0);
                 ptc_chain_advance(CH_GRAPPLE_HOLD);
             }
             break;
 
         case CH_GRAPPLE_HOLD:
+            if (movekit_state() & 8) {
+                s_chainFlags |= CH_FLAG_GRAPPLE;
+            }
             if (s_chainTimer > 40) {
                 ptc_chain_advance(CH_GRAPPLE_RELEASE);
             }
@@ -1965,9 +1982,11 @@ static void ptc_chain_update(void) {
 
         case CH_GRAPPLE_RELEASE:
             if (s_chainTimer == 1) {
+                extern int gfx_cam_noclip;
                 movekit_force_trigger(0);
                 m->vel[1] += 8.0f;
                 ptc_chain_hint(0, 0.0f, 0.0f, 0.0f);
+                gfx_cam_noclip = 1;   /* back to the noclip chase camera */
             }
             if (s_chainTimer > 8) {
                 ptc_chain_advance(CH_LAND_N4);
@@ -2122,6 +2141,24 @@ static void ptc_chain_input(struct MarioState *m) {
         default:
             break;
     }
+}
+
+/* ---------------------------------------------------- camera wall test */
+
+/* Camera-noclip demo: Mario near the west wall, camera aimed to sit outside
+ * the room behind him.  With WALL NOCLIP on (default) the camera goes through
+ * and the west wall disappears; with it off the camera pulls in. */
+static void ptc_cam_wall_test(void) {
+    extern void custom_camera_apply_mode(int mode);
+    extern void custom_camera_set_yaw_hint(int on, s16 yaw);
+    extern float gfx_cam_dist, gfx_cam_height;
+
+    gfx_cam_dist = 700.0f;
+    gfx_cam_height = 120.0f;
+    custom_camera_apply_mode(3);
+    custom_camera_set_yaw_hint(1, 0x4000);   /* camera west of Mario */
+    ptc_chain_place_ground(-2500.0f, 0.0f, -3000.0f, 0x4000);
+    gfx_set_debug_note("CAM NOCLIP: camera through the west wall (wall hidden)");
 }
 
 /* ------------------------------------------------- corner portal test */
@@ -2328,6 +2365,8 @@ static void ptc_apply_command(const char *action) {
         ptc_knob_reload();
     } else if (strcmp(action, "chain") == 0) {
         ptc_chain_setup();
+    } else if (strcmp(action, "camwall") == 0) {
+        ptc_cam_wall_test();
     } else if (strcmp(action, "chainbox") == 0) {
         ptc_chain_setup();
         ptc_chain_advance(CH_BOX_BALL);

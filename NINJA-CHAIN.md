@@ -165,6 +165,12 @@ real-time harness for screenshots and the final visual pass.
 - **R shoulder** in the custom camera starts a critically damped yaw spring
   towards "behind Mario" (racing-game lag/overshoot).  R is ignored while the
   grapple rope is attached (it is also the retract button).
+- **WALL NOCLIP** is on by default for the custom camera: it skips the collision
+  pull-in, lets the camera pass through a room wall and hides that wall (PTC
+  walls only).  Toggle with `cmd set --ei k 52 --ei v 0/1` or the CAMERA tab.
+  `ptc camwall` demonstrates it: on = camera outside the west wall with the wall
+  gone; off = pulled-in close-up.  Camera distance/FOV are also tunable
+  (`k 46` / `k 20`) for framing.
 
 ## Green test note
 

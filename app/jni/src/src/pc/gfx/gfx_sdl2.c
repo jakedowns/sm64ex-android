@@ -115,6 +115,7 @@ extern int gfx_head_valid;
 extern float gfx_gyro_ypr[3];
 extern float gfx_gyro_pivot;
 extern float gfx_cam_dist, gfx_cam_height, gfx_cam_recentre_pct, gfx_cam_sens_pct;
+extern int gfx_cam_noclip;
 extern float gfx_render_delta;
 extern float gfx_stereo_ipd_px;
 extern float gfx_stereo_convergence_px;
@@ -214,6 +215,7 @@ Java_com_vdavid003_sm64port_sm64portActivity_nativeSetStereoInt(JNIEnv *env, job
         case 47: gfx_cam_height = (float) value; break;
         case 48: gfx_cam_recentre_pct = (float) value; break;
         case 49: gfx_cam_sens_pct = (float) value; break;
+        case 52: gfx_cam_noclip = value != 0; break;
         case 8: gfx_touch_dx = (float) value * 4.0f; break;    // percent -> px (approx)
         case 9: gfx_touch_dy = (float) value * 4.0f; break;
         case 10: gfx_touch_scale = (float) value / 100.0f; break;

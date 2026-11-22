@@ -268,7 +268,37 @@ The reticle normally comes from the camera ray, so in normal play the gun is
 always seen roughly end-on. The fixed-marker hook exists so a spectator camera
 can show the barrel in profile.
 
-## 8. Visual testing principles
+## 8. Framing toolbox (use it for visual inspections)
+
+You control the camera, so frame the evidence deliberately:
+
+| what | how | default |
+| --- | --- | --- |
+| FOV | `cmd set --ei k 20 --ei v <1..400>` (percent) or CAMERA tab "FOV %" | 100 |
+| orbit distance | `cmd set --ei k 46 --ei v <1..1500>` | 700 |
+| look-at height | `cmd set --ei k 47 --ei v <0..400>` | 110 |
+| recentre speed | `cmd set --ei k 48 --ei v <0..200>` | 50 |
+| orbit sensitivity | `cmd set --ei k 49 --ei v <10..300>` | 100 |
+| wall pull-in | `cmd set --ei k 52 --ei v 0/1` (CAMERA "WALL NOCLIP") | **on** |
+
+- **WALL NOCLIP (default on)** skips the custom camera's collision pull-in. The
+  camera can pass through a room wall and the PTC level hides that wall
+  completely, so Mario stays visible instead of filling the frame. With it off
+  the camera pulls in to ~90 units near a wall (useful to reproduce the
+  gameplay close-up, bad for evidence shots).
+- `ptc camwall` is the canonical check: Mario at the west wall, camera aimed
+  outside the room. Noclip on → camera at x≈-3082, west wall gone; noclip off →
+  camera pulled to x≈-2575 and a close-up. Captures: `camwall_on.png` /
+  `camwall_off.png`.
+- Scripted framing: `custom_camera_set_focus_hint(on, point)` pans the look-at
+  point without moving the camera; `custom_camera_set_yaw_hint(on, yaw)` eases
+  the camera to a chosen side (used by the goomba finale). The POV rig has
+  `pov.dist` / `pov.height`; the gun-aim test pins a side camera.
+- Captures are mono/flat 2D (`gfx_stereo_2d=1`, `gfx_stereo_same_both=1`) —
+  the Leia weave makes stills unreadable.
+- `runticks` fast-forward renders nothing; take screenshots in normal mode.
+
+## 9. Visual testing principles
 
 - Solid colour fills are not enough. Use well-known shapes and asymmetry:
   Mario himself (cap M, face, overalls, gloves, shadow), a checker grid, or
@@ -283,7 +313,7 @@ can show the barrel in profile.
 - Compare left/right eye captures for stereo parallax; do not judge stereo
   from a flat shot.
 
-## 9. Failure modes → likely cause
+## 10. Failure modes → likely cause
 
 | Symptom | Look here |
 | --- | --- |
@@ -300,7 +330,7 @@ can show the barrel in profile.
 | Half the screen black | `gfx_stereo_enabled=0` mid-run; use `gfx_stereo_2d` instead |
 | "New" build behaves like the old one | install canary failed; old APK still running |
 
-## 10. Pre-commit checklist
+## 11. Pre-commit checklist
 
 1. `BUILD SUCCESSFUL`, and the changed native files actually recompiled.
 2. Device run with an install canary (dump field/format changed as expected).
@@ -310,7 +340,7 @@ can show the barrel in profile.
 6. Final `agent-lock.sh device` call **without** `AGENT_NO_SLEEP` so the tablet
    sleeps.
 
-## 11. Briefing a subagent
+## 12. Briefing a subagent
 
 Include in the prompt:
 
@@ -324,7 +354,7 @@ Include in the prompt:
 - "leave changes in the working tree, do not commit" unless you want a commit;
 - finish with a **normal** device-lock call so the tablet sleeps.
 
-## 12. Fast-forward runner (`runticks` + `trace`)
+## 13. Fast-forward runner (`runticks` + `trace`)
 
 The engine can run a batch of simulation ticks back to back on the game
 thread, without waiting for real time or presenting every tick.  This is the

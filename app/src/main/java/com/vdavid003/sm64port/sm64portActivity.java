@@ -1248,6 +1248,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         controls.addView(camTop, 0);
 
         controls.addView(makePinchToggle(), 0);
+        addCamToggle("WALL NOCLIP", 52, true);
 
         addCamSlider("Cam distance", 1, 1500, 700, " u", 46);
         addCamSlider("FOV %", 1, 400, 100, " %", 20);
