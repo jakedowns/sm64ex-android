@@ -227,6 +227,12 @@ Java_com_vdavid003_sm64port_sm64portActivity_nativeSetStereoInt(JNIEnv *env, job
         case 63: gfx_splat_softness = value; break;
         case 64: gfx_splat_density = value; break;
         case 65: gfx_splat_shape = value ? 1 : 0; break;
+        /* Portal camera handoff: 0 = legacy 24-frame swoop, 1 = seamless. */
+        case 66: {
+            extern int g_camera_portal_mode;
+            g_camera_portal_mode = value != 0 ? 1 : 0;
+            break;
+        }
     }
 }
 

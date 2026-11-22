@@ -686,6 +686,14 @@ extern void update_camera(struct Camera *);
 extern void camera_debug_hold(const Vec3f pos, const Vec3f focus, int frames);
 /* Smooth the post-portal camera handoff instead of snapping behind Mario. */
 extern void camera_portal_blend_begin(void);
+/* Seamless handoff (default): rotate the pre-teleport camera rig around Mario
+ * by the yaw change his facing took, so his screen position/size are unchanged.
+ * `marioAfter` is the new centre of mass (portal_teleport's computed exit
+ * point) and `oldFaceYaw` his facing before the crossing. */
+extern void camera_portal_teleport(int srcIdx, int dstIdx, const Vec3f marioAfter,
+                                   s16 oldFaceYaw);
+extern int  g_camera_portal_mode;   /* 0 = legacy swoop, 1 = seamless handoff */
+extern int  camera_portal_remap_count(void);
 extern void camera_exit_first_person(void);
 extern void camera_portal_blend_toggle(void);
 extern void reset_camera(struct Camera *);

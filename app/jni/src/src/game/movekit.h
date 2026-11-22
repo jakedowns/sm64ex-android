@@ -24,5 +24,7 @@ int movekit_state(void);   // bit0 wallrun, bit1 grapple, bit2 jetpack, bit3 att
 void movekit_set_flag(int which, int on);
 /** Force the "use" trigger on for automated tests (0 = release). */
 void movekit_force_trigger(int on);
+void movekit_force_retract(int on);
+void movekit_force_anchor(float x, float y, float z);
 
 #endif

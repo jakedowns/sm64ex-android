@@ -105,6 +105,30 @@ public class DebugReceiver extends BroadcastReceiver {
                 Log.i(TAG, "CMD runticks n=" + n);
                 break;
             }
+            case "hud": {
+                int v = intent.getIntExtra("v", 1);
+                a.debugHideHud(v);
+                Log.i(TAG, "CMD hud v=" + v);
+                break;
+            }
+            case "pause": {
+                int v = intent.getIntExtra("v", 1);
+                a.debugSetPause(v);
+                Log.i(TAG, "CMD pause v=" + v);
+                break;
+            }
+            case "step": {
+                int n = intent.getIntExtra("n", 1);
+                a.debugStep(n);
+                Log.i(TAG, "CMD step n=" + n);
+                break;
+            }
+            case "interp": {
+                int v = intent.getIntExtra("v", 1);
+                a.debugInterp(v);
+                Log.i(TAG, "CMD interp v=" + v);
+                break;
+            }
             case "trace":
                 a.debugTrace();
                 Log.i(TAG, "CMD trace");

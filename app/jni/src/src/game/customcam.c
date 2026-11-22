@@ -32,6 +32,11 @@ int gfx_cam_noclip = 1;
 static s16 s_yaw;
 static s16 s_pitch = 0x1800;
 static f32 s_dist() { return gfx_cam_dist; }
+/* One-shot orbit distance used by the portal handoff: the mapped camera is
+ * exactly where the previous frame's rig put it, which can be a few units off
+ * the configured chase distance.  Ease back to gfx_cam_dist instead of
+ * snapping, so the framing stays continuous. */
+static f32 s_distOverride;
 static Vec3f s_pos;
 static int s_init = 0;
 
@@ -146,6 +151,18 @@ int custom_camera_freelook_active(void) {
     return s_freelook;
 }
 
+/* Debug: current orbit internals for the PTC status dump. */
+void custom_camera_debug(int out[8]) {
+    out[0] = s_init;
+    out[1] = s_freelook;
+    out[2] = s_spring;
+    out[3] = s_yawHintOn;
+    out[4] = (int) s_yaw;
+    out[5] = (int) s_pitch;
+    out[6] = (int) s_distOverride;
+    out[7] = (int) s_pos[0];
+}
+
 void custom_camera_set_yaw_hint(int on, s16 yaw) {
     s_yawHintOn = on ? 1 : 0;
     s_yawHint = yaw;
@@ -160,7 +177,33 @@ void custom_camera_set_focus_hint(int on, const Vec3f pos) {
 
 void custom_camera_reset(void) {
     s_init = 0;
+    s_distOverride = 0.0f;
 }
+
+/* Portal handoff: adopt an exact camera position/focus so the crossing frame
+ * keeps the framing Mario had before the teleport.  The orbit yaw/pitch are
+ * derived from the offset so the regular chase camera continues from here. */
+void custom_camera_portal_snap(const Vec3f pos, const Vec3f focus) {
+    f32 dist;
+    s16 pitch, offsetYaw;
+
+    if (gMarioState == NULL) {
+        return;
+    }
+    s_freelook = 0;
+    s_spring = 0;
+    s_yawVel = 0.0f;
+    s_init = 1;
+    vec3f_copy(s_pos, pos);
+    /* Distance/pitch describe the camera offset from the orbit target (focus
+     * -> camera), while s_yaw is the camera's look yaw (focus -> camera yaw
+     * plus 0x8000), i.e. the direction from the camera towards Mario. */
+    vec3f_get_dist_and_angle(focus, pos, &dist, &pitch, &offsetYaw);
+    s_pitch = pitch;
+    s_yaw = calculate_yaw(pos, focus);
+    s_distOverride = dist > 1.0f ? dist : 0.0f;
+}
+
 
 void custom_camera_apply_mode(int mode) {
     if (mode < 0 || mode > 4) {
@@ -238,7 +281,9 @@ void custom_camera_update(struct Camera *c) {
     target[2] = gMarioState->pos[2];
 
     if (!s_init) {
-        s_yaw = calculate_yaw(target, c->pos);
+        /* s_yaw is the look yaw (see the orbit offset below), so initialise it
+         * from the camera towards Mario, not the other way round. */
+        s_yaw = calculate_yaw(c->pos, target);
         s_pos[0] = c->pos[0];
         s_pos[1] = c->pos[1];
         s_pos[2] = c->pos[2];
@@ -285,7 +330,8 @@ void custom_camera_update(struct Camera *c) {
     if (s_yawHintOn) {
         s_yaw = approach_s16_cam(s_yaw, s_yawHint, 0x600);
     } else if (s_spring) {
-        s16 behind = (s16)(gMarioState->faceAngle[1] + 0x8000);
+        /* s_yaw is the look yaw; a camera behind Mario looks along his facing. */
+        s16 behind = gMarioState->faceAngle[1];
         float diff = (float)(s16)(behind - s_yaw);
         s_yawVel += diff * 0.20f;
         s_yawVel *= 0.82f;
@@ -300,19 +346,30 @@ void custom_camera_update(struct Camera *c) {
     } else {
         // Gently recentre behind Mario while he is running.
         if (gMarioState->forwardVel > 8.0f) {
-            s16 behind = (s16)(gMarioState->faceAngle[1] + 0x8000);
+            s16 behind = gMarioState->faceAngle[1];
             s16 inc = (s16)(512.0f * (gfx_cam_recentre_pct / 100.0f));
             s_yaw = approach_s16_cam(s_yaw, behind, inc);
         }
     }
 
     // Desired position on the orbit sphere.
-    dir[0] = -sins(s_yaw) * coss(s_pitch);
-    dir[2] = -coss(s_yaw) * coss(s_pitch);
-    dir[1] = sins(s_pitch);
-    desired[0] = target[0] + dir[0] * s_dist();
-    desired[1] = target[1] + dir[1] * s_dist();
-    desired[2] = target[2] + dir[2] * s_dist();
+    {
+        f32 dist = s_dist();
+        if (s_distOverride > 1.0f) {
+            s_distOverride += (dist - s_distOverride) * 0.15f;
+            if (fabsf(s_distOverride - dist) < 0.5f) {
+                s_distOverride = 0.0f;
+            } else {
+                dist = s_distOverride;
+            }
+        }
+        dir[0] = -sins(s_yaw) * coss(s_pitch);
+        dir[2] = -coss(s_yaw) * coss(s_pitch);
+        dir[1] = sins(s_pitch);
+        desired[0] = target[0] + dir[0] * dist;
+        desired[1] = target[1] + dir[1] * dist;
+        desired[2] = target[2] + dir[2] * dist;
+    }
 
     // Pull in when a wall/floor is between Mario and the camera.
     rayHit[0] = desired[0] - target[0];
@@ -333,12 +390,17 @@ void custom_camera_update(struct Camera *c) {
         f32 dy = target[1] - s_pos[1];
         f32 dz = target[2] - s_pos[2];
         f32 d = sqrtf(dx * dx + dy * dy + dz * dz) - 30.0f;
+        f32 dist = sqrtf(rayHit[0] * rayHit[0] + rayHit[1] * rayHit[1]
+                       + rayHit[2] * rayHit[2]);
         if (d < 90.0f) {
             d = 90.0f;
         }
-        s_pos[0] = target[0] + (desired[0] - target[0]) * (d / s_dist());
-        s_pos[1] = target[1] + (desired[1] - target[1]) * (d / s_dist());
-        s_pos[2] = target[2] + (desired[2] - target[2]) * (d / s_dist());
+        if (dist < 1.0f) {
+            dist = s_dist();
+        }
+        s_pos[0] = target[0] + (desired[0] - target[0]) * (d / dist);
+        s_pos[1] = target[1] + (desired[1] - target[1]) * (d / dist);
+        s_pos[2] = target[2] + (desired[2] - target[2]) * (d / dist);
     } else {
         s_pos[0] += (desired[0] - s_pos[0]) * 0.35f;
         s_pos[1] += (desired[1] - s_pos[1]) * 0.35f;

@@ -28,6 +28,7 @@ typedef struct {
 extern PortalViewState g_portal_view;    /* primary (the portal looked at) */
 extern PortalViewState g_portal_view2;   /* the other portal */
 void portal_view_toggle(void);
+void portal_view_set(int on);
 void portal_view_force(int src);
 
 /** Portal gun state: pickup prop, two portals, hitscan placement, teleport. */

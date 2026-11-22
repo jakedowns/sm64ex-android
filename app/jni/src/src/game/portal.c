@@ -439,30 +439,37 @@ static void portal_teleport(int srcIdx, const Vec3f at) {
     // This fork rebuilds the horizontal air velocity from forwardVel every
     // tick (update_air_without_turn), which would erase a portal launch.
     // Store the rotated momentum in forwardVel, then face out of the exit
-    // surface: the normal points away from the wall/floor the portal sits on.
+    // along the rotated motion: the tangential part of the entry direction is
+    // preserved (an angled entry stays angled instead of snapping to the
+    // destination normal).  For a purely normal entry this is the exit normal.
     {
         f32 hsp = sqrtf(newVel[0] * newVel[0] + newVel[2] * newVel[2]);
         f32 nh = sqrtf(dst->normal[0] * dst->normal[0]
                      + dst->normal[2] * dst->normal[2]);
         s16 exitYaw;
+        s16 oldFaceYaw = gMarioState->faceAngle[1];
 
         gMarioState->forwardVel = hsp;
-        if (nh > 0.1f) {
-            /* Wall / ramp: face the way the destination portal points. */
-            exitYaw = atan2s(dst->normal[2], dst->normal[0]);
-        } else if (hsp > 1.0f) {
-            /* Floor/ceiling: the normal is vertical; use the exit velocity. */
+        if (hsp > 1.0f) {
+            /* Wall / ramp / angled entry: keep the mapped heading. */
             exitYaw = atan2s(newVel[2], newVel[0]);
+        } else if (nh > 0.1f) {
+            /* Floor/ceiling exit with no horizontal launch: face out of the
+             * destination surface. */
+            exitYaw = atan2s(dst->normal[2], dst->normal[0]);
         } else {
             exitYaw = gMarioState->faceAngle[1];
         }
         gMarioState->faceAngle[1] = exitYaw;
         gMarioState->marioObj->oMoveAngleYaw = exitYaw;
-    }
 
-    // Re-aim the camera at the new position, but ease the rendered handoff so
-    // the view does not cut abruptly (see camera_portal_blend_step()).
-    camera_portal_blend_begin();
+        /* Keep the camera framing continuous: rotate the pre-teleport camera
+         * rig around Mario by the same yaw change his facing took.  The view
+         * keeps its distance, height, orbit offset and behind-the-player
+         * relation, so his screen position and size do not change.  See
+         * camera.c. */
+        camera_portal_teleport(srcIdx, 1 - srcIdx, newCom, oldFaceYaw);
+    }
     gCameraMovementFlags |= CAM_MOVE_INIT_CAMERA;
     s_cooldown = PORTAL_COOLDOWN;
     s_havePrevCom = 0;
@@ -735,9 +742,14 @@ int portal_gun_yaw_offset_deg10(void) {
 }
 
 void portal_view_toggle(void) {
-    s_portal_view_enabled = !s_portal_view_enabled;
+    portal_view_set(!s_portal_view_enabled);
+}
+
+void portal_view_set(int on) {
+    s_portal_view_enabled = on ? 1 : 0;
     if (!s_portal_view_enabled) {
         g_portal_view.active = 0;
+        g_portal_view2.active = 0;
     }
 }
 
@@ -871,9 +883,17 @@ static void portal_view_update(const Mat4 view) {
     }
 
     /* Both portals are windows: the one being looked at first, then the
-     * other, so a side-by-side pair shows a tunnel in each. */
+     * other, so a side-by-side pair shows a tunnel in each.  The second one
+     * must still be in front of the camera: during a portal handoff the camera
+     * can legitimately sit behind the destination wall, and a relay decal
+     * painted there would cover Mario. */
     portal_fill_view(best, &g_portal_view, view);
-    portal_fill_view(1 - best, &g_portal_view2, view);
+    {
+        struct Portal *o = &s_portal[1 - best];
+        if (vdot3(gLakituState.pos, o->normal) - vdot3(o->pos, o->normal) > 0.0f) {
+            portal_fill_view(1 - best, &g_portal_view2, view);
+        }
+    }
 }
 
 static void portal_draw_reticle(const Mat4 view);
@@ -908,6 +928,16 @@ void portal_render(void) {
         PortalViewState *vs = (i == 0) ? &g_portal_view : &g_portal_view2;
         PortalViewState *alt = (i == 0) ? &g_portal_view2 : &g_portal_view;
         if (!s_portal[i].active) continue;
+        /* Do not paint the flat fan when the camera is behind the portal: it
+         * is on the far side of the wall, and during a portal handoff it would
+         * sit between the camera and Mario and hide him (the PTC wall is
+         * noclipped away there).  The relay decal already requires the camera
+         * to be in front (portal_view_update's facing test). */
+        if (!g_portal_debug_align
+            && vdot3(gLakituState.pos, s_portal[i].normal)
+               - vdot3(s_portal[i].pos, s_portal[i].normal) <= 0.0f) {
+            continue;
+        }
         /* A portal with a live relay view is a window, not a flat fan. */
         if ((vs->active || alt->active) && !g_portal_debug_align) {
             continue;

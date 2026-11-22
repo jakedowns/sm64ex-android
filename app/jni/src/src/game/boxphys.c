@@ -27,7 +27,7 @@
 #define BP_BALL_R      0.25f
 #define BP_BALL_SPEED  26.0f
 #define BP_MAX_BALLS   24
-#define BP_MAX_BOXES   40
+#define BP_MAX_BOXES   80
 #define BP_PYRAMID_X   18.0f          /* 1800 units */
 #define BP_PYRAMID_Z   4.0f           /*  400 units */
 
@@ -111,9 +111,12 @@ static void boxphys_world_create(void) {
         b3BodyDef bd = b3DefaultBodyDef();
         b3ShapeDef sd = b3DefaultShapeDef();
         static b3BoxHull hull;
-        hull = b3MakeBoxHull(9.0f, 0.5f, 9.0f);
+        /* One large slab covering both the castle-grounds pyramid and the
+         * ninja-course box area; the old 18x18 m pad left the course in the
+         * void (cubes fell out of view). */
+        hull = b3MakeBoxHull(32.0f, 0.5f, 28.0f);
         bd.type = b3_staticBody;
-        bd.position = (b3Pos){ BP_PYRAMID_X, -0.5f, BP_PYRAMID_Z };
+        bd.position = (b3Pos){ 0.0f, -0.5f, -10.0f };
         b3BodyId ground = b3CreateBody(s_world, &bd);
         sd.density = 0.0f;
         sd.baseMaterial.friction = 0.9f;
@@ -244,6 +247,26 @@ void boxphys_test_spawn(float x, float y, float z) {
     bp_add_box(x * BP_SCALE, y * BP_SCALE, z * BP_SCALE);
 }
 
+/* 4-layer, 30-cube pyramid centred at an N64 position (same shape as the
+ * castle-grounds stand pyramid). */
+void boxphys_test_pyramid(float x, float y, float z) {
+    int layer, ix, iz;
+    float cx = x * BP_SCALE, cy = y * BP_SCALE, cz = z * BP_SCALE;
+    boxphys_init();
+    if (s_world.index1 == 0) return;
+    for (layer = 0; layer < 4; layer++) {
+        int n = 4 - layer;
+        for (ix = 0; ix < n; ix++) {
+            for (iz = 0; iz < n; iz++) {
+                float bx = cx + (ix - (n - 1) * 0.5f) * BP_CUBE_GAP * 2.0f;
+                float bz = cz + (iz - (n - 1) * 0.5f) * BP_CUBE_GAP * 2.0f;
+                float by = cy + BP_CUBE_HALF + layer * (BP_CUBE_HALF * 2.02f);
+                bp_add_box(bx, by, bz);
+            }
+        }
+    }
+}
+
 void boxphys_test_tower(float x, float y, float z, int n) {
     int i;
     boxphys_init();
@@ -280,6 +303,30 @@ int boxphys_test_boxes_near(float x, float y, float z, float r) {
         }
     }
     return n;
+}
+
+int boxphys_nearest_box(float x, float z, float minDist, float *outX, float *outZ) {
+    int i, best = -1;
+    float bestD = 1e30f, minD2 = minDist * minDist;
+    if (s_world.index1 == 0 || s_boxCount <= 0) return 0;
+    for (i = 0; i < s_boxCount; i++) {
+        b3Pos p = b3Body_GetPosition(s_boxes[i]);
+        float dx = p.x / BP_SCALE - x;
+        float dz = p.z / BP_SCALE - z;
+        float d2 = dx * dx + dz * dz;
+        if (d2 < minD2) continue;
+        if (d2 < bestD) {
+            bestD = d2;
+            best = i;
+        }
+    }
+    if (best < 0) return 0;
+    {
+        b3Pos p = b3Body_GetPosition(s_boxes[best]);
+        if (outX != NULL) *outX = p.x / BP_SCALE;
+        if (outZ != NULL) *outZ = p.z / BP_SCALE;
+    }
+    return 1;
 }
 
 int boxphys_test_fire(void) {
@@ -445,8 +492,8 @@ void boxphys_update(void) {
                     float inv = 1.0f / sqrtf(d2 + 1.0f);
                     if (dx * inv * fx + dz * inv * fz > -0.25f) {
                         b3Body_ApplyLinearImpulseToCenter(s_boxes[b],
-                            (b3Vec3){ fx * 1400.0f + dx * 2.0f, 360.0f,
-                                      fz * 1400.0f + dz * 2.0f }, true);
+                            (b3Vec3){ fx * 900.0f + dx * 1.5f, 260.0f,
+                                      fz * 900.0f + dz * 1.5f }, true);
                     }
                 }
             }
@@ -455,7 +502,7 @@ void boxphys_update(void) {
     }
 
     s_tick++;
-    b3World_Step(s_world, 1.0f / 30.0f, 6);
+    b3World_Step(s_world, 1.0f / 30.0f, 10);
 
 
     /* Stand on an upward-facing cube face.  Mario's static collision knows
@@ -525,7 +572,7 @@ void boxphys_update(void) {
     if (gMarioState != NULL) {
         struct MarioState *m = gMarioState;
         if (m->action == ACT_GROUND_POUND_LAND && s_lastAction != ACT_GROUND_POUND_LAND) {
-            bp_slam(m->pos[0], m->pos[2], 380.0f, 1900.0f);
+            bp_slam(m->pos[0], m->pos[2], 360.0f, 1200.0f);
             play_sound(SOUND_ACTION_TERRAIN_HEAVY_LANDING, gDefaultSoundArgs);
         }
         s_lastAction = m->action;

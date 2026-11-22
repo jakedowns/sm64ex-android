@@ -28,6 +28,7 @@
 #include "paintings.h"
 #include "engine/graph_node.h"
 #include "level_table.h"
+#include "portal.h"
 
 #define CBUTTON_MASK (U_CBUTTONS | D_CBUTTONS | L_CBUTTONS | R_CBUTTONS)
 
@@ -3045,10 +3046,38 @@ void update_lakitu(struct Camera *c) {
 
 /* ------------------------------------------------ portal camera handoff */
 
-/* A teleport snaps the camera behind Mario (CAM_MOVE_INIT_CAMERA).  Instead of
- * cutting, save the pre-teleport camera and ease the rendered position/focus
- * to the new goal over ~0.8 s.  The camera engine keeps running normally under
- * the blend, so collision/zoom behaviour is preserved. */
+/* A teleport used to snap the camera behind Mario (CAM_MOVE_INIT_CAMERA) and
+ * then ease it across the room over 24 frames.  Two problems: Mario is thrown
+ * across the level on the trigger tick, and the swoop changes his on-screen
+ * position and size every frame.  That reads as a teleport.
+ *
+ * The seamless handoff instead keeps the camera rig rigidly attached to Mario:
+ * capture the pre-teleport camera offset from the focus point, then rotate it
+ * around Mario's vertical axis by exactly the yaw change his facing took, and
+ * place it at the new focus.  Distance, height, orbit offset and the
+ * behind-the-player relation are preserved, so Mario's screen position and
+ * apparent size are unchanged on the crossing frame.  For wall-to-wall pairs
+ * this is the portal's own yaw rotation; for a wall-to-ceiling exit Mario keeps
+ * his heading, so the camera stays behind him instead of being mapped above the
+ * ceiling (which would see him from the top and outside the room).
+ *
+ * Mode 0 keeps the old smoothstep swoop for A/B comparison (CAMERA key 66 /
+ * g_camera_portal_mode). */
+int g_camera_portal_mode = 1;
+
+typedef struct {
+    int pending;
+    int src, dst;
+    s16 oldFaceYaw;
+    Vec3f comAfter;
+    Vec3f fromPos;
+    Vec3f fromFocus;
+} PortalCamRemap;
+
+static PortalCamRemap sPortalCamRemap;
+static int sPortalRemapCount;
+
+/* Legacy 24-frame wooosh (mode 0). */
 typedef struct {
     int active;
     int frame;
@@ -3073,6 +3102,36 @@ void camera_exit_first_person(void) {
     play_sound_cbutton_up();
 }
 
+int camera_portal_remap_count(void) {
+    return sPortalRemapCount;
+}
+
+void camera_portal_teleport(int srcIdx, int dstIdx, const Vec3f marioAfter,
+                            s16 oldFaceYaw) {
+    extern int custom_camera_freelook_active(void);
+    sPortalCamBlend.active = 0;
+    /* Pinned test/cinematic cameras (ninja chain, POV rig) re-apply their
+     * framing every tick; do not fight them on the crossing frame. */
+    if (!sPortalCamBlendEnabled || g_camera_portal_mode == 0
+        || gfx_cam_mode == 4 || gCamera == NULL || gCamera->cutscene != 0
+        || custom_camera_freelook_active()) {
+        sPortalCamRemap.pending = 0;
+        if (custom_camera_freelook_active()) {
+            return;
+        }
+        camera_portal_blend_begin();
+        return;
+    }
+    sPortalCamRemap.pending = 1;
+    sPortalCamRemap.src = srcIdx;
+    sPortalCamRemap.dst = dstIdx;
+    sPortalCamRemap.oldFaceYaw = oldFaceYaw;
+    vec3f_copy(sPortalCamRemap.comAfter, marioAfter);
+    /* The rendered camera from the frame that is about to be replaced. */
+    vec3f_copy(sPortalCamRemap.fromPos, gLakituState.pos);
+    vec3f_copy(sPortalCamRemap.fromFocus, gLakituState.focus);
+}
+
 void camera_portal_blend_begin(void) {
     if (!sPortalCamBlendEnabled || gfx_cam_mode == 4 || gCamera == NULL || gCamera->cutscene != 0) {
         sPortalCamBlend.active = 0;
@@ -3089,12 +3148,80 @@ void camera_portal_blend_toggle(void) {
     sPortalCamBlendEnabled = !sPortalCamBlendEnabled;
     if (!sPortalCamBlendEnabled) {
         sPortalCamBlend.active = 0;
+        sPortalCamRemap.pending = 0;
     }
+}
+
+static void camera_portal_apply_remap(void) {
+    Vec3f focus, off, pos;
+    struct MarioState *m = gMarioState;
+    s16 delta;
+    f32 c, s;
+
+    if (m == NULL) {
+        sPortalCamRemap.pending = 0;
+        return;
+    }
+    /* Keep the standard chase focus (Mario's body).  `comAfter` is the centre
+     * of mass; Mario's feet are half a hitbox below it. */
+    focus[0] = sPortalCamRemap.comAfter[0];
+    focus[1] = sPortalCamRemap.comAfter[1]
+             - (m->marioObj != NULL ? m->marioObj->hitboxHeight : 160.0f) * 0.5f
+             + gfx_cam_height;
+    focus[2] = sPortalCamRemap.comAfter[2];
+
+    off[0] = sPortalCamRemap.fromPos[0] - sPortalCamRemap.fromFocus[0];
+    off[1] = sPortalCamRemap.fromPos[1] - sPortalCamRemap.fromFocus[1];
+    off[2] = sPortalCamRemap.fromPos[2] - sPortalCamRemap.fromFocus[2];
+
+    /* Rotate the horizontal part of the rig by the facing change.  Engine yaw
+     * convention: x = sin(yaw), z = cos(yaw). */
+    delta = (s16) (m->faceAngle[1] - sPortalCamRemap.oldFaceYaw);
+    c = coss(delta);
+    s = sins(delta);
+    pos[0] = focus[0] + off[0] * c + off[2] * s;
+    pos[1] = focus[1] + off[1];
+    pos[2] = focus[2] + off[2] * c - off[0] * s;
+
+    if (gfx_cam_mode == 3) {
+        extern void custom_camera_portal_snap(const Vec3f pos, const Vec3f focus);
+        custom_camera_portal_snap(pos, focus);
+    }
+
+    vec3f_copy(gLakituState.pos, pos);
+    vec3f_copy(gLakituState.focus, focus);
+    vec3f_copy(gLakituState.curPos, pos);
+    vec3f_copy(gLakituState.curFocus, focus);
+    vec3f_copy(gLakituState.goalPos, pos);
+    vec3f_copy(gLakituState.goalFocus, focus);
+    vec3f_copy(sOldPosition, pos);
+    vec3f_copy(sOldFocus, focus);
+    if (gCamera != NULL) {
+        vec3f_copy(gCamera->pos, pos);
+        vec3f_copy(gCamera->focus, focus);
+        gCamera->yaw = calculate_yaw(focus, pos);
+        gCamera->nextYaw = gCamera->yaw;
+        gLakituState.yaw = gCamera->yaw;
+        gLakituState.nextYaw = gCamera->yaw;
+    }
+    vec3f_get_dist_and_angle(pos, focus, &gLakituState.focusDistance,
+                             &gLakituState.oldPitch, &gLakituState.oldYaw);
+    gLakituState.posHSpeed = 0.3f;
+    gLakituState.posVSpeed = 0.3f;
+    gLakituState.focHSpeed = 0.3f;
+    gLakituState.focVSpeed = 0.3f;
+
+    sPortalCamRemap.pending = 0;
+    sPortalRemapCount++;
 }
 
 static void camera_portal_blend_step(void) {
     f32 u, e;
 
+    if (sPortalCamRemap.pending) {
+        camera_portal_apply_remap();
+        return;
+    }
     if (!sPortalCamBlend.active) {
         return;
     }

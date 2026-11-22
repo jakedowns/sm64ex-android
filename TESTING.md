@@ -105,8 +105,13 @@ Quoting matters: `am broadcast ... --es action 'knob pov.dist 400'` needs the
 inner quotes so the device shell keeps the spaces.
 
 `cmd` values: `set`, `fx`, `shadow`, `pad`, `kill`, `level`, `toggle`, `fps`,
-`portal`, `ptc`, `uncapped`, `runticks`, `trace`, `hz`, `givegun`, `busy`,
-`logo`, `reinit`, `reset`, `note`, `dump`.
+`portal`, `ptc`, `uncapped`, `runticks`, `trace`, `pause`, `step`, `interp`,
+`hz`, `givegun`, `busy`, `logo`, `reinit`, `reset`, `note`, `dump`.
+
+`pause v=1` hard-pauses the level script (simulation) while still rendering;
+`step n=1` runs exactly N ticks while paused (frame-by-frame capture);
+`interp v=0` disables HFR interpolation.  See the portal-crossing protocol
+below.
 
 `cmd note --es text "..."` writes the **green test line** in the Android debug
 panel.  Use it to say what is being tested and the expected outcome, e.g.
@@ -117,7 +122,8 @@ phase.  Grep it from a screenshot or read `nativeGetDebugNote()` in the panel.
 PTC actions used most: `povcam`/`povcam2`/`povoff`, `cornerportal`,
 `portaltest`/`portalcolor`/`portalalign`/`portalblit`, `goomba`,
 `emptytest`, `wallrun`/`jetpack`/`grapple`, `annex`, `resetpad`,
-`eyeL`/`eyeR`/`eyeOff`, `knob <name> <value>`, `reload`.
+`eyeL`/`eyeR`/`eyeOff`, `knob <name> <value>`, `reload`,
+`portalwalk`/`portalwalkback`/`portalwalkceil` (seamless-crossing rigs).
 
 Dump tokens worth grepping:
 
@@ -413,6 +419,146 @@ Caveats:
 Recommended workflow: `scripts/ninja-chain-test.py --fast --section <sec>
 --ticks <n>` for logic/flag iteration, then the default real-time mode for
 screenshots and the final visual pass.
+
+## Portal seamless crossing (frame-by-frame)
+
+A portal teleport must not read as a camera cut.  The acceptance test walks
+Mario through a portal pair on a **normal third-person chase camera** (custom
+mode 3, not a pinned freelook), steps the simulation **exactly one tick at a
+time**, and measures his projected screen position, apparent size and facing
+relative to the camera across the crossing tick.
+
+### Capture protocol (deterministic, one tick per frame)
+
+`scripts/portal-seam-capture.sh <wall|back|ceil> <tag>` installs the current
+APK, loads level 38, arms one of the deterministic walk rigs, hard-pauses the
+game loop and then advances one tick per capture.  Run it through the device
+lock (it must not take the lock itself):
+
+```bash
+AGENT_NO_SLEEP=1 scripts/agent-lock.sh device --reason "portal seam wall" -- \
+    scripts/portal-seam-capture.sh wall wall
+# legacy 24-frame camera swoop, for before/after numbers:
+CAM_MODE=0 scripts/portal-seam-capture.sh wall legacy
+```
+
+Walk rigs (`ptc` actions, all in `ptc.c`):
+
+| action | pair | Mario walks |
+| --- | --- | --- |
+| `portalwalk` | west wall `(-2596,140,-2000) n=+X` → south wall `(-1500,140,-3196) n=+Z` | west |
+| `portalwalkback` | the same pair in reverse | south |
+| `portalwalkceil` | N7 tower `(1896,1040,-2900) n=-X` → ceiling `(-600,2796,-2980) n=-Y` (ninja-chain pair) | east, falls out of the ceiling |
+
+Each rig places Mario 300 units short of the entry portal, waits 90 ticks so
+the chase camera is settled, then holds `forwardVel=32` through the crossing
+and keeps walking out of the destination.
+
+Why hard pause: `cmd runticks N` renders only the final state, and between adb
+commands the real-time game loop keeps ticking (~30 ticks/s), so a `runticks 1`
+screenshot loop is not one tick per frame.  `cmd pause --ei v 1` skips the
+level script (all simulation) while still rendering, and `cmd step --ei n 1`
+runs exactly one tick.  Both are debug-channel commands
+(`nativeSetHardPause` / `nativeStepTicks`); `cmd interp --ei v 0` disables HFR
+interpolation so each capture is one crisp simulation state.
+
+Per tick the script writes one `cmd dump` line and (optionally) a PNG.  Dump
+tokens used by the analyser:
+
+```
+tele=<n> src=<a> dst=<b> remap=<n>        teleport count / pair / camera handoffs
+mario=x,y,z vel=x,y,z fv=<f>              Mario (feet position)
+cam=x,y,z focus=x,y,z                     camera the frame was rendered with
+face=<x,y,z> anim=<n> mh=<hitbox height>  facing (y = yaw), animation frame
+cdbg=<init,freelook,spring,hint,s_yaw>    custom-camera internals
+walk=<mode,delay,timer>                   walk rig state
+```
+
+### Measure
+
+```bash
+scripts/portal-seam-test.py --dump /tmp/opencode/pseam/dump-wall.txt --table
+```
+
+The script rebuilds the camera view (look-at from `cam`/`focus`, world up) and
+projects Mario's feet, body centre and head with the game's vertical FOV (45°,
+`gfx_stereo_fov_pct=100`) and the canvas aspect (16:9 → 3200x1800 px).  It
+prints the per-tick table plus, at the crossing tick:
+
+- **screen jump**: |Δ(body-centre in px)| between the last pre-crossing frame
+  and the crossing frame.  Acceptance: **≤ 12 px** (3200x1800); a normal walking
+  tick moves Mario by 2-10 px.
+- **scale**: apparent feet→head height ratio.  Acceptance: **within 3 %**.
+- **orientation**: change in the angle between Mario's facing and the
+  camera→Mario direction (`180°` = camera directly behind).  Acceptance:
+  **≤ 10°**.
+- **no teleport-sized jump** (> 40 px) in the handoff window (crossing −2 ..
+  +8).  (A hard landing later in a long fall is normal camera follow and is not
+  counted.)
+
+### Root causes found and fixed
+
+1. **The camera was not handed over at all** (old `camera_portal_blend_begin`):
+   it kept the pre-teleport camera and smoothstep-swooped across the room for
+   24 frames, so Mario was off-screen for ~20 frames.  Measured with
+   `CAM_MODE=0`: frames 94-96 project behind the camera and frames 97-116 are
+   thousands of pixels away; he only returns at frame 117.
+2. **The handoff now keeps the rig attached to Mario** (`camera.c`
+   `camera_portal_teleport` / `camera_portal_apply_remap`): the pre-teleport
+   camera offset from the focus is rotated about the vertical axis by the yaw
+   change of Mario's facing, and re-anchored on the new focus.  Distance,
+   height, orbit offset and the behind-the-player relation are preserved.
+   For wall→wall pairs this equals the portal's yaw rotation; for a
+   wall→ceiling exit Mario keeps his heading, so the camera stays behind him
+   instead of being mapped above the ceiling.
+3. **Exit yaw** (`portal.c`): the exit heading now comes from the rotated
+   velocity (so an angled entry keeps its tangential component) and only falls
+   back to the destination normal when there is no horizontal launch.  A
+   vertical exit no longer snaps Mario's facing.
+4. **Custom-camera yaw convention** (`customcam.c`): `s_yaw` is the camera's
+   look yaw (the orbit offset is `s_yaw + 0x8000`), but the init, auto-recentre
+   and R-spring targets used the opposite convention.  The camera therefore
+   drifted to the *front* of a running Mario and the first tick after a snap
+   flipped it 180°.  Init now uses `calculate_yaw(cam, target)`, recentre/spring
+   target `faceAngle`, and `custom_camera_portal_snap()` derives pitch from
+   `focus→cam` and yaw from `cam→focus`.  With the fix a running Mario gets a
+   normal behind chase camera.
+5. **Portal decals during the handoff** (`portal.c`): a wall exit legitimately
+   puts the camera behind the destination wall (the PTC wall is noclipped and
+   hidden there).  The flat fan and the secondary relay view were still painted
+   on that wall and covered Mario.  Both are now skipped when the camera is
+   behind the portal plane (`(cam-pos)·normal <= 0`).
+
+### Results (device, level 38, 3200x1800)
+
+| case | screen jump | scale ratio | orientation Δ | worst jump in handoff window | result |
+| --- | --- | --- | --- | --- | --- |
+| `wall` west→south | 8.80 px | 1.0026 | 0.2° | 22.7 px (f+1 settle) | PASS |
+| `back` south→west | 10.01 px | 1.0022 | 0.3° | 22.7 px | PASS |
+| `ceil` N7→ceiling | 9.75 px | 1.0035 | 0.3° | 16.2 px | PASS |
+| legacy swoop (wall) | off-screen (behind camera) | n/a | 112° | 65,958 px | FAIL |
+
+The remaining 16-23 px in the frame after the crossing is the chase camera
+re-acquiring its normal follow lag (the snap is exact on the crossing frame);
+it decays exponentially (≈23, 14, 9, 2 px) and is not a jump.
+
+Key frames (`/tmp/opencode/pseam/frames-wall/`): `f092` approach (camera
+behind, portal ahead), `f095`/`f096` post-crossing from behind the destination
+wall with the wall hidden and no decal covering Mario, `f110` walking into the
+room.  The screenshot follows the dump by one frame (the dump of tick N is
+paired with the PNG of N+1).
+
+Limits: a third-person camera behind a wall portal has to be on the far side of
+that wall at the crossing (the portal transform maps "behind the player" to
+"behind the wall").  The PTC noclip wall-hide and the decal gating make that
+readable; a real level with visible geometry behind the wall would need the
+same treatment for that wall.  For a ceiling exit the camera briefly rises
+above the room ceiling (Mario is at the ceiling and the chase rig keeps its
+height offset); the ceiling is backface-culled, so he stays visible, but the
+unmodelled exterior shows as void for ~1 s.  The handoff is skipped for pinned
+test/cinematic cameras (`custom_camera_freelook_active()`), so the ninja chain's
+section framing is unchanged; the fast chain check stays PASS 8/8
+(`scripts/ninja-chain-test.py --fast --section chain --ticks 2400`).
 
 ## Ninja chain (continuous systems showcase)
 

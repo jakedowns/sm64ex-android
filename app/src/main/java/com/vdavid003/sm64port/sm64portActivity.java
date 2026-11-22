@@ -93,6 +93,8 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     private TextView fpsButton;
     private TextView interpButton;
     private TouchOverlay touchOverlay;
+    /** Debug/trailer: keep touch circles + tuning panel hidden regardless of input. */
+    private boolean forceHudHidden = false;
     private android.widget.ScrollView scrollerRef;
     private TextView debugView;
     private LinearLayout tabContent;
@@ -2194,6 +2196,50 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         Log.i(TAG, "RUNTICKS " + n + " requested");
     }
 
+    /** Trailer presentation: hide the touch overlay and collapse the tuning panel. */
+    void debugHideHud(int on) {
+        forceHudHidden = on != 0;
+        runOnUiThread(() -> {
+            if (forceHudHidden) {
+                collapseDebugPanelIfOpen();
+            }
+            if (touchOverlay != null) {
+                touchOverlay.setControlsHidden(forceHudHidden);
+                touchOverlay.invalidate();
+            }
+            if (tuningPanelView != null) {
+                tuningPanelView.setVisibility(forceHudHidden ? View.GONE : View.VISIBLE);
+            }
+        });
+        Log.i(TAG, "HUD hidden=" + forceHudHidden);
+    }
+
+    /** Hard pause: skip the level script (all simulation) but keep rendering. */
+    void debugSetPause(int on) {
+        hardPaused = on != 0;
+        nativeSetHardPause(hardPaused ? 1 : 0);
+        if (pauseLoopToggle != null) {
+            pauseLoopToggle.setText("PAUSE GAME LOOP: " + (hardPaused ? "ON" : "OFF"));
+            pauseLoopToggle.setTextColor(hardPaused ? 0xFF66FF99 : 0xFF888888);
+        }
+        Log.i(TAG, "PAUSE " + hardPaused);
+    }
+
+    /** Advance exactly N simulation ticks while hard-paused (frame stepping). */
+    void debugStep(int n) {
+        if (n < 1) n = 1;
+        hardPaused = true;
+        nativeSetHardPause(1);
+        nativeStepTicks(n);
+        Log.i(TAG, "STEP " + n);
+    }
+
+    /** HFR interpolation on/off (off gives one crisp state per captured frame). */
+    void debugInterp(int on) {
+        nativeSetHfrInterp(on != 0 ? 1 : 0);
+        Log.i(TAG, "INTERP " + (on != 0 ? 1 : 0));
+    }
+
     /** Log the trace of the last runticks batch, one line per log record. */
     void debugTrace() {
         String trace = nativePtcTrace();
@@ -2866,12 +2912,16 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                             + "  cam=" + (nativeGetCamMode() != 0 ? "free" : "vanilla"));
                 }
                 if (touchOverlay != null) {
-                    long sinceTouch = System.currentTimeMillis() - TouchOverlay.lastTouchMs;
-                    int hwAge = nativeHwInputAgeMs();
-                    if (hwAge < 1200 && sinceTouch > 1200) {
+                    if (forceHudHidden) {
                         touchOverlay.setControlsHidden(true);
-                    } else if (sinceTouch < 1200 || hwAge > 2500) {
-                        touchOverlay.setControlsHidden(false);
+                    } else {
+                        long sinceTouch = System.currentTimeMillis() - TouchOverlay.lastTouchMs;
+                        int hwAge = nativeHwInputAgeMs();
+                        if (hwAge < 1200 && sinceTouch > 1200) {
+                            touchOverlay.setControlsHidden(true);
+                        } else if (sinceTouch < 1200 || hwAge > 2500) {
+                            touchOverlay.setControlsHidden(false);
+                        }
                     }
                     touchOverlay.invalidate();   // refresh gun reticle / P1-P2
                 }
@@ -3011,12 +3061,16 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         runOnUiThread(() -> {
             if (debugView != null) {
                 if (touchOverlay != null) {
-                    long sinceTouch = System.currentTimeMillis() - TouchOverlay.lastTouchMs;
-                    int hwAge = nativeHwInputAgeMs();
-                    if (hwAge < 1200 && sinceTouch > 1200) {
+                    if (forceHudHidden) {
                         touchOverlay.setControlsHidden(true);
-                    } else if (sinceTouch < 1200 || hwAge > 2500) {
-                        touchOverlay.setControlsHidden(false);
+                    } else {
+                        long sinceTouch = System.currentTimeMillis() - TouchOverlay.lastTouchMs;
+                        int hwAge = nativeHwInputAgeMs();
+                        if (hwAge < 1200 && sinceTouch > 1200) {
+                            touchOverlay.setControlsHidden(true);
+                        } else if (sinceTouch < 1200 || hwAge > 2500) {
+                            touchOverlay.setControlsHidden(false);
+                        }
                     }
                     touchOverlay.invalidate();   // refresh gun reticle / P1-P2
                 }

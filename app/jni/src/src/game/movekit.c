@@ -29,7 +29,7 @@
 #define WALLRUN_JUMP_NORMAL 12.0f
 #define WALLRUN_ROLL        0x0230  // ~4.9 degrees
 
-#define GRAPPLE_RANGE       1400.0f
+#define GRAPPLE_RANGE       3400.0f
 #define GRAPPLE_PULL        2.6f
 #define GRAPPLE_MIN_DIST    70.0f
 #define GRAPPLE_MAX_SPEED   60.0f
@@ -52,6 +52,14 @@ static Vec3f s_lastWallNormal;
 static f32 s_lastWallY = 0.0f;
 static int s_haveLastWall = 0;
 static f32 s_rope_len = 0.0f;
+static u32 s_force_retract_down;
+/* Jetpack exhaust trail: puffs left behind while the pack burns. */
+#define JET_PUFF_MAX 26
+#define JET_PUFF_LIFE 20
+static Vec3f s_puffPos[JET_PUFF_MAX];
+static int s_puffAge[JET_PUFF_MAX];
+static int s_puffHead;
+static int s_puffInit;
 static int s_fuel_tier = 0;
 static int s_refill_tier = 0;
 
@@ -325,7 +333,7 @@ static void grapple_update(struct MarioState *m, u32 pressed, u32 down, u32 retr
         /* R reels the rope in; otherwise the length is fixed so Mario can
          * actually swing instead of being dragged straight to the anchor. */
         if (retract && s_rope_len > GRAPPLE_MIN_DIST) {
-            s_rope_len -= 2.5f;
+            s_rope_len -= 10.0f;
             if (s_rope_len < GRAPPLE_MIN_DIST) {
                 s_rope_len = GRAPPLE_MIN_DIST;
             }
@@ -361,6 +369,30 @@ void movekit_force_trigger(int on) {
     s_force_down = on ? L_TRIG : 0;
 }
 
+void movekit_force_retract(int on) {
+    s_force_retract_down = on ? R_TRIG : 0;
+}
+
+void movekit_force_anchor(float x, float y, float z) {
+    struct MarioState *m = gMarioState;
+    if (m == NULL) {
+        return;
+    }
+    s_anchor[0] = x;
+    s_anchor[1] = y;
+    s_anchor[2] = z;
+    s_from[0] = m->pos[0];
+    s_from[1] = m->pos[1] + 60.0f;
+    s_from[2] = m->pos[2];
+    {
+        float dx = x - m->pos[0];
+        float dy = y - (m->pos[1] + 60.0f);
+        float dz = z - m->pos[2];
+        s_rope_len = sqrtf(dx * dx + dy * dy + dz * dz);
+    }
+    s_attached = 1;
+}
+
 #ifdef __ANDROID__
 #include <android/log.h>
 #endif
@@ -382,8 +414,26 @@ static void jetpack_update(struct MarioState *m, u32 down) {
     s_attached = 0;   // L is the jetpack when it is equipped
 
     s_fx_tick++;
+    if (!s_puffInit) {
+        for (int i = 0; i < JET_PUFF_MAX; i++) s_puffAge[i] = 999;
+        s_puffInit = 1;
+    }
+    for (int i = 0; i < JET_PUFF_MAX; i++) {
+        if (s_puffAge[i] < 999) s_puffAge[i]++;
+    }
     if (down && s_fuel > 0.0f) {
         s_thrusting = 1;
+        {
+            /* Nozzle position: behind the pack, level with Mario's hips. */
+            float fx = sins(m->faceAngle[1]);
+            float fz = coss(m->faceAngle[1]);
+            int slot = s_puffHead;
+            s_puffPos[slot][0] = m->pos[0] - fx * 40.0f;
+            s_puffPos[slot][1] = m->pos[1] + 30.0f;
+            s_puffPos[slot][2] = m->pos[2] - fz * 40.0f;
+            s_puffAge[slot] = 0;
+            s_puffHead = (s_puffHead + 1) % JET_PUFF_MAX;
+        }
         /* Grounded actions zero vel[1] every tick, so a grounded Mario would
          * burn fuel without ever leaving the floor.  Kick him into the air
          * first, then let the thrust sustain the climb. */
@@ -461,7 +511,7 @@ void movekit_update(struct MarioState *m) {
         jetpack_update(m, down);
     } else {
         grapple_update(m, pressed, down,
-                       (gPlayer1Controller->buttonDown | s_force_down) & R_TRIG);
+                       (gPlayer1Controller->buttonDown | s_force_retract_down) & R_TRIG);
     }
 }
 
@@ -654,21 +704,62 @@ void movekit_render(void) {
             }
         }
 
-        /* exhaust: three camera-facing sprites while thrusting */
-        if (s_fuel > 0.0f && s_thrusting) {
-            for (int i = 0; i < 3; i++) {
-                f32 jitter = (f32) ((s_fx_tick * (i + 3)) % 11) - 5.0f;
-                f32 w = 10.0f + (f32) i * 5.0f;
+        /* Nozzle flame: a bright, anchored cone below the pack, drawn long
+         * enough to clear Mario's legs from any camera angle. */
+        if (s_thrusting) {
+            for (int i = 0; i < 5; i++) {
+                f32 jitter = (f32) ((s_fx_tick * (i + 2)) % 9) - 4.0f;
+                f32 w = 13.0f + (f32) i * 4.0f;
+                f32 taper = 1.0f - (f32) i * 0.12f;
                 Vec3f A, B, C, D, o;
-                o[0] = c[0] + fwd[0] * 16.0f + camR[0] * jitter * 0.4f;
-                o[1] = c[1] - 34.0f - (f32) i * 14.0f;
-                o[2] = c[2] + fwd[2] * 16.0f + camR[2] * jitter * 0.4f;
-                A[0] = o[0] - camR[0] * w - camU[0] * w; A[1] = o[1] - w; A[2] = o[2] - camR[2] * w;
-                B[0] = o[0] + camR[0] * w - camU[0] * w; B[1] = o[1] - w; B[2] = o[2] + camR[2] * w;
-                C[0] = o[0] + camR[0] * w + camU[0] * w; C[1] = o[1] + w; C[2] = o[2] + camR[2] * w;
-                D[0] = o[0] - camR[0] * w + camU[0] * w; D[1] = o[1] + w; D[2] = o[2] - camR[2] * w;
-                mk_quad(A, B, C, D, 0xFF, (u8) (0x90 + i * 0x20), 0x30, 0xC0);
+                u8 r = 0xFF;
+                u8 g = (u8) (245 - i * 25);
+                u8 bl = (u8) (150 - i * 28);
+                u8 al = (u8) (255 - i * 18);
+                o[0] = c[0] + fwd[0] * (14.0f + (f32) i * 8.0f) + camR[0] * jitter;
+                o[1] = c[1] - 38.0f - (f32) i * 24.0f;
+                o[2] = c[2] + fwd[2] * (14.0f + (f32) i * 8.0f) + camR[2] * jitter;
+                A[0] = o[0] - camR[0] * w - camU[0] * w * taper;
+                A[1] = o[1] - w * taper;
+                A[2] = o[2] - camR[2] * w;
+                B[0] = o[0] + camR[0] * w - camU[0] * w * taper;
+                B[1] = o[1] - w * taper;
+                B[2] = o[2] + camR[2] * w;
+                C[0] = o[0] + camR[0] * w + camU[0] * w * taper;
+                C[1] = o[1] + w * taper;
+                C[2] = o[2] + camR[2] * w;
+                D[0] = o[0] - camR[0] * w + camU[0] * w * taper;
+                D[1] = o[1] + w * taper;
+                D[2] = o[2] - camR[2] * w;
+                mk_quad(A, B, C, D, r, g, bl, al);
             }
+        }
+
+        /* Exhaust trail: puffs left in the air, growing and fading with age. */
+        for (int i = 0; i < JET_PUFF_MAX; i++) {
+            f32 t, w, al;
+            Vec3f A, B, C, D, o;
+            if (s_puffAge[i] >= JET_PUFF_LIFE) continue;
+            t = (f32) s_puffAge[i] / (f32) JET_PUFF_LIFE;
+            w = 9.0f + t * 30.0f;
+            al = (u8) (170.0f * (1.0f - t));
+            o[0] = s_puffPos[i][0];
+            o[1] = s_puffPos[i][1];
+            o[2] = s_puffPos[i][2];
+            A[0] = o[0] - camR[0] * w - camU[0] * w;
+            A[1] = o[1] - w;
+            A[2] = o[2] - camR[2] * w;
+            B[0] = o[0] + camR[0] * w - camU[0] * w;
+            B[1] = o[1] - w;
+            B[2] = o[2] + camR[2] * w;
+            C[0] = o[0] + camR[0] * w + camU[0] * w;
+            C[1] = o[1] + w;
+            C[2] = o[2] + camR[2] * w;
+            D[0] = o[0] - camR[0] * w + camU[0] * w;
+            D[1] = o[1] + w;
+            D[2] = o[2] - camR[2] * w;
+            mk_quad(A, B, C, D, 0xFF, (u8) (210.0f - 150.0f * t),
+                    (u8) (70.0f * (1.0f - t)), al);
         }
 
         /* diagetic fuel bar on the back face */
