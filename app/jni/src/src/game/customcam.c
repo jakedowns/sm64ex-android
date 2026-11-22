@@ -19,6 +19,20 @@
 
 int gfx_cam_mode = 0;
 
+/* Freecam (mode 5): a completely manual camera.  It never follows, tracks,
+ * avoids obstacles or animates on its own; only the right stick (yaw/pitch),
+ * the left stick (when FREE MOVE is on) and the pinch/drag gestures move it. */
+int gfx_freecam_move = 0;
+int gfx_freecam_lx = 0;
+int gfx_freecam_ly = 0;
+float gfx_freecam_nudge = 0.0f;    /* pinch delta (distance from the anchor) */
+float gfx_freecam_ydelta = 0.0f;   /* drag delta (vertical) */
+static Vec3f s_fcPos;
+static Vec3f s_fcAnchor;
+static s16 s_fcYaw;
+static s16 s_fcPitch;
+static int s_fcInit;
+
 // Live tunables (CAMERA tab sliders -> nativeSetStereoInt keys 46..49).
 float gfx_cam_dist = 700.0f;         // orbit radius, world units
 float gfx_cam_height = 110.0f;       // look-at height above Mario's feet
@@ -205,9 +219,114 @@ void custom_camera_portal_snap(const Vec3f pos, const Vec3f focus) {
 }
 
 
+int custom_camera_freecam_state(int which) {
+    switch (which) {
+        case 0: return gfx_freecam_move;
+        case 1: return gfx_freecam_lx;
+        case 2: return gfx_freecam_ly;
+        case 3: return s_fcYaw;
+        case 4: return s_fcPitch;
+        default: return s_fcInit;
+    }
+}
+
+void custom_camera_freecam_update(struct Camera *c) {
+    Vec3f dir, focus;
+    s16 inX = 0, inY = 0;
+
+    if (gMarioState == NULL || c == NULL) {
+        return;
+    }
+    if (!s_fcInit) {
+        Vec3f d;
+        vec3f_copy(s_fcPos, gLakituState.pos);
+        vec3f_copy(s_fcAnchor, gMarioState->pos);
+        d[0] = gLakituState.focus[0] - gLakituState.pos[0];
+        d[1] = gLakituState.focus[1] - gLakituState.pos[1];
+        d[2] = gLakituState.focus[2] - gLakituState.pos[2];
+        s_fcYaw = (s16) atan2s(d[0], d[2]);
+        s_fcPitch = (s16) atan2s(d[1], sqrtf(d[0] * d[0] + d[2] * d[2]));
+        s_fcInit = 1;
+    }
+
+    if (gfx_ovl_analog && gfx_ovl_right_active) {
+        inX = (s16) gfx_ovl_right_x;
+        inY = (s16) gfx_ovl_right_y;
+    }
+    {
+        f32 sens = gfx_cam_sens_pct / 100.0f;
+        if (inX > 12 || inX < -12) {
+            s_fcYaw -= (s16) ((f32) inX * 13.0f * sens);
+        }
+        if (inY > 12 || inY < -12) {
+            s_fcPitch = (s16) clamps((f32) s_fcPitch + (f32) inY * 5.0f * sens,
+                                     -0x3F00, 0x3F00);
+        }
+    }
+
+    /* Pinch: move toward/away from Mario's position at enable time. */
+    if (fabsf(gfx_freecam_nudge) > 0.01f) {
+        f32 dx = s_fcPos[0] - s_fcAnchor[0];
+        f32 dz = s_fcPos[2] - s_fcAnchor[2];
+        f32 d = sqrtf(dx * dx + dz * dz);
+        f32 nd = d + gfx_freecam_nudge;
+        if (nd < 120.0f) nd = 120.0f;
+        if (nd > 4000.0f) nd = 4000.0f;
+        if (d > 1.0f) {
+            s_fcPos[0] = s_fcAnchor[0] + dx / d * nd;
+            s_fcPos[2] = s_fcAnchor[2] + dz / d * nd;
+        }
+        gfx_freecam_nudge = 0.0f;
+    }
+    /* Vertical drag. */
+    if (fabsf(gfx_freecam_ydelta) > 0.001f) {
+        s_fcPos[1] += gfx_freecam_ydelta;
+        if (s_fcPos[1] < 30.0f) s_fcPos[1] = 30.0f;
+        gfx_freecam_ydelta = 0.0f;
+    }
+
+    /* FREE MOVE: left stick translates the camera along its actual look
+     * vector (pitch included), so looking up and pushing up rises instead of
+     * moving forward in world space.  Strafe stays horizontal. */
+    if (gfx_freecam_move && (gfx_freecam_lx != 0 || gfx_freecam_ly != 0)) {
+        f32 cp = coss(s_fcPitch);
+        f32 fx = sins(s_fcYaw) * cp;
+        f32 fy = sins(s_fcPitch);
+        f32 fz = coss(s_fcYaw) * cp;
+        /* Screen-right is the user's right: the old right vector pointed the
+         * other way, so horizontal stick movement felt inverted. */
+        f32 rx = -coss(s_fcYaw), rz = sins(s_fcYaw);
+        f32 mx = (f32) gfx_freecam_lx / 127.0f;
+        f32 my = (f32) gfx_freecam_ly / 127.0f;
+        f32 sp = 14.0f;
+        s_fcPos[0] += (fx * my + rx * mx) * sp;
+        s_fcPos[1] += fy * my * sp;
+        s_fcPos[2] += (fz * my + rz * mx) * sp;
+    }
+
+    dir[0] = sins(s_fcYaw) * coss(s_fcPitch);
+    dir[1] = sins(s_fcPitch);
+    dir[2] = coss(s_fcYaw) * coss(s_fcPitch);
+    focus[0] = s_fcPos[0] + dir[0] * 400.0f;
+    focus[1] = s_fcPos[1] + dir[1] * 400.0f;
+    focus[2] = s_fcPos[2] + dir[2] * 400.0f;
+
+    vec3f_copy(gLakituState.pos, s_fcPos);
+    vec3f_copy(gLakituState.focus, focus);
+    vec3f_copy(gLakituState.curPos, s_fcPos);
+    vec3f_copy(gLakituState.curFocus, focus);
+    vec3f_copy(gLakituState.goalPos, s_fcPos);
+    vec3f_copy(gLakituState.goalFocus, focus);
+    vec3f_copy(c->pos, s_fcPos);
+    vec3f_copy(c->focus, focus);
+}
+
 void custom_camera_apply_mode(int mode) {
-    if (mode < 0 || mode > 4) {
+    if (mode < 0 || mode > 5) {
         mode = 0;
+    }
+    if (mode == 5) {
+        s_fcInit = 0;   /* capture the current pose on the next update */
     }
     if (gfx_cam_mode == 4 && mode != 4 && gMarioObject != NULL) {
         gMarioObject->header.gfx.node.flags &= ~GRAPH_RENDER_INVISIBLE;

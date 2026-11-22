@@ -196,6 +196,25 @@ Fast chain on this build: **PASS 8/8** (flags=0x7ff, stars 1/1, crossings 117).
 - Run proof: `chain=26,589,0x7ff,3,0`, `star=1 star2=1 cmode=3`; audio levels
   mean -24.4 dB / max -0.5 dB.
 
+### Take 17 - griefing loop + splat 360 finale
+
+- `/tmp/opencode/g-take17.mp4` + `g-take17.wav` -> `/tmp/opencode/ninja-final-splat-60fps.mp4`
+  (43.2 s, 1600x1000, 60 fps, AAC; mean -25.4 dB / max -0.5 dB). Not uploaded
+  (third-party uploads paused).
+- N6 widened to x -1500..-300, z -3200..-2600 (2.4x area) and the level regenerated.
+- Goomba: one goomba waddles in, the blue ceiling portal appears above the orange
+  floor portal, it loops through **8 accelerating passes**, then the blue exit is
+  shifted one portal width sideways (`SHIFT! BULLET`) and the next pass fires it
+  into the hard ground beside the floor portal where it splats and fades.
+- Portal fans are now orange on the floor / blue on the ceiling, with a 0.10/tick
+  scale-up reveal on placement.
+- Grapple: retract is 2x longer (105-tick hold), the rope shoots from Mario's
+  hand to the ceiling and whips back into his hand on release.
+- Finale: `SPLAT 360` - 360-degree orbit of the chamber with splat rendering on
+  all objects, density lerped 20 -> 100 over the arc, ellipse splats switching to
+  paint strokes at the 180-degree mark; the orbit holds at the end.
+- Run proof: `chain=27,572,0x7ff,9,0`, `star=1 star2=1 cmode=3`.
+
 ### Next
 1. **Impact feel** (polish): short slow-mo/time-scale dip on the ground-pound,
    grapple apex and the two star grabs; a decaying camera shake on the slam.

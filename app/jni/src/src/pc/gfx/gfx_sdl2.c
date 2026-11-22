@@ -253,9 +253,24 @@ Java_com_vdavid003_sm64port_sm64portActivity_nativeOverlayInput(JNIEnv *env, jcl
                                                                 jint active, jint sx,
                                                                 jint sy, jint buttons) {
     (void) env; (void) clazz;
+    {
+        extern int gfx_cam_mode;
+        extern int gfx_freecam_move;
+        extern int gfx_freecam_lx, gfx_freecam_ly;
+        if (gfx_cam_mode == 5 && gfx_freecam_move) {
+            /* Freecam movement swallows the left stick so Mario stays put. */
+            gfx_freecam_lx = sx;
+            gfx_freecam_ly = sy;
+            gfx_ovl_stick_x = 0;
+            gfx_ovl_stick_y = 0;
+        } else {
+            gfx_freecam_lx = 0;
+            gfx_freecam_ly = 0;
+            gfx_ovl_stick_x = sx;
+            gfx_ovl_stick_y = sy;
+        }
+    }
     gfx_ovl_active = active;
-    gfx_ovl_stick_x = sx;
-    gfx_ovl_stick_y = sy;
     gfx_ovl_buttons = (unsigned int) buttons;
 }
 
@@ -491,6 +506,27 @@ Java_com_vdavid003_sm64port_sm64portActivity_nativePtcTrace(JNIEnv *env, jclass 
     (void) clazz;
     const char *trace = ptc_trace_get();
     return (*env)->NewStringUTF(env, trace != NULL ? trace : "");
+}
+
+JNIEXPORT void JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeSetFreecamMove(JNIEnv *env, jclass clazz, jint on) {
+    (void) env; (void) clazz;
+    extern int gfx_freecam_move;
+    gfx_freecam_move = on ? 1 : 0;
+}
+
+JNIEXPORT void JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeFreecamNudge(JNIEnv *env, jclass clazz, jfloat d) {
+    (void) env; (void) clazz;
+    extern float gfx_freecam_nudge;
+    gfx_freecam_nudge += (float) d;
+}
+
+JNIEXPORT void JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeFreecamY(JNIEnv *env, jclass clazz, jfloat d) {
+    (void) env; (void) clazz;
+    extern float gfx_freecam_ydelta;
+    gfx_freecam_ydelta += (float) d;
 }
 
 JNIEXPORT void JNICALL

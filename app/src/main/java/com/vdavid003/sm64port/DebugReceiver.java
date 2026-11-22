@@ -105,6 +105,18 @@ public class DebugReceiver extends BroadcastReceiver {
                 Log.i(TAG, "CMD runticks n=" + n);
                 break;
             }
+            case "cam2": {
+                int m = intent.getIntExtra("mode", 5);
+                a.debugSetCamMode2(m);
+                Log.i(TAG, "CMD cam2 mode=" + m);
+                break;
+            }
+            case "freecam": {
+                int v = intent.getIntExtra("v", 1);
+                a.debugSetFreecamMove(v);
+                Log.i(TAG, "CMD freecam v=" + v);
+                break;
+            }
             case "audiorec": {
                 int v = intent.getIntExtra("v", 1);
                 a.debugSetAudioRec(v);

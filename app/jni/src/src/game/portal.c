@@ -57,6 +57,7 @@ struct Portal {
     Vec3f tan;      // in-plane, roughly horizontal
     Vec3f bitan;    // in-plane, roughly vertical
     float rx, ry;
+    float reveal;   /* 0..1 scale-up animation on placement */
 };
 
 static struct Portal s_portal[2];
@@ -295,6 +296,7 @@ static void portal_shoot_ray(int which, Vec3f orig, Vec3f rayDir) {
     }
 
     s_portal[which].active = 1;
+    s_portal[which].reveal = 0.0f;
     vec3f_copy(s_portal[which].pos, centre);
     vec3f_copy(s_portal[which].normal, n);
     vec3f_copy(s_portal[which].tan, tan);
@@ -602,6 +604,9 @@ static void fill_vtx(Vtx *v, float x, float y, float z, u8 r, u8 g, u8 b, u8 a) 
 
 static void draw_portal(const struct Portal *p, u8 r, u8 g, u8 b, const Mat4 view) {
     Vtx *v = alloc_display_list(sizeof(Vtx) * (PORTAL_SEGMENTS + 2));
+    float sc = p->reveal;
+    if (sc < 0.02f) sc = 0.02f;
+    if (sc > 1.0f) sc = 1.0f;
 
     if (v == NULL) {
         return;
@@ -612,7 +617,7 @@ static void draw_portal(const struct Portal *p, u8 r, u8 g, u8 b, const Mat4 vie
     fill_vtx(&v[0], 0.0f, 0.0f, 0.0f, r, g, b, 0xB8);
     for (int i = 0; i <= PORTAL_SEGMENTS; i++) {
         float a = (float)i * (2.0f * 3.14159265f) / (float)PORTAL_SEGMENTS;
-        fill_vtx(&v[i + 1], cosf(a) * p->rx, sinf(a) * p->ry, 0.0f, r, g, b, 0xC8);
+        fill_vtx(&v[i + 1], cosf(a) * p->rx * sc, sinf(a) * p->ry * sc, 0.0f, r, g, b, 0xC8);
     }
 
     gSPVertex(gDisplayListHead++, VIRTUAL_TO_PHYSICAL(v), PORTAL_SEGMENTS + 2, 0);
@@ -903,6 +908,12 @@ void portal_render(void) {
 
     if (gCurrentArea == NULL) {
         return;
+    }
+    for (int i = 0; i < 2; i++) {
+        if (s_portal[i].active && s_portal[i].reveal < 1.0f) {
+            s_portal[i].reveal += 0.10f;
+            if (s_portal[i].reveal > 1.0f) s_portal[i].reveal = 1.0f;
+        }
     }
     if (!s_portal[0].active && !s_portal[1].active && !s_gunSpawned && !s_hasGun) {
         g_portal_view.active = 0;

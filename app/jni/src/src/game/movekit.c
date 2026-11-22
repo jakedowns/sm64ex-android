@@ -53,6 +53,10 @@ static f32 s_lastWallY = 0.0f;
 static int s_haveLastWall = 0;
 static f32 s_rope_len = 0.0f;
 static u32 s_force_retract_down;
+/* Rope presentation: the hook flies from the hand to the anchor on fire and
+ * whips back into the hand on release instead of vanishing. */
+static int s_ropeShoot;
+static int s_ropeRelease;
 /* Jetpack exhaust trail: puffs left behind while the pack burns. */
 #define JET_PUFF_MAX 26
 #define JET_PUFF_LIFE 20
@@ -383,6 +387,9 @@ static u32 s_force_down;
 static u32 s_force_prev;
 
 void movekit_force_trigger(int on) {
+    if (!on && s_attached) {
+        s_ropeRelease = 12;   /* 2x the old fade, back into the hand */
+    }
     s_force_down = on ? L_TRIG : 0;
 }
 
@@ -408,6 +415,8 @@ void movekit_force_anchor(float x, float y, float z) {
         s_rope_len = sqrtf(dx * dx + dy * dy + dz * dz);
     }
     s_attached = 1;
+    s_ropeShoot = 8;
+    s_ropeRelease = 0;
 }
 
 #ifdef __ANDROID__
@@ -511,6 +520,8 @@ void movekit_update(struct MarioState *m) {
     if (s_cooldown > 0) {
         s_cooldown--;
     }
+    if (s_ropeShoot > 0) s_ropeShoot--;
+    if (s_ropeRelease > 0) s_ropeRelease--;
     if (m->action != ACT_WALLRUN && s_roll != 0) {
         s_roll = (s16)(s_roll * 0.7f);
         if (s_roll > -32 && s_roll < 32) {
@@ -619,7 +630,7 @@ void movekit_render(void) {
     camU[2] = 0.0f;
 
     /* --- grapple rope: low-subdivision catenary ribbon ------------------ */
-    if (s_attached) {
+    if (s_attached || s_ropeShoot > 0 || s_ropeRelease > 0) {
         Vec3f from, anchor, dir, perp, prev, p, a, b;
         f32 len, sag;
         int segs = 8;
@@ -630,6 +641,17 @@ void movekit_render(void) {
         anchor[0] = s_anchor[0];
         anchor[1] = s_anchor[1];
         anchor[2] = s_anchor[2];
+        if (s_ropeShoot > 0) {
+            f32 u = 1.0f - (f32) s_ropeShoot / 8.0f;
+            anchor[0] = from[0] + (s_anchor[0] - from[0]) * u;
+            anchor[1] = from[1] + (s_anchor[1] - from[1]) * u;
+            anchor[2] = from[2] + (s_anchor[2] - from[2]) * u;
+        } else if (s_ropeRelease > 0) {
+            f32 u = (f32) s_ropeRelease / 12.0f;
+            anchor[0] = from[0] + (s_anchor[0] - from[0]) * u;
+            anchor[1] = from[1] + (s_anchor[1] - from[1]) * u;
+            anchor[2] = from[2] + (s_anchor[2] - from[2]) * u;
+        }
         dir[0] = anchor[0] - from[0];
         dir[1] = anchor[1] - from[1];
         dir[2] = anchor[2] - from[2];

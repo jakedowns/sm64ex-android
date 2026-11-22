@@ -52,6 +52,8 @@ public class TouchOverlay extends View {
     private int camGestureMode = GESTURE_IDLE;
     private int camPtr1 = -1, camPtr2 = -1;
     private float gSpan0, gCx0, gCy0;
+    private float gLastSpan, gLastCy;
+    private boolean freecamMove;
     private int gFov0, gDist0, gHeight0;
 
     /* Two-finger gesture recognition.  A gesture starts undecided and only
@@ -182,6 +184,14 @@ public class TouchOverlay extends View {
             if (dx * dx + dy * dy <= (portalRadius * 1.25f) * (portalRadius * 1.25f)) return i;
         }
         return -1;
+    }
+
+    private boolean hitFreecamToggle(float x, float y) {
+        if (sm64portActivity.nativeGetCamMode2() != 5) {
+            return false;
+        }
+        return x >= dp(16) && x <= dp(16) + dp(168)
+                && y >= dp(16) && y <= dp(16) + dp(46);
     }
 
     private boolean hitModeToggle(float x, float y) {
@@ -330,6 +340,9 @@ public class TouchOverlay extends View {
                     portalPressed = pb;
                     portalPointer = id;
                     invalidate();
+                } else if (hitFreecamToggle(px, py)) {
+                    freecamMove = !freecamMove;
+                    sm64portActivity.nativeSetFreecamMove(freecamMove ? 1 : 0);
                 } else if (hitModeToggle(px, py)) {
                     analogMode = !analogMode;
                     sm64portActivity.nativeOverlayAnalog(analogMode ? 1 : 0);
@@ -609,6 +622,17 @@ public class TouchOverlay extends View {
         // The aiming reticle is drawn by the game UI pass (N64 display list)
         // so it gets per-eye stereo depth from the aim-surface distance.
 
+        if (sm64portActivity.nativeGetCamMode2() == 5) {
+            float x0 = dp(16), y0 = dp(16), w = dp(168), h2 = dp(46);
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(freecamMove ? 0xDD33CC66 : 0xAA222222);
+            c.drawRoundRect(x0, y0, x0 + w, y0 + h2, dp(10), dp(10), paint);
+            paint.setColor(Color.WHITE);
+            paint.setTextSize(dp(16));
+            c.drawText(freecamMove ? "FREE MOVE: ON" : "FREE MOVE: OFF",
+                    x0 + dp(10), y0 + dp(29), paint);
+        }
+
         if (fpvActive()) {
             String hint = "SELECT / BACK exits FPV";
             paint.setStyle(Paint.Style.FILL);
@@ -668,8 +692,10 @@ public class TouchOverlay extends View {
         camPtr1 = e.getPointerId(0);
         camPtr2 = e.getPointerId(1);
         gSpan0 = span;
+        gLastSpan = span;
         gCx0 = (x0 + x1) * 0.5f;
         gCy0 = (y0 + y1) * 0.5f;
+        gLastCy = gCy0;
         gFov0 = a != null ? a.getCamValue(20) : 100;
         gDist0 = a != null ? a.getCamValue(46) : 700;
         gHeight0 = a != null ? a.getCamValue(47) : 110;
@@ -739,6 +765,21 @@ public class TouchOverlay extends View {
         }
 
         sm64portActivity a = sm64portActivity.instance;
+        if (a != null && a.getCamMode2() == 5) {
+            /* Freecam gestures: pinch = distance from Mario's last position,
+             * drag X = FOV, drag Y = camera height. */
+            if (camGestureMode == GESTURE_PINCH) {
+                sm64portActivity.nativeFreecamNudge((span - gLastSpan) * 0.6f);
+            } else if (camGestureMode == GESTURE_SWIPE) {
+                int fov = Math.round(gFov0 + (cx - gCx0) * 0.25f);
+                fov = Math.max(1, Math.min(400, fov));
+                a.setCamValue(20, fov);
+                sm64portActivity.nativeFreecamY((gLastCy - cy) * 0.5f);
+            }
+            gLastSpan = span;
+            gLastCy = cy;
+            return true;
+        }
         if (camGestureMode == GESTURE_PINCH) {
             int fov = Math.round(gFov0 * gSpan0 / span);
             fov = Math.max(1, Math.min(400, fov));

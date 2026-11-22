@@ -1797,7 +1797,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     // ---- camera-tracking widgets (stereo-int channel, keys 41..44) ----
 
     private static final String[] CAM_MODE_SHORT = {
-            "VANILLA", "BETTER", "PUPPY", "CUSTOM", "FIRST"
+            "VANILLA", "BETTER", "PUPPY", "CUSTOM", "FIRST", "FREE"
     };
 
     private void addCamModePills(LinearLayout parent) {
@@ -1842,8 +1842,24 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     private void setCamMode2(int mode) {
         camMode2 = mode;
         nativeSetCamMode2(mode);
+        if (mode != 5) {
+            nativeSetFreecamMove(0);
+        }
         updateCamModePills();
         Log.i(TAG, "camera mode -> " + camModeLabel());
+    }
+
+    int getCamMode2() {
+        return camMode2;
+    }
+
+    void debugSetCamMode2(int mode) {
+        runOnUiThread(() -> setCamMode2(mode));
+    }
+
+    void debugSetFreecamMove(int on) {
+        nativeSetFreecamMove(on != 0 ? 1 : 0);
+        Log.i(TAG, "FREECAM MOVE " + on);
     }
 
     /** Redundant cycler in the persistent debug header, next to FPS. */
@@ -2995,6 +3011,9 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     static native int nativeGetCamMode();
     static native void nativeSetCamMode2(int mode);
     static native int nativeGetCamMode2();
+    static native void nativeSetFreecamMove(int on);
+    static native void nativeFreecamNudge(float d);
+    static native void nativeFreecamY(float d);
     static native int nativeGetMovekitState();
     static native int nativeGetJetpackFuel();
     static native void nativeMovekitUpgrade(int which);

@@ -44,6 +44,12 @@
 #include "ptc_scene.h"
 #include "movekit.h"
 
+extern int custom_camera_freecam_state(int which);
+extern int gfx_splat_active;
+extern int gfx_splat_target;
+extern int gfx_splat_shape;
+extern int gfx_splat_density;
+
 /* Per-object occluder fade.  Bit N = fade object N (0..8 platforms, 9 ramp,
  * 10..13 room walls), set by ptc_occlusion_update(). */
 u32 g_ptc_fade_mask = 0;
@@ -413,6 +419,7 @@ static const char *ptc_chain_note(int ph);
 static int s_chainFlags;
 static u32 s_chainHudFlags;
 static int s_chainHudSaved;
+static int s_finaleSplatSaved[4];
 static int s_chainGoombaCross;
 static int s_cineOn;
 static int s_cineInit;
@@ -645,6 +652,12 @@ void ptc_reset(void) {
         if (s_chainHudSaved) {
             gHudDisplay.flags = s_chainHudFlags;
             s_chainHudSaved = 0;
+        }
+        if (s_finaleSplatSaved[0] || s_finaleSplatSaved[3]) {
+            gfx_splat_active = s_finaleSplatSaved[0];
+            gfx_splat_target = s_finaleSplatSaved[1];
+            gfx_splat_shape = s_finaleSplatSaved[2];
+            gfx_splat_density = s_finaleSplatSaved[3];
         }
         custom_camera_set_freelook(0, NULL, NULL);
         gfx_stereo_fov_pct = 100;
@@ -1895,6 +1908,7 @@ enum {
     CH_STAR2,
     CH_GOOMBA_SETUP,
     CH_GOOMBA_LOOP,
+    CH_FINALE,
     CH_DONE
 };
 
@@ -1930,12 +1944,16 @@ static int s_chainFlags;
 static float s_chainTargetX, s_chainTargetZ;
 static u32 s_chainHudFlags;
 static int s_chainHudSaved;
+static int s_finaleSplatSaved[4];
 static int s_chainTeleBase;
 static int s_chainJumped;
 #define CH_GOOMBA_N 1
 static int s_chainGoombaState[CH_GOOMBA_N];
 static int s_chainGoombaTimer[CH_GOOMBA_N];
 static int s_chainGoombaPortalPlaced;
+static int s_chainGoombaLoops;
+static int s_chainGoombaShifted;
+static int s_chainGoombaSquash;
 static int s_chainGoombaCross;
 static float s_chainGoombaX[CH_GOOMBA_N], s_chainGoombaY[CH_GOOMBA_N];
 static float s_chainGoombaZ[CH_GOOMBA_N], s_chainGoombaVY[CH_GOOMBA_N];
@@ -2012,8 +2030,16 @@ static void ptc_chain_shoot_goomba_portals(void) {
     Vec3f aTgt  = { -600.0f, 1500.0f, -3020.0f };
     Vec3f bOrig = { -600.0f, 2680.0f, -3020.0f };
     Vec3f bTgt  = { -600.0f, 2800.0f, -3020.0f };
-    portal_shoot_at(0, aOrig, aTgt);
-    portal_shoot_at(1, bOrig, bTgt);
+    /* portal 1 = orange floor, portal 0 = blue ceiling */
+    portal_shoot_at(1, aOrig, aTgt);
+    portal_shoot_at(0, bOrig, bTgt);
+}
+
+/* BAM: move the blue exit one portal width sideways. */
+static void ptc_chain_shift_goomba_portal(void) {
+    Vec3f bOrig = { -600.0f, 2680.0f, -2880.0f };
+    Vec3f bTgt  = { -600.0f, 2800.0f, -2880.0f };
+    portal_shoot_at(0, bOrig, bTgt);   /* blue ceiling */
 }
 
 static void ptc_chain_setup(void) {
@@ -2035,6 +2061,10 @@ static void ptc_chain_setup(void) {
     movekit_force_retract(0);
     s_chainHudFlags = gHudDisplay.flags;
     s_chainHudSaved = 1;
+    s_finaleSplatSaved[0] = gfx_splat_active;
+    s_finaleSplatSaved[1] = gfx_splat_target;
+    s_finaleSplatSaved[2] = gfx_splat_shape;
+    s_finaleSplatSaved[3] = gfx_splat_density;
     gHudDisplay.flags &= ~(HUD_DISPLAY_FLAG_CAMERA_AND_POWER
                            | HUD_DISPLAY_FLAG_EMPHASIZE_POWER);
     for (int gi = 0; gi < CH_GOOMBA_N; gi++) {
@@ -2186,7 +2216,8 @@ extern int gfx_cam_mode;
         case CH_PORTAL_FALL:   return "NINJA 6/8 portals: drop out of the ceiling onto N6";
         case CH_STAR2:         return "NINJA 6/8: collect the N6 star";
         case CH_GOOMBA_SETUP:
-        case CH_GOOMBA_LOOP:   return "NINJA 7/8 goomba: ceiling portal lemming loop";
+        case CH_GOOMBA_LOOP:   return "NINJA 7/8: GOOMBA GRIEFING";
+        case CH_FINALE:        return "NINJA: SPLAT 360";
         case CH_DONE:          return "NINJA: run complete";
         default:               return "NINJA: ready";
     }
@@ -2234,47 +2265,71 @@ static void ptc_chain_goomba_tick(void) {
             continue;
         }
         if (s_chainGoombaState[gi] == 0) {
-            /* Walk south at Mario; the portal is shot just before it arrives. */
+            /* Waddle at Mario; portals are shot just before it arrives. */
             s_chainGoombaZ[gi] -= 4.0f;
             if (!s_chainGoombaPortalPlaced && s_chainGoombaZ[gi] < -2900.0f) {
                 ptc_chain_shoot_goomba_portals();
                 s_chainGoombaPortalPlaced = 1;
             }
             if (s_chainGoombaZ[gi] < -3005.0f) {
-                /* Through the floor portal: out of the ceiling one. */
                 s_chainGoombaState[gi] = 1;
                 s_chainGoombaX[gi] = -600.0f;
                 s_chainGoombaZ[gi] = -3020.0f;
                 s_chainGoombaY[gi] = 2790.0f;
-                s_chainGoombaVY[gi] = -4.0f;
+                s_chainGoombaVY[gi] = -6.0f;
+                s_chainGoombaLoops = 0;
                 s_chainGoombaCross++;
             }
         } else if (s_chainGoombaState[gi] == 1) {
-            /* Fall out of the ceiling portal (~1290 units) to the platform. */
-            s_chainGoombaVY[gi] -= 3.0f;
+            /* Accelerating portal loop: ceiling -> floor -> ceiling. */
+            s_chainGoombaVY[gi] -= 3.2f;
+            if (s_chainGoombaVY[gi] < -70.0f) s_chainGoombaVY[gi] = -70.0f;
             s_chainGoombaY[gi] += s_chainGoombaVY[gi];
             if (s_chainGoombaY[gi] <= 1500.0f) {
                 s_chainGoombaY[gi] = 1500.0f;
-                s_chainGoombaVY[gi] = 0.0f;
-                s_chainGoombaState[gi] = 2;
-                s_chainGoombaTimer[gi] = 0;
+                s_chainGoombaLoops++;
+                if (s_chainGoombaLoops < 8) {
+                    /* back out of the ceiling, carrying the extra speed */
+                    s_chainGoombaY[gi] = 2790.0f;
+                    s_chainGoombaZ[gi] = -3020.0f;
+                    s_chainGoombaCross++;
+                } else {
+                    /* BAM: exit is now beside the orange portal, not above it */
+                    if (!s_chainGoombaShifted) {
+                        ptc_chain_shift_goomba_portal();
+                        s_chainGoombaShifted = 1;
+                    }
+                    s_chainGoombaState[gi] = 3;
+                    s_chainGoombaY[gi] = 2790.0f;
+                    s_chainGoombaZ[gi] = -2880.0f;
+                    s_chainGoombaVY[gi] = -70.0f;
+                    s_chainGoombaCross++;
+                }
+            }
+        } else if (s_chainGoombaState[gi] == 3) {
+            /* Bullet: out of the shifted portal onto the hard ground. */
+            s_chainGoombaY[gi] -= 70.0f;
+            if (s_chainGoombaY[gi] <= 1500.0f) {
+                s_chainGoombaY[gi] = 1500.0f;
+                s_chainGoombaState[gi] = 4;
+                s_chainGoombaSquash = 0;
                 play_sound(SOUND_ACTION_TERRAIN_HEAVY_LANDING, gDefaultSoundArgs);
+            }
+        } else if (s_chainGoombaState[gi] == 4) {
+            /* Splat: flatten, hold for a beat, then fade out. */
+            s_chainGoombaSquash++;
+            if (s_chainGoombaSquash < 8) {
+                o->header.gfx.scale[0] = 1.9f;
+                o->header.gfx.scale[1] = 0.30f;
+                o->header.gfx.scale[2] = 1.9f;
+            } else if (s_chainGoombaSquash < 18) {
+                o->header.gfx.scale[1] = 0.30f + 0.05f * (float)(s_chainGoombaSquash - 8);
+            } else {
                 o->header.gfx.node.flags &= ~GRAPH_RENDER_ACTIVE;
+                s_chainGoombaState[gi] = 5;
             }
         } else {
-            /* Squashed by the fall: wait, then send the next one. */
-            s_chainGoombaTimer[gi]++;
-            if (s_chainGoombaTimer[gi] > 75) {
-                s_chainGoombaState[gi] = 0;
-                s_chainGoombaX[gi] = -600.0f;
-                s_chainGoombaY[gi] = 1500.0f;
-                s_chainGoombaZ[gi] = -2720.0f;
-                s_chainGoombaVY[gi] = 0.0f;
-                s_chainGoombaPortalPlaced = 0;
-                o->header.gfx.node.flags |= GRAPH_RENDER_ACTIVE;
-            } else {
-                continue;
-            }
+            continue;
         }
         ptc_chain_goomba_place(o, s_chainGoombaX[gi], s_chainGoombaY[gi],
                                s_chainGoombaZ[gi], 0xC000);   /* face -Z */
@@ -2288,6 +2343,9 @@ static void ptc_chain_goomba_start(void) {
     gfx_cam_height = 180.0f;
     custom_camera_set_yaw_hint(1, 0x8000);
     s_chainGoombaPortalPlaced = 0;
+    s_chainGoombaLoops = 0;
+    s_chainGoombaShifted = 0;
+    s_chainGoombaSquash = 0;
     for (int gi = 0; gi < CH_GOOMBA_N; gi++) {
         s_chainGoombaState[gi] = 0;
         s_chainGoombaTimer[gi] = 0;
@@ -2337,7 +2395,8 @@ static const char *ptc_chain_caption(int ph) {
         case CH_PORTAL_RUN:
         case CH_PORTAL_FALL:     return "PORTALS";
         case CH_GOOMBA_SETUP:
-        case CH_GOOMBA_LOOP:     return "GOOMBA LOOP";
+        case CH_GOOMBA_LOOP:     return "GOOMBA GRIEFING";
+        case CH_FINALE:          return "SPLAT 360";
         default:                 return NULL;
     }
 }
@@ -2352,6 +2411,19 @@ void ptc_chain_hud_text(void) {
     }
     cap = ptc_chain_caption(s_chainMode);
     /* Grapple phases are called out individually. */
+    if (s_chainMode == CH_GOOMBA_LOOP) {
+        static char gbuf[24];
+        if (s_chainGoombaState[0] == 0) {
+            cap = "GOOMBA GRIEFING";
+        } else if (s_chainGoombaState[0] == 1) {
+            snprintf(gbuf, sizeof(gbuf), "LOOP %d/8", s_chainGoombaLoops + 1);
+            cap = gbuf;
+        } else if (s_chainGoombaState[0] == 3) {
+            cap = "SHIFT! BULLET";
+        } else if (s_chainGoombaState[0] >= 4) {
+            cap = "SPLAT";
+        }
+    }
     if (s_chainMode == CH_GRAPPLE_HOLD) {
         cap = (s_chainTimer > 35) ? "RETRACT" : "SWING";
     } else if (s_chainMode == CH_GRAPPLE_RELEASE) {
@@ -2513,6 +2585,21 @@ static void ptc_chain_camera(struct MarioState *m) {
             focus[2] = gz;
             fov = 150.0f;
             k = 0.07f;
+            break;
+        }
+        case CH_FINALE: {
+            /* 360-degree splat showcase around the chamber. */
+            const float PI2 = 6.2831853f;
+            int ft = s_chainTimer > 240 ? 240 : s_chainTimer;
+            float a = (float) ft * (PI2 / 240.0f) + 0.6f;
+            pos[0] = 1700.0f * cosf(a);
+            pos[1] = 1500.0f;
+            pos[2] = -1200.0f + 1700.0f * sinf(a);
+            focus[0] = 0.0f;
+            focus[1] = 700.0f;
+            focus[2] = -1200.0f;
+            fov = 160.0f;
+            k = 0.06f;
             break;
         }
         case CH_GOOMBA_SETUP:
@@ -2767,11 +2854,10 @@ static void ptc_chain_update(void) {
 
         case CH_GRAPPLE_HOLD:
             s_chainFlags |= CH_FLAG_GRAPPLE;
-            if (s_chainTimer <= 70) {
-                /* Spider-Man pendulum under the ceiling anchor: the rope is
-                 * 2450 units long, the arc sweeps -6 -> +16 degrees while it
-                 * reels in slightly, so Mario swings across and up. */
-                float t = (float) s_chainTimer / 70.0f;
+            if (s_chainTimer <= 105) {
+                /* Spider-Man pendulum under the ceiling anchor.  The retract
+                 * half is 2x longer than the swing half. */
+                float t = (float) s_chainTimer / 105.0f;
                 float e = t * t * (3.0f - 2.0f * t);
                 float ang = (-6.0f + 22.0f * e) * 3.14159265f / 180.0f;
                 float R = 2450.0f - 380.0f * e;
@@ -2914,6 +3000,28 @@ static void ptc_chain_update(void) {
 
         case CH_GOOMBA_LOOP:
             ptc_chain_goomba_tick();
+            if (s_chainGoombaState[0] == 5 || s_chainTimer > 420) {
+                ptc_chain_advance(CH_FINALE);
+            }
+            break;
+
+        case CH_FINALE:
+            if (s_chainTimer == 1) {
+                gfx_splat_active = 1;
+                gfx_splat_target = 3;     /* all objects */
+                gfx_splat_shape = 0;      /* ellipse splats */
+                gfx_splat_density = 20;   /* min */
+            }
+            {
+                float u = (float) s_chainTimer / 240.0f;
+                if (u > 1.0f) u = 1.0f;
+                gfx_splat_density = (int) (20.0f + 80.0f * u);
+                if (s_chainTimer == 120) {
+                    gfx_splat_shape = 1;  /* paint-stroke splats at 180 deg */
+                }
+                /* Hold the completed 360 orbit (do not cut back to the
+                 * default camera): the recording ends on the splat showcase. */
+            }
             break;
 
         default:
@@ -3215,6 +3323,16 @@ static void ptc_apply_command(const char *action) {
         ptc_knob_reload();
     } else if (strcmp(action, "chain") == 0) {
         ptc_chain_setup();
+    } else if (strcmp(action, "splatfinale") == 0) {
+        s_chainMode = CH_FINALE;
+        s_chainTimer = 0;
+        s_chainFlags = 0;
+        s_cineOn = 1;
+        s_cineInit = 0;
+        gfx_splat_active = 1;
+        gfx_splat_target = 3;
+        gfx_splat_shape = 0;
+        gfx_splat_density = 20;
     } else if (strcmp(action, "camwall") == 0) {
         ptc_cam_wall_test();
     } else if (strcmp(action, "fadeon") == 0) {
@@ -3268,6 +3386,12 @@ static void ptc_apply_command(const char *action) {
         if (s_chainHudSaved) {
             gHudDisplay.flags = s_chainHudFlags;
             s_chainHudSaved = 0;
+        }
+        if (s_finaleSplatSaved[0] || s_finaleSplatSaved[3]) {
+            gfx_splat_active = s_finaleSplatSaved[0];
+            gfx_splat_target = s_finaleSplatSaved[1];
+            gfx_splat_shape = s_finaleSplatSaved[2];
+            gfx_splat_density = s_finaleSplatSaved[3];
         }
         custom_camera_set_freelook(0, NULL, NULL);
         gfx_stereo_fov_pct = 100;
@@ -3497,7 +3621,7 @@ void ptc_format_status(char *buf, int len) {
              "gobj=%d,0x%x,%d,%d annex=%d,%d,%d gun=%d,%d,%d "
              "chain=%d,%d,0x%x,%d,%d cmode=%d "
              "face=%.1f,%.1f,%.1f anim=%d mh=%.1f remap=%d cdbg=%d,%d,%d,%d,%d walk=%d,%d,%d "
-             "mpw=%d,%d,%d,%d,%d,%d,%d cg=%d,%.0f,%.0f,%.0f,0x%x",
+             "mpw=%d,%d,%d,%d,%d,%d,%d fc=%d,%d,%d,%d cg=%d,%.0f,%.0f,%.0f,0x%x",
              gCurrLevelNum, gCurrAreaIndex, s_phase, s_testMode, s_testActive, s_failed, s_failReason,
              s_starCollected[0], s_starCollected[1], ptc_star_visible(), portal_count(), s_shotA, s_shotB, g_portal_debug,
              g_portal_view.active, g_portal_view.source,
@@ -3544,6 +3668,8 @@ void ptc_format_status(char *buf, int len) {
              s_portalWalk, s_portalWalkDelay, s_portalWalkTimer,
              s_mpw, s_mpwPasses, s_mpwPhase, s_mpwTarget, s_mpwTimer,
              s_mpwLastSrc, s_mpwLastDst,
+             custom_camera_freecam_state(0), custom_camera_freecam_state(1),
+             custom_camera_freecam_state(2), custom_camera_freecam_state(3),
              s_chainGoomba[0] != NULL,
              s_chainGoomba[0] ? s_chainGoomba[0]->oPosX : 0.0f,
              s_chainGoomba[0] ? s_chainGoomba[0]->oPosY : 0.0f,

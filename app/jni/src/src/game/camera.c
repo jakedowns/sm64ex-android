@@ -3584,6 +3584,13 @@ void update_camera(struct Camera *c) {
         }
     }
 
+    if (gfx_cam_mode == 5 && c->cutscene == 0) {
+        extern void custom_camera_freecam_update(struct Camera *c);
+        custom_camera_freecam_update(c);
+        gLakituState.lastFrameAction = sMarioCamState->action;
+        return;
+    }
+
     update_lakitu(c);
     if (gfx_cam_mode == 0 || gfx_cam_mode == 1) {
         /* Vanilla / bettercam: the distance offset is applied inside
