@@ -1668,6 +1668,19 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addIntSlider("Bokeh highlight %", 0, 300, 100, v -> debugFx(165, v));
         addIntSlider("Cat eye %", 0, 100, 0, v -> debugFx(166, v));
 
+        addFxToggle("RATE LIMIT", 200, true);
+        addIntSlider("Target FPS", 0, 120, 60, v -> debugFx(201, v));
+        addFxToggle("ADAPTIVE RATE", 202, false);
+
+        addFxToggle("ALT DENOISE PATH", 210, false);
+        addFxToggle("DENOISER", 211, false);
+        addIntSlider("Denoise intensity", 0, 100, 60, v -> debugFx(212, v));
+        addIntSlider("Denoise passes", 1, 3, 2, v -> debugFx(213, v));
+        addIntSlider("Denoise radius", 1, 4, 1, v -> debugFx(214, v));
+        addIntSlider("Denoise frames", 1, 8, 1, v -> debugFx(215, v));
+        addIntSlider("Denoise bounces", 1, 4, 1, v -> debugFx(216, v));
+        addFxToggle("SHOW TEST CAPTIONS", 217, true);
+
         addIntSlider("Light 1 R", 0, 255, 64, v -> debugFx(124, v));
         addIntSlider("Light 1 G", 0, 255, 140, v -> debugFx(125, v));
         addIntSlider("Light 1 B", 0, 255, 255, v -> debugFx(126, v));

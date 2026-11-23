@@ -125,6 +125,14 @@ extern void gfx_opengl_ssfx_set(int which, int value);
 extern int gfx_opengl_ssfx_get(int which);
 
 #include <jni.h>
+#include <time.h>
+
+/* Defined below; the debug-key switch appears earlier in this file. */
+extern int gfx_rate_enabled;
+extern int gfx_rate_target_fps;
+extern int gfx_rate_adaptive;
+extern int gfx_rate_effective_fps;
+void gfx_rate_reset(void);
 
 static float s_base_ipd = 300.0f;
 static float s_base_convergence = 10.0f;   // matches the slider default
@@ -233,6 +241,11 @@ Java_com_vdavid003_sm64port_sm64portActivity_nativeSetStereoInt(JNIEnv *env, job
             g_camera_portal_mode = value != 0 ? 1 : 0;
             break;
         }
+        /* Rate limiting. */
+        case 200: gfx_rate_enabled = value != 0; break;
+        case 201: gfx_rate_target_fps = value < 0 ? 0 : (value > 240 ? 240 : value); break;
+        case 202: gfx_rate_adaptive = value != 0; break;
+        case 203: gfx_rate_reset(); break;
     }
 }
 
@@ -786,6 +799,113 @@ static double gfx_target_frame_secs(void) {
     }
 }
 
+/* ------------------------------------------------------------ rate limit */
+int gfx_rate_enabled = 1;
+int gfx_rate_target_fps = 0;      /* 0 = follow gfx_fps_mode */
+int gfx_rate_adaptive = 0;
+int gfx_rate_effective_fps = 0;
+static double s_rate_next = 0.0;
+static double s_rate_last = 0.0;
+static double s_rate_ema_dt = 0.0;
+static double s_rate_ema_jitter = 0.0;
+static int s_rate_slow_frames = 0;
+static int s_rate_fast_frames = 0;
+
+static double gfx_rate_target_secs(void) {
+    int fps;
+    if (!gfx_rate_enabled) return 0.0;
+    fps = gfx_rate_target_fps > 0 ? gfx_rate_target_fps : gfx_rate_effective_fps;
+    if (fps <= 0) {
+        double t = gfx_target_frame_secs();
+        return t;
+    }
+    return 1.0 / (double) fps;
+}
+
+static void gfx_rate_note_frame(double now) {
+    double target = gfx_rate_target_secs();
+    if (s_rate_last > 0.0) {
+        double dt = now - s_rate_last;
+        if (dt > 0.0 && dt < 0.5) {
+            s_rate_ema_dt = s_rate_ema_dt > 0.0 ? s_rate_ema_dt * 0.92 + dt * 0.08 : dt;
+            s_rate_ema_jitter = s_rate_ema_jitter * 0.92 + fabs(dt - s_rate_ema_dt) * 0.08;
+            if (target > 0.0) {
+                if (dt > target * 1.4) {
+                    s_rate_slow_frames++;
+                    s_rate_fast_frames = 0;
+                    if (gfx_rate_adaptive && s_rate_slow_frames > 45) {
+                        int base = gfx_rate_target_fps > 0 ? gfx_rate_target_fps : 60;
+                        if (gfx_rate_effective_fps == 0) gfx_rate_effective_fps = base;
+                        if (gfx_rate_effective_fps > 24) gfx_rate_effective_fps -= 5;
+                        s_rate_slow_frames = 0;
+                    }
+                } else if (dt < target * 0.9) {
+                    s_rate_fast_frames++;
+                    s_rate_slow_frames = 0;
+                    if (gfx_rate_adaptive && gfx_rate_effective_fps > 0
+                        && s_rate_fast_frames > 180) {
+                        int base = gfx_rate_target_fps > 0 ? gfx_rate_target_fps : 60;
+                        if (gfx_rate_effective_fps < base) gfx_rate_effective_fps += 5;
+                        s_rate_fast_frames = 0;
+                    }
+                }
+            }
+        }
+    }
+    s_rate_last = now;
+}
+
+/* Deadline pacer: sleep to an absolute next-frame deadline.  Overruns reset
+ * the deadline instead of bursting to catch up. */
+static void gfx_rate_pace(double now) {
+    double target = gfx_rate_target_secs();
+    double wait;
+    if (target <= 0.0) {
+        s_rate_next = 0.0;
+        return;
+    }
+    if (s_rate_next <= 0.0 || now - s_rate_next > target * 4.0) {
+        s_rate_next = now;
+    }
+    s_rate_next += target;
+    wait = s_rate_next - gfx_now_secs();
+    if (wait > 0.0003) {
+        struct timespec ts;
+        ts.tv_sec = (time_t) wait;
+        ts.tv_nsec = (long) ((wait - (double) ts.tv_sec) * 1e9);
+        nanosleep(&ts, NULL);
+    } else if (wait < -target * 2.0) {
+        s_rate_next = gfx_now_secs();
+    }
+}
+
+void gfx_rate_configure(int enabled, int fps, int adaptive) {
+    gfx_rate_enabled = enabled ? 1 : 0;
+    gfx_rate_target_fps = fps < 0 ? 0 : (fps > 240 ? 240 : fps);
+    gfx_rate_adaptive = adaptive ? 1 : 0;
+    gfx_rate_effective_fps = 0;
+    s_rate_next = 0.0;
+}
+
+void gfx_rate_reset(void) {
+    gfx_rate_effective_fps = 0;
+    s_rate_next = 0.0;
+    s_rate_slow_frames = 0;
+    s_rate_fast_frames = 0;
+}
+
+int gfx_rate_state(int which) {
+    switch (which) {
+        case 0: return gfx_rate_enabled;
+        case 1: return gfx_rate_target_fps;
+        case 2: return gfx_rate_adaptive;
+        case 3: return (int) (s_rate_ema_dt * 1000000.0);
+        case 4: return (int) (s_rate_ema_jitter * 1000000.0);
+        case 5: return gfx_rate_effective_fps;
+    }
+    return -1;
+}
+
 static SDL_Window *wnd;
 static SDL_GLContext ctx = NULL;
 static int inverted_scancode_table[512];
@@ -1019,25 +1139,13 @@ static void gfx_sdl_main_loop(void (*run_one_game_iter)(void)) {
     gfx_render_delta = (float)(acc / TICK);
 
     // Render-rate above 30 Hz: present extra frames from the last display list.
-    if (gfx_fps_mode > 0) {
-        double target = gfx_target_frame_secs();
-        if (sims == 0) {
-            gfx_render_alpha = gfx_hfr_interp ? gfx_render_delta : 1.0f;
-            gfx_start_frame();
-            gfx_render_last();
-        }
-        if (target > 0.0) {
-            double next = now + target;
-            double t;
-            while ((t = gfx_now_secs()) < next) {
-                double remain = next - t;
-                if (remain > 0.002) SDL_Delay((Uint32)((remain - 0.001) * 1000.0));
-            }
-        }
-    } else if (configWindow.vsync <= 1) {
-        double t = gfx_now_secs() - now;
-        if (t < TICK) SDL_Delay((Uint32)((TICK - t) * 1000.0));
+    if (gfx_fps_mode > 0 && sims == 0) {
+        gfx_render_alpha = gfx_hfr_interp ? gfx_render_delta : 1.0f;
+        gfx_start_frame();
+        gfx_render_last();
     }
+    gfx_rate_note_frame(gfx_now_secs());
+    gfx_rate_pace(gfx_now_secs());
 }
 
 static void gfx_sdl_get_dimensions(uint32_t *width, uint32_t *height) {

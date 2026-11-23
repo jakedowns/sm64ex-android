@@ -2633,7 +2633,25 @@ static const char *ptc_chain_caption(int ph) {
  * colourful HUD lettering so captions read as an in-game UI element. */
 void ptc_chain_hud_text(void) {
     extern void print_caption(s32 x, s32 y, const char *str);
+    extern int gfx_opengl_denoise_state(int which);
+    extern int gfx_rate_state(int which);
     const char *cap;
+    /* Denoiser/rate-limit comparison captions: read live state every frame so
+     * the labels always match the settings being shown. */
+    if (gfx_opengl_denoise_state(7)) {
+        char line[128];
+        int path = gfx_opengl_denoise_state(0);
+        int don = gfx_opengl_denoise_state(1);
+        extern void print_caption_small(s32 x, s32 y, const char *str);
+        snprintf(line, sizeof(line),
+                 "PATH %s | DN %s | I%d P%d F%d B%d | %dFPS%s",
+                 path ? "ALT" : "MAIN", don ? "ON" : "OFF",
+                 gfx_opengl_denoise_state(2), gfx_opengl_denoise_state(3),
+                 gfx_opengl_denoise_state(5), gfx_opengl_denoise_state(6),
+                 gfx_rate_state(1) > 0 ? gfx_rate_state(1) : 30,
+                 gfx_rate_state(2) ? " ADAPT" : "");
+        print_caption_small(SCREEN_WIDTH / 2, 34, line);
+    }
     /* Momentum demo: label the drop and the launch even though it is not part
      * of the cinematic chain (this is the playable proof that portals preserve
      * velocity). */
@@ -4168,6 +4186,8 @@ void ptc_format_status(char *buf, int len) {
     float pcamD = 0.0f, pcamA = 0.0f;
     extern void portal_last_camera_jump(float *dist, float *angleDeg);
     extern int gfx_opengl_light_state(int which);
+    extern int gfx_opengl_denoise_state(int which);
+    extern int gfx_rate_state(int which);
 
     portal_last_camera_jump(&pcamD, &pcamA);
     extern int camera_portal_remap_count(void);
@@ -4194,7 +4214,7 @@ void ptc_format_status(char *buf, int len) {
              "wall=%d ceil=%d ledge=%d "
              "coins=%d stars=%d save=%d before=%d/%d "
              "cal=%.1f,%.1f,%.1f ledge_reach=%.1f goomba=%d,%.1f,%.1f gmodel=%d "
-             "gobj=%d,0x%x,%d,%d annex=%d,%d,%d gun=%d,%d,%d tool=%d lgt=%d,%d,%d,%d,%d,%d,%d,%d show=%d,%d "
+             "gobj=%d,0x%x,%d,%d annex=%d,%d,%d gun=%d,%d,%d tool=%d lgt=%d,%d,%d,%d,%d,%d,%d,%d show=%d,%d dn=%d,%d,%d,%d,%d,%d rate=%d,%d,%d "
              "chain=%d,%d,0x%x,%d,%d cmode=%d loop=%d "
              "face=%.1f,%.1f,%.1f anim=%d mh=%.1f remap=%d cdbg=%d,%d,%d,%d,%d walk=%d,%d,%d "
              "mpw=%d,%d,%d,%d,%d,%d,%d fc=%d,%d,%d,%d cg=%d,%.0f,%.0f,%.0f,0x%x",
@@ -4237,6 +4257,10 @@ void ptc_format_status(char *buf, int len) {
              gfx_opengl_light_state(4), gfx_opengl_light_state(5),
              gfx_opengl_light_state(6), gfx_opengl_light_state(7),
              s_showOn, s_showTimer % 600,
+             gfx_opengl_denoise_state(0), gfx_opengl_denoise_state(1),
+             gfx_opengl_denoise_state(2), gfx_opengl_denoise_state(5),
+             gfx_opengl_denoise_state(6), gfx_opengl_denoise_state(3),
+             gfx_rate_state(1), gfx_rate_state(2), gfx_rate_state(3),
              s_chainMode, s_chainTimer, s_chainFlags,
              s_chainGoombaCross,
              boxphys_test_boxes_near(CH_BOX_X, 120.0f, CH_BOX_B_Z, 300.0f),

@@ -36,6 +36,7 @@ s16 sTextLabelsCount = 0;
 static char sCaptionText[64];
 static s32 sCaptionX = 160, sCaptionY = 160;
 static s32 sCaptionLen = 0;
+static f32 sCaptionScale = 0.5f;
 
 void print_caption(s32 x, s32 y, const char *str) {
     s32 n = 0;
@@ -47,6 +48,21 @@ void print_caption(s32 x, s32 y, const char *str) {
     sCaptionLen = n;
     sCaptionX = x;
     sCaptionY = y;
+    sCaptionScale = 0.5f;
+}
+
+/* Quarter-size HUD text for dense test annotations. */
+void print_caption_small(s32 x, s32 y, const char *str) {
+    s32 n = 0;
+    while (str[n] != 0 && n < 63) {
+        sCaptionText[n] = str[n];
+        n++;
+    }
+    sCaptionText[n] = 0;
+    sCaptionLen = n;
+    sCaptionX = x;
+    sCaptionY = y;
+    sCaptionScale = 0.25f;
 }
 
 /**
@@ -438,7 +454,9 @@ void render_text_labels(void) {
     gSPDisplayList(gDisplayListHead++, dl_hud_img_begin);
 
     if (sCaptionLen > 0) {
-        const f32 sc = 0.5f;
+        const f32 sc = sCaptionScale;
+        s32 stepS = (s32) (4.0f / sc) << 10;
+        s32 stepT = (s32) (1.0f / sc) << 10;
         s32 startX = sCaptionX - (s32) (sCaptionLen * 12 * sc / 2.0f);
         s32 cy = 224 - sCaptionY;
         for (j = 0; j < sCaptionLen; j++) {
@@ -452,7 +470,7 @@ void render_text_labels(void) {
                 gSPTextureRectangle(gDisplayListHead++, rx << 2, cy << 2,
                                     (rx + (s32) (16 * sc)) << 2,
                                     (cy + (s32) (16 * sc)) << 2,
-                                    G_TX_RENDERTILE, 0, 0, 8 << 10, 2 << 10);
+                                    G_TX_RENDERTILE, 0, 0, stepS, stepT);
             }
         }
         sCaptionLen = 0;

@@ -736,6 +736,15 @@ static int s_fx_bokeh_rot = 0;
 static int s_fx_anamorphic = 100;     /* percent horizontal stretch */
 static int s_fx_bokeh_highlight = 100;
 static int s_fx_cat_eye = 0;
+/* Alternative denoised rendering path. */
+static int s_denoise_path = 0;
+static int s_denoise_on = 0;
+static int s_denoise_intensity = 60;
+static int s_denoise_passes = 2;
+static int s_denoise_radius = 1;
+static int s_denoise_frames = 1;
+static int s_denoise_bounces = 1;
+static int s_denoise_caption = 1;
 
 static int s_fx_gi_on = 0;
 static int s_fx_gi_intensity = 100;   // percent
@@ -911,6 +920,13 @@ static const char *s_fx_fs =
     "uniform float uAnamorphic;\n"
     "uniform float uBokehHighlight;\n"
     "uniform float uCatEye;\n"
+    "uniform float uDenoisePath;\n"
+    "uniform float uDenoiseOn;\n"
+    "uniform float uDenoiseIntensity;\n"
+    "uniform float uDenoisePasses;\n"
+    "uniform float uDenoiseRadius;\n"
+    "uniform float uDenoiseFrames;\n"
+    "uniform float uDenoiseBounces;\n"
     "float unpackDepth(vec4 rgba) {\n"
     "  return dot(rgba, vec4(1.0, 1.0/255.0, 1.0/65025.0, 1.0/16581375.0));\n"
     "}\n"
@@ -1013,7 +1029,25 @@ static const char *s_fx_fs =
     "  }\n"
     "  return 1.0;\n"
     "}\n"
-    "vec3 heatColour(float t) {\n"
+    "vec3 denoiseTap(vec2 uv, float cz, vec3 cc, float stepPx) {\n"
+    "  vec3 acc = vec3(0.0);\n"
+    "  float ws = 0.0;\n"
+    "  for (int k = 0; k < 5; k++) {\n"
+    "    int dx = (k == 1) ? 1 : ((k == 2) ? -1 : 0);\n"
+    "    int dy = (k == 3) ? 1 : ((k == 4) ? -1 : 0);\n"
+    "    {\n"
+    "      vec2 suv = uv + vec2(float(dx), float(dy)) * stepPx / uRes;\n"
+    "      vec2 scuv = canvasUV(suv);\n"
+    "      if (scuv.x < 0.0 || scuv.x > 1.0 || scuv.y < 0.0 || scuv.y > 1.0) continue;\n"
+    "      float sz = linZ(texture2D(uDepth, suv).r);\n"
+    "      vec3 sc = texture2D(uColor, suv).rgb;\n"
+    "      float w = exp(-abs(sz - cz) * 0.10) * exp(-length(sc - cc) * 2.0);\n"
+    "      acc += sc * w;\n"
+    "      ws += w;\n"
+    "    }\n"
+    "  }\n"
+    "  return ws > 0.0 ? acc / ws : cc;\n"
+    "}\n"    "vec3 heatColour(float t) {\n"
     "  t = clamp(t, 0.0, 1.0);\n"
     "  vec3 c = mix(vec3(0.04, 0.10, 0.85), vec3(0.0, 0.85, 0.95), smoothstep(0.0, 0.30, t));\n"
     "  c = mix(c, vec3(0.10, 0.95, 0.25), smoothstep(0.25, 0.55, t));\n"
@@ -1072,6 +1106,19 @@ static const char *s_fx_fs =
     "}\n"
     "void main() {\n"
     "  vec3 baseColor = texture2D(uColor, vUV).rgb;\n"
+    "  if (uDenoisePath > 0.5 && uDenoiseOn > 0.5) {\n"
+    "    float cz = linZ(texture2D(uDepth, vUV).r);\n"
+    "    vec3 dc = baseColor;\n"
+    "    float stepPx = max(uDenoiseRadius, 1.0);\n"
+    "    for (int p = 0; p < 3; p++) {\n"
+    "      if (float(p) >= uDenoisePasses) break;\n"
+    "      dc = denoiseTap(vUV, cz, dc, stepPx);\n"
+    "      stepPx *= 2.0;\n"
+    "    }\n"
+    "    float acc = 1.0 / max(uDenoiseFrames, 1.0);\n"
+    "    float a = clamp((uDenoiseIntensity / 100.0) * (0.45 + 0.55 * acc), 0.0, 1.0);\n"
+    "    baseColor = mix(baseColor, dc, a);\n"
+    "  }\n"
     "  vec2 cuv = canvasUV(vUV);\n"
     "  if (uDebug < 0.5 && (cuv.x < 0.0 || cuv.x > 1.0 || cuv.y < 0.0 || cuv.y > 1.0)) {\n"
     "    gl_FragColor = vec4(baseColor, 1.0);\n"
@@ -1316,6 +1363,8 @@ static struct {
     GLint probe_vis, probe_center, probe_spacing, probe_dim, probe_radius, probe_res;
     GLint bokeh_on, bokeh_aspect, bokeh_blades, bokeh_rot, anamorphic, bokeh_highlight, cat_eye;
     GLint probe_pos, probe_col, probe_count;
+    GLint denoise_path, denoise_on, denoise_intensity, denoise_passes;
+    GLint denoise_radius, denoise_frames, denoise_bounces;
 } s_fx_u;
 
 static GLuint s_fx_prog = 0;
@@ -1403,6 +1452,20 @@ void gfx_opengl_ssfx_set(int which, int value) {
         case 164: s_fx_anamorphic = value < 50 ? 50 : (value > 400 ? 400 : value); break;
         case 165: s_fx_bokeh_highlight = value < 0 ? 0 : (value > 300 ? 300 : value); break;
         case 166: s_fx_cat_eye = value < 0 ? 0 : (value > 100 ? 100 : value); break;
+        /* Alternative denoised path. */
+        case 210: s_denoise_path = value ? 1 : 0; break;
+        case 211: s_denoise_on = value ? 1 : 0; break;
+        case 212: s_denoise_intensity = value < 0 ? 0 : (value > 100 ? 100 : value); break;
+        case 213: s_denoise_passes = value < 1 ? 1 : (value > 3 ? 3 : value); break;
+        case 214: s_denoise_radius = value < 1 ? 1 : (value > 4 ? 4 : value); break;
+        case 215: s_denoise_frames = value < 1 ? 1 : (value > 8 ? 8 : value); break;
+        case 216: s_denoise_bounces = value < 1 ? 1 : (value > 4 ? 4 : value); break;
+        case 217: s_denoise_caption = value ? 1 : 0; break;
+        /* Rate limiter (lives in gfx_sdl2.c). */
+        case 200: { extern int gfx_rate_enabled; gfx_rate_enabled = value != 0; break; }
+        case 201: { extern int gfx_rate_target_fps; gfx_rate_target_fps = value < 0 ? 0 : (value > 240 ? 240 : value); break; }
+        case 202: { extern int gfx_rate_adaptive; gfx_rate_adaptive = value != 0; break; }
+        case 203: { extern void gfx_rate_reset(void); gfx_rate_reset(); break; }
         /* Per-light colour + radius: 120 + i*4 (R,G,B,radius). */
         case 120: case 121: case 122: case 123:
         case 124: case 125: case 126: case 127:
@@ -1488,6 +1551,17 @@ int gfx_opengl_ssfx_get(int which) {
         case 164: return s_fx_anamorphic;
         case 165: return s_fx_bokeh_highlight;
         case 166: return s_fx_cat_eye;
+        case 210: return s_denoise_path;
+        case 211: return s_denoise_on;
+        case 212: return s_denoise_intensity;
+        case 213: return s_denoise_passes;
+        case 214: return s_denoise_radius;
+        case 215: return s_denoise_frames;
+        case 216: return s_denoise_bounces;
+        case 217: return s_denoise_caption;
+        case 200: { extern int gfx_rate_enabled; return gfx_rate_enabled; }
+        case 201: { extern int gfx_rate_target_fps; return gfx_rate_target_fps; }
+        case 202: { extern int gfx_rate_adaptive; return gfx_rate_adaptive; }
     }
     return -1;
 }
@@ -1615,6 +1689,13 @@ static void stereo_fx_init(void) {
     s_fx_u.probe_pos = glGetUniformLocation(s_fx_prog, "uProbePos[0]");
     s_fx_u.probe_col = glGetUniformLocation(s_fx_prog, "uProbeCol[0]");
     s_fx_u.probe_count = glGetUniformLocation(s_fx_prog, "uProbeCount");
+    s_fx_u.denoise_path = glGetUniformLocation(s_fx_prog, "uDenoisePath");
+    s_fx_u.denoise_on = glGetUniformLocation(s_fx_prog, "uDenoiseOn");
+    s_fx_u.denoise_intensity = glGetUniformLocation(s_fx_prog, "uDenoiseIntensity");
+    s_fx_u.denoise_passes = glGetUniformLocation(s_fx_prog, "uDenoisePasses");
+    s_fx_u.denoise_radius = glGetUniformLocation(s_fx_prog, "uDenoiseRadius");
+    s_fx_u.denoise_frames = glGetUniformLocation(s_fx_prog, "uDenoiseFrames");
+    s_fx_u.denoise_bounces = glGetUniformLocation(s_fx_prog, "uDenoiseBounces");
     s_fx_u.bokeh_on = glGetUniformLocation(s_fx_prog, "uBokehOn");
     s_fx_u.bokeh_aspect = glGetUniformLocation(s_fx_prog, "uBokehAspect");
     s_fx_u.bokeh_blades = glGetUniformLocation(s_fx_prog, "uBokehBlades");
@@ -1674,6 +1755,20 @@ void gfx_opengl_probe_config(float x, float y, float z, int spacing, int dim,
     s_probe_radius = radius < 5 ? 5 : (radius > 400 ? 400 : radius);
     s_probe_res = resolution < 2 ? 2 : (resolution > 64 ? 64 : resolution);
     s_probe_vis = vis ? 1 : 0;
+}
+
+int gfx_opengl_denoise_state(int which) {
+    switch (which) {
+        case 0: return s_denoise_path;
+        case 1: return s_denoise_on;
+        case 2: return s_denoise_intensity;
+        case 3: return s_denoise_passes;
+        case 4: return s_denoise_radius;
+        case 5: return s_denoise_frames;
+        case 6: return s_denoise_bounces;
+        case 7: return s_denoise_caption;
+    }
+    return -1;
 }
 
 int gfx_opengl_light_state(int which) {
@@ -2022,6 +2117,13 @@ static int stereo_fx_pass(void) {
         glUniform1f(s_fx_u.anamorphic, (float)s_fx_anamorphic);
         glUniform1f(s_fx_u.bokeh_highlight, (float)s_fx_bokeh_highlight);
         glUniform1f(s_fx_u.cat_eye, (float)s_fx_cat_eye);
+        glUniform1f(s_fx_u.denoise_path, s_denoise_path ? 1.0f : 0.0f);
+        glUniform1f(s_fx_u.denoise_on, s_denoise_on ? 1.0f : 0.0f);
+        glUniform1f(s_fx_u.denoise_intensity, (float)s_denoise_intensity);
+        glUniform1f(s_fx_u.denoise_passes, (float)s_denoise_passes);
+        glUniform1f(s_fx_u.denoise_radius, (float)s_denoise_radius);
+        glUniform1f(s_fx_u.denoise_frames, (float)s_denoise_frames);
+        glUniform1f(s_fx_u.denoise_bounces, (float)s_denoise_bounces);
     }
     glUniform1f(s_fx_u.ssrtx_on, s_fx_ssrtx_on ? 1.0f : 0.0f);
     glUniform1f(s_fx_u.ssrtx_intensity, (float)s_fx_ssrtx_intensity);
