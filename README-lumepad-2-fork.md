@@ -524,29 +524,28 @@ visualisation/reflection debug view.
 `--ei sx/-127..127 --ei sy/-127..127 --ei buttons <N64 pad bits> --ei ms <hold>`.
 Handy bits: `4096` START, `32768` A, `16384` B, `8192` Z, `16` R.
 
-The on-screen tuning panel is collapsed by default (**SHOW**/**HIDE**) so it does
-not cover the controls. Tabs: STEREO / EFFECTS / CAMERA / ENH / LIGHT /
-CHANGELOG / EXPORT / ABOUT.
+The on-screen tuning panel is collapsed by default. Its drawer is toggled by
+the caret in the top-left (`▾` closed / `▴` open), by tapping a top tab
+while closed, or by a swipe up on the bar. Collapsed it is two short rows:
+the header (`[caret]` then `3D|2D`, `FPS`, `CAM` on the right) and the tab row
+(`FX` `DEBUG` `ABOUT` left, `RESET` right).
 
-- **EFFECTS** has a second-tier strip (AO / DOF / SSGI / SSRTX) that is only
-  visible on that tab.
-- **ENH** has MOVE / PORTAL / BALL / SYS pages in three columns each, again only
-  visible while ENH is the active tab.
-- **EFFECTS** also owns the **LIGHT** page (the old top-level LIGHT tab):
-  BLUR / LIGHTS / PROBES / LENS / VIEWS / RATE-DN. VIEWS is the full debug-view
-  selector (including the true per-vertex motion-vector heatmap), PROBES
-  carries the grid shape sliders, and BLUR carries the motion-vector dials
-  (shutter, sub-steps, jitter, depth reject, clamp, velocity resolution).
-  Toggles/actions sit in shared rows so a page fits without scrolling.
+Tabs:
+- **FX** — second-level strip: MXAO / C.DOF / SSGI / SSRTX / SHADOW / SPLAT /
+  LIGHT / VIEWS / CAMERA.
+  - LIGHT: BLUR / LIGHTS / PROBES / LENS / RATE-DN.
+  - VIEWS: all debug views (OFF, AO, CoC, GI, SSRTX, LIGHTS, L-ACCUM,
+    PROBE VIS, L-DIST, MOTION VECTORS) plus a small reorderable layer stack
+    (ZBUF, WIRE) with per-layer on/off.
+  - CAMERA opens a third strip: STEREO / SETTINGS.
+- **DEBUG** — MOVE / PORTAL / BALL / SYS / LOGS. SYS ends with a HUD section:
+  GAME HUD, DEBUG CAPTIONS and TOUCH CONTROLS toggles.
+- **ABOUT** — GENERAL / CHANGELOG.
 
-Motion vectors: a per-frame scene replay writes per-object screen motion into
-a 16-bit-packed RGBA8 target; the blur and the heatmap read that buffer instead
-of reconstructing camera motion from depth. See `MOTION-VECTORS.md`.
-
-The live status line is **green (`FREE`)** when the app is free to touch and
-**red (`BUSY - hands off`)** while an automated agent is driving it. The status line is **green (`FREE`)**
-when the app is free to touch and **red (`BUSY - hands off`)** while an automated
-agent is driving it.
+Every tab and sub-tab carries a small dot: green when that page has a feature
+enabled, grey otherwise. The selected tab is underlined and white. Toggle and
+button rows are sized to their labels instead of stretching across the panel,
+so they are not one huge touch target.
 
 ---
 

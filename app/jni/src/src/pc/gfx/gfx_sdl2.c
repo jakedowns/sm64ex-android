@@ -443,6 +443,14 @@ Java_com_vdavid003_sm64port_sm64portActivity_nativeGetPortalGun(JNIEnv *env, jcl
 }
 
 JNIEXPORT void JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeSetGameHudHidden(JNIEnv *env, jclass clazz,
+                                                                   jint on) {
+    (void) env; (void) clazz;
+    extern int gHudForceHidden;
+    gHudForceHidden = on ? 1 : 0;
+}
+
+JNIEXPORT void JNICALL
 Java_com_vdavid003_sm64port_sm64portActivity_nativeJetpack(JNIEnv *env, jclass clazz, jint on) {
     (void) env; (void) clazz;
     extern void movekit_set_flag(int which, int on);

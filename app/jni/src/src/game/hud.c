@@ -419,9 +419,15 @@ void render_hud_camera_status(void) {
  * Render HUD strings using hudDisplayFlags with it's render functions,
  * excluding the cannon reticle which detects a camera preset for it.
  */
+int gHudForceHidden = 0;   /* debug toggle: hide the in-game HUD */
+
 void render_hud(void) {
     extern void ptc_chain_hud_text(void);
     s16 hudDisplayFlags;
+
+    if (gHudForceHidden) {
+        return;
+    }
 #ifdef VERSION_EU
     Mtx *mtx;
 #endif

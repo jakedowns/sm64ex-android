@@ -95,12 +95,21 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     private TouchOverlay touchOverlay;
     /** Debug/trailer: keep touch circles + tuning panel hidden regardless of input. */
     private boolean forceHudHidden = false;
+    /* Mirrors of the toggles used for the tab indicator dots. */
+    private boolean mbOn, lightCountOn, probeOn;
+    private boolean gameHudOn = true, debugCapsOn = true, touchCtlOn = true;
+    private int enhSelected;
+    private LinearLayout layerList;
+    private final java.util.List<String> layerOrder = new java.util.ArrayList<>();
     private android.widget.ScrollView scrollerRef;
     private TextView debugView;
     private LinearLayout tabContent;
     private final java.util.List<View> tabViews = new java.util.ArrayList<>();
     private final java.util.List<TextView> tabButtons = new java.util.ArrayList<>();
+    private final java.util.List<TextView> subTabButtons = new java.util.ArrayList<>();
+    private final java.util.List<TextView> tabDots = new java.util.ArrayList<>();
     private final java.util.List<Integer> topTabPages = new java.util.ArrayList<>();
+    private LinearLayout stripsBox, fxStrip, cameraStrip, debugStripRow, aboutStrip;
     private final java.util.Map<Integer, Integer> stereoValues = new java.util.HashMap<>();
     private StereoPictogramView stereoPictogram;
     /* The pictogram shows live engine values (cam->Mario distance, focus,
@@ -118,9 +127,18 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     };
     private LinearLayout effectsSubBar;
     private final java.util.List<TextView> effectsSubButtons = new java.util.ArrayList<>();
-    private static final int EFFECTS_TOP_INDEX = 1;
-    private static final int[] EFFECT_PAGES = {1, 2, 3, 4, 5, 8, 9, 13};
-    private static final String[] EFFECT_LABELS = {"GENERIC", "MXAO", "C.DOF", "SSGI", "SSRTX", "SHADOW", "SPLAT", "LIGHT"};
+    /* Top-level tabs and their page groups. Pages keep their historical
+     * indices: 0 stereo, 1 views, 2 MXAO, 3 C.DOF, 4 SSGI, 5 SSRTX,
+     * 6 camera settings, 7 debug, 8 shadow, 9 splat, 10 changelog,
+     * 11 logs, 12 about general, 13 light. */
+    private static final int[] FX_PAGES = {2, 3, 4, 5, 8, 9, 13, 1, 0, 6};
+    private static final String[] FX_LABELS =
+            {"MXAO", "C.DOF", "SSGI", "SSRTX", "SHADOW", "SPLAT", "LIGHT", "VIEWS", "CAMERA"};
+    private static final int[] CAMERA_PAGES = {0, 6};
+    private static final String[] CAMERA_LABELS = {"STEREO", "SETTINGS"};
+    private static final int[] ABOUT_PAGES = {12, 10};
+    private static final String[] ABOUT_LABELS = {"GENERAL", "CHANGELOG"};
+    private static final String[] TOP_LABELS = {"FX", "DEBUG", "ABOUT"};
     private int lastEffectPage = 1;
     private final java.util.List<TextView> fxDebugButtons = new java.util.ArrayList<>();
     private final java.util.List<Integer> fxDebugModes = new java.util.ArrayList<>();
@@ -596,7 +614,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             return;
         }
         if (hideButton != null) {
-            hideButton.setText("HIDE");
+            hideButton.setText("\u25B4");
         }
         panelAnimating = true;
         tabContent.setVisibility(View.VISIBLE);
@@ -615,7 +633,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             return;
         }
         if (hideButton != null) {
-            hideButton.setText("SHOW");
+            hideButton.setText("\u25BE");
         }
         panelAnimating = true;
         final float off = Math.max(tabContent.getHeight(), dp(120));
@@ -721,34 +739,29 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         // Fixed pixel positions so automation can tap buttons reliably.
         android.widget.AbsoluteLayout header = new android.widget.AbsoluteLayout(this);
 
+        // Drawer toggle: a caret that flips when the panel opens/closes.
         TextView title = new TextView(this);
-        title.setText("Stereo");
+        title.setText("\u25BE");
+        hideButton = title;
         title.setTextColor(Color.WHITE);
-        title.setTextSize(16);
-        header.addView(title, abs(16, 4, 300, 60));
+        title.setTextSize(22);
+        title.setPadding(dp(6), 0, dp(10), 0);
+        title.setOnClickListener(v -> {
+            if (tabContent != null && tabContent.getVisibility() == View.VISIBLE) {
+                collapseDebugPanelIfOpen();
+            } else {
+                expandDebugPanel();
+            }
+        });
+        header.addView(title, abs(16, 0, 120, 64));
 
-        final TextView hide = new TextView(this);
-        hide.setText("SHOW");
-        hideButton = hide;
-        hide.setTextColor(0xFF66CCFF);
-        hide.setTextSize(16);
-        hide.setPadding(pad, pad / 2, pad, pad / 2);
-        header.addView(hide, abs(1400, 0, 220, 64));
-
-        TextView reset = new TextView(this);
-        reset.setText("RESET");
-        reset.setTextColor(0xFFFFCC66);
-        reset.setTextSize(16);
-        reset.setPadding(pad, pad / 2, pad, pad / 2);
-        header.addView(reset, abs(1620, 0, 220, 64));
-        reset.setOnClickListener(v -> debugReset());
-
+        // Right-aligned cluster: [3D|2D] [FPS] [CAM].
         modeButton = new TextView(this);
-        modeButton.setText("3D");
-        modeButton.setTextColor(0xFF66FF99);
+        modeButton.setText(stereoOn ? "3D" : "2D");
+        modeButton.setTextColor(stereoOn ? 0xFF66FF99 : 0xFFFF9966);
         modeButton.setTextSize(16);
         modeButton.setPadding(pad, pad / 2, pad, pad / 2);
-        header.addView(modeButton, abs(1840, 0, 220, 64));
+        header.addView(modeButton, abs(1580, 0, 220, 64));
         modeButton.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -756,22 +769,14 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             }
         });
 
-        TextView flat = new TextView(this);
-        flat.setText("FLAT");
-        flat.setTextColor(0xFFCCCCCC);
-        flat.setTextSize(16);
-        flat.setPadding(pad, pad / 2, pad, pad / 2);
-        header.addView(flat, abs(2060, 0, 220, 64));
-        flat.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                // Zero-parallax view; hiding the Leia view goes black and cannot
-                // be recovered (SDL renders into Leia's surface, not its own).
-                flatOn = !flatOn;
-                nativeSetStereoInt(21, flatOn ? 1 : 0);
-                Log.i(TAG, "FLAT zeroParallax=" + flatOn);
-            }
-        });
+        TextView fpsBtn = new TextView(this);
+        fpsButton = fpsBtn;
+        fpsBtn.setText("FPS 120");
+        fpsBtn.setTextColor(0xFFCCCCCC);
+        fpsBtn.setTextSize(16);
+        fpsBtn.setPadding(pad, pad / 2, pad, pad / 2);
+        header.addView(fpsBtn, abs(1820, 0, 220, 64));
+        fpsBtn.setOnClickListener(v -> cycleFpsMode());
 
         TextView camBtn = new TextView(this);
         camCycleButton = camBtn;
@@ -779,17 +784,8 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         camBtn.setTextColor(0xFFCCCCCC);
         camBtn.setTextSize(14);
         camBtn.setPadding(pad, pad / 2, pad, pad / 2);
-        header.addView(camBtn, abs(620, 0, 370, 64));
+        header.addView(camBtn, abs(2060, 0, 380, 64));
         camBtn.setOnClickListener(v -> cycleCamMode());
-
-        TextView fpsBtn = new TextView(this);
-        fpsButton = fpsBtn;
-        fpsBtn.setText("FPS 120");
-        fpsBtn.setTextColor(0xFFCCCCCC);
-        fpsBtn.setTextSize(16);
-        fpsBtn.setPadding(pad, pad / 2, pad, pad / 2);
-        header.addView(fpsBtn, abs(1200, 0, 200, 64));
-        fpsBtn.setOnClickListener(v -> cycleFpsMode());
 
         TextView test = new TextView(this);
         test.setText("TEST");
@@ -809,21 +805,26 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         LinearLayout tabBar = new LinearLayout(this);
         tabBar.setOrientation(LinearLayout.HORIZONTAL);
         tabBar.setPadding(dp(4), 0, dp(4), 0);
-        addTabButton(tabBar, "STEREO", 0);
-        addTabButton(tabBar, "EFFECTS", -1);
-        addTabButton(tabBar, "CAMERA", 6);
-        addTabButton(tabBar, "ENH", 7);
-        addTabButton(tabBar, "CHANGELOG", 10);
-        addTabButton(tabBar, "EXPORT", 11);
-        addTabButton(tabBar, "ABOUT", 12);
+        for (int i = 0; i < TOP_LABELS.length; i++) {
+            addTopTab(tabBar, TOP_LABELS[i], i);
+        }
+        tabBar.addView(new View(this), new LinearLayout.LayoutParams(
+                0, 1, 1f));       // spacer: RESET sits on the right edge
+        TextView reset = new TextView(this);
+        reset.setText("RESET");
+        reset.setTextColor(0xFFFFCC66);
+        reset.setTextSize(14);
+        reset.setPadding(dp(10), dp(6), dp(10), dp(6));
+        reset.setOnClickListener(v -> debugReset());
+        tabBar.addView(reset);
         panel.addView(tabBar);
-        addEffectsSubBar(panel);
 
         tabContent = new LinearLayout(this);
         tabContent.setOrientation(LinearLayout.VERTICAL);
         panel.addView(tabContent, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
+        buildStrips(tabContent);
 
         // Scrolling container so sliders/buttons never run off screen.
         controls = new LinearLayout(this);
@@ -988,68 +989,115 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             }
         });
 
-        hide.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                boolean show = tabContent.getVisibility() != View.VISIBLE;
-                tabContent.setVisibility(show ? View.VISIBLE : View.GONE);
-                ((TextView) v).setText(show ? "HIDE" : "SHOW");
-                updateStereoPictogramVisibility();
-            }
-        });
+        // (drawer toggling now lives on the caret above)
         return panel;
     }
 
     // ---- Debug panel tabs ---------------------------------------------------
 
-    private void addTabButton(LinearLayout bar, String label, final int pageIndex) {
+    /** Small dot used as an "enabled" indicator on tabs and sub-tabs. */
+    private TextView addDot(LinearLayout row) {
+        TextView dot = new TextView(this);
+        dot.setText("\u25CF");
+        dot.setTextSize(8);
+        dot.setTextColor(0xFF555555);
+        dot.setPadding(dp(2), 0, dp(6), 0);
+        row.addView(dot);
+        return dot;
+    }
+
+    /** Text + dot chip used for every tab row. */
+    private TextView addChip(LinearLayout bar, String label, int textSize, Runnable onClick) {
+        LinearLayout chip = new LinearLayout(this);
+        chip.setOrientation(LinearLayout.HORIZONTAL);
+        chip.setGravity(Gravity.CENTER_VERTICAL);
         TextView b = new TextView(this);
         b.setText(label);
-        b.setTextSize(15);
+        b.setTextSize(textSize);
         b.setTextColor(0xFF888888);
-        b.setPadding(dp(14), dp(6), dp(14), dp(6));
+        b.setPadding(dp(12), dp(6), dp(2), dp(6));
+        TextView dot = addDot(chip);
+        chip.addView(b, 0);
+        chip.setOnClickListener(v -> onClick.run());
+        addPressFeedback(b);
+        bar.addView(chip);
+        tabDots.add(dot);
+        return b;
+    }
+
+    private void addTopTab(LinearLayout bar, String label, final int topIndex) {
         final int idx = tabButtons.size();
-        topTabPages.add(pageIndex);
-        b.setOnClickListener(v -> {
+        TextView b = addChip(bar, label, 15, () -> {
             if (tabContent != null && tabContent.getVisibility() != View.VISIBLE) {
-                tabContent.setVisibility(View.VISIBLE);
-                if (hideButton != null) hideButton.setText("HIDE");
+                expandDebugPanel();
             }
             selectTopTab(idx);
         });
-        addPressFeedback(b);
-        bar.addView(b);
         tabButtons.add(b);
     }
 
-    private void addEffectsSubBar(LinearLayout panel) {
-        effectsSubBar = new LinearLayout(this);
-        effectsSubBar.setOrientation(LinearLayout.HORIZONTAL);
-        effectsSubBar.setPadding(dp(4), 0, dp(4), dp(2));
-        for (int i = 0; i < EFFECT_LABELS.length; i++) {
-            final int page = EFFECT_PAGES[i];
-            TextView b = new TextView(this);
-            b.setText(EFFECT_LABELS[i]);
-            b.setTextSize(13);
-            b.setTextColor(0xFF888888);
-            b.setPadding(dp(10), dp(4), dp(10), dp(4));
-            b.setOnClickListener(v -> {
-                lastEffectPage = page;
-                selectPage(page);
-            });
-            effectsSubBar.addView(b);
-            effectsSubButtons.add(b);
+    private void addSubTab(LinearLayout bar, String label, final Runnable onClick) {
+        TextView b = addChip(bar, label, 13, onClick);
+        subTabButtons.add(b);
+    }
+
+    /** Second/third-level strips live inside tabContent, so collapsing the
+     *  drawer hides them and the collapsed bar stays short. */
+    private void buildStrips(LinearLayout parent) {
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.setPadding(dp(4), 0, dp(4), dp(2));
+
+        fxStrip = new LinearLayout(this);
+        fxStrip.setOrientation(LinearLayout.HORIZONTAL);
+        for (int i = 0; i < FX_LABELS.length; i++) {
+            final int page = FX_PAGES[i];
+            addSubTab(fxStrip, FX_LABELS[i], () -> selectPage(page));
         }
-        effectsSubBar.setVisibility(View.GONE);
-        panel.addView(effectsSubBar, new LinearLayout.LayoutParams(
+        col.addView(fxStrip);
+
+        cameraStrip = new LinearLayout(this);
+        cameraStrip.setOrientation(LinearLayout.HORIZONTAL);
+        cameraStrip.setPadding(dp(12), 0, 0, 0);
+        for (int i = 0; i < CAMERA_LABELS.length; i++) {
+            final int page = CAMERA_PAGES[i];
+            addSubTab(cameraStrip, CAMERA_LABELS[i], () -> selectPage(page));
+        }
+        col.addView(cameraStrip);
+
+        debugStripRow = new LinearLayout(this);
+        debugStripRow.setOrientation(LinearLayout.HORIZONTAL);
+        for (int i = 0; i < 4; i++) {
+            final int page = i;
+            addSubTab(debugStripRow, new String[]{"MOVE", "PORTAL", "BALL", "SYS"}[i], () -> {
+                if (selectedPage != 7) selectPage(7);
+                showEnhPage(page);
+            });
+        }
+        addSubTab(debugStripRow, "LOGS", () -> selectPage(11));
+        col.addView(debugStripRow);
+
+        aboutStrip = new LinearLayout(this);
+        aboutStrip.setOrientation(LinearLayout.HORIZONTAL);
+        for (int i = 0; i < ABOUT_LABELS.length; i++) {
+            final int page = ABOUT_PAGES[i];
+            addSubTab(aboutStrip, ABOUT_LABELS[i], () -> selectPage(page));
+        }
+        col.addView(aboutStrip);
+
+        for (int i = 0; i < col.getChildCount(); i++) {
+            col.getChildAt(i).setVisibility(View.GONE);
+        }
+        parent.addView(col, 0, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        stripsBox = col;
     }
 
     private void selectTopTab(int topIndex) {
-        if (topIndex == EFFECTS_TOP_INDEX) {
-            selectPage(lastEffectPage);
-        } else {
-            selectPage(topTabPages.get(topIndex));
+        switch (topIndex) {
+            case 0: selectPage(lastEffectPage); break;
+            case 1: selectPage(selectedPage == 11 || selectedPage == 7 ? selectedPage : 7); break;
+            default: selectPage(selectedPage == 10 || selectedPage == 12 ? selectedPage : 12); break;
         }
     }
 
@@ -1074,78 +1122,101 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         for (int i = 0; i < tabViews.size(); i++) {
             tabViews.get(i).setVisibility(i == page ? View.VISIBLE : View.GONE);
         }
-        boolean isEffect = false;
-        for (int p : EFFECT_PAGES) {
-            if (p == page) {
-                isEffect = true;
-                lastEffectPage = page;
-                break;
-            }
+        boolean isFx = contains(FX_PAGES, page);
+        boolean isCamera = contains(CAMERA_PAGES, page);
+        boolean isDebug = (page == 7 || page == 11);
+        boolean isAbout = contains(ABOUT_PAGES, page);
+        if (isFx) lastEffectPage = page;
+        selectedTab = isFx ? 0 : (isDebug ? 1 : 2);
+        if (fxStrip != null) fxStrip.setVisibility(isFx ? View.VISIBLE : View.GONE);
+        if (cameraStrip != null) {
+            cameraStrip.setVisibility(isCamera ? View.VISIBLE : View.GONE);
         }
-        if (isEffect) {
-            selectedTab = EFFECTS_TOP_INDEX;
-        } else {
-            int top = topTabPages.indexOf(page);
-            selectedTab = top >= 0 ? top : 0;
+        if (debugStripRow != null) {
+            debugStripRow.setVisibility(isDebug ? View.VISIBLE : View.GONE);
         }
-        if (effectsSubBar != null) {
-            effectsSubBar.setVisibility(isEffect ? View.VISIBLE : View.GONE);
-        }
-        /* MOVE/PORTAL/BALL/SYS belong to the ENH top tab only. */
-        if (enhSubBar != null) {
-            enhSubBar.setVisibility(page == 7 ? View.VISIBLE : View.GONE);
+        if (aboutStrip != null) {
+            aboutStrip.setVisibility(isAbout ? View.VISIBLE : View.GONE);
         }
         refreshTabStyles();
         updateStereoPictogramVisibility();
     }
 
-    /** Which top-level tabs show "feature enabled" in green. */
-    private boolean tabFeatureOn(int i) {
-        switch (i) {
-            case 1: return aoOn || dofOn || giOn || ssrtxOn || shadowOn
-                    || splatMode != 0;                               // EFFECTS
-            case 2: return hdtOn || gyroOn;                              // CAMERA
+    private static boolean contains(int[] pages, int page) {
+        for (int p : pages) {
+            if (p == page) return true;
+        }
+        return false;
+    }
+
+    /** "This tab has a feature enabled" indicator. */
+    private boolean pageOn(int page) {
+        switch (page) {
+            case 2: return aoOn;
+            case 3: return dofOn;
+            case 4: return giOn;
+            case 5: return ssrtxOn;
+            case 8: return shadowOn;
+            case 9: return splatMode != 0;
+            case 13: return mbOn || lightCountOn || probeOn;
+            case 1: return zbufOn || wireOn || fxDebug != 0;
+            case 0: case 6: return hdtOn || gyroOn;
+            case 7: return !gameHudOn || !debugCapsOn || !touchCtlOn;
+            case 11: return false;
             default: return false;
         }
     }
 
-    private boolean effectOn(int i) {
-        switch (i) {
-            case 1: return aoOn;     // MXAO
-            case 2: return dofOn;    // C.DOF
-            case 3: return giOn;     // SSGI
-            case 4: return ssrtxOn;  // SSRTX
-            case 5: return shadowOn; // SHADOW
-            case 6: return splatMode != 0; // SPLAT
-            default: return false;   // GENERIC
+    /** Selected tab: white + underline. Enabled feature: green. */
+    private void setTabLook(TextView b, boolean selected) {
+        b.setTextColor(selected ? 0xFFFFFFFF : 0xFF888888);
+        int flags = b.getPaintFlags();
+        if (selected) {
+            flags |= android.graphics.Paint.UNDERLINE_TEXT_FLAG;
+        } else {
+            flags &= ~android.graphics.Paint.UNDERLINE_TEXT_FLAG;
         }
+        b.setPaintFlags(flags);
     }
 
-    /** Selected tab: white + underline. Enabled feature: green. */
+    private void setDot(int index, boolean on) {
+        if (index < 0 || index >= tabDots.size()) return;
+        tabDots.get(index).setTextColor(on ? 0xFF44FF66 : 0xFF555555);
+    }
+
     private void refreshTabStyles() {
         for (int i = 0; i < tabButtons.size(); i++) {
-            TextView b = tabButtons.get(i);
-            boolean sel = (i == selectedTab);
-            b.setTextColor(sel ? 0xFFFFFFFF : (tabFeatureOn(i) ? 0xFF44FF66 : 0xFF888888));
-            int flags = b.getPaintFlags();
-            if (sel) {
-                flags |= android.graphics.Paint.UNDERLINE_TEXT_FLAG;
+            setTabLook(tabButtons.get(i), i == selectedTab);
+            boolean on = false;
+            if (i == 0) {
+                for (int p : FX_PAGES) on |= pageOn(p);
+            } else if (i == 1) {
+                on = pageOn(7) || pageOn(11);
             } else {
-                flags &= ~android.graphics.Paint.UNDERLINE_TEXT_FLAG;
+                for (int p : ABOUT_PAGES) on |= pageOn(p);
             }
-            b.setPaintFlags(flags);
+            setDot(i, on);
         }
-        for (int i = 0; i < effectsSubButtons.size(); i++) {
-            TextView b = effectsSubButtons.get(i);
-            boolean sel = (EFFECT_PAGES[i] == selectedPage);
-            b.setTextColor(sel ? 0xFFFFFFFF : (effectOn(i) ? 0xFF44FF66 : 0xFF888888));
-            int flags = b.getPaintFlags();
-            if (sel) {
-                flags |= android.graphics.Paint.UNDERLINE_TEXT_FLAG;
-            } else {
-                flags &= ~android.graphics.Paint.UNDERLINE_TEXT_FLAG;
-            }
-            b.setPaintFlags(flags);
+        int k = tabButtons.size();
+        for (int i = 0; i < FX_LABELS.length; i++) {
+            setTabLook(subTabButtons.get(i), selectedPage == FX_PAGES[i]);
+            setDot(k++, pageOn(FX_PAGES[i]));
+        }
+        int camStart = FX_LABELS.length;
+        for (int i = 0; i < CAMERA_LABELS.length; i++) {
+            setTabLook(subTabButtons.get(camStart + i), selectedPage == CAMERA_PAGES[i]);
+            setDot(k++, pageOn(CAMERA_PAGES[i]));
+        }
+        int dbgStart = camStart + CAMERA_LABELS.length;
+        for (int i = 0; i < 5; i++) {
+            boolean sel = (i < 4) ? (selectedPage == 7 && enhSelected == i) : (selectedPage == 11);
+            setTabLook(subTabButtons.get(dbgStart + i), sel);
+            setDot(k++, i < 4 ? pageOn(7) : pageOn(11));
+        }
+        int aboutStart = dbgStart + 5;
+        for (int i = 0; i < ABOUT_LABELS.length; i++) {
+            setTabLook(subTabButtons.get(aboutStart + i), selectedPage == ABOUT_PAGES[i]);
+            setDot(k++, pageOn(ABOUT_PAGES[i]));
         }
     }
 
@@ -1186,10 +1257,43 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     }
 
     private void buildFxTabs() {
-        // --- Generic stereo debug views ---
+        // --- VIEWS: debug view selector + a small reorderable layer stack ---
         beginTab();
-        addStereoToggle("ZBUF", 15, false);
-        addStereoToggle("WIRE", 16, false);
+        grid = new android.widget.GridLayout(this);
+        grid.setColumnCount(2);
+        controls.addView(grid);
+        {
+            LinearLayout r = addRow();
+            addDebugCell(r, "OFF", 0);
+            addDebugCell(r, "AO", 1);
+            addDebugCell(r, "CoC", 2);
+            addDebugCell(r, "GI", 3);
+            addDebugCell(r, "SSRTX", 4);
+        }
+        {
+            LinearLayout r = addRow();
+            addDebugCell(r, "LIGHTS", 5);
+            addDebugCell(r, "L-ACCUM", 6);
+            addDebugCell(r, "PROBE VIS", 7);
+            addDebugCell(r, "L-DIST", 8);
+            addDebugCell(r, "MOTION VECTORS", 9);
+        }
+        {
+            TextView h = new TextView(this);
+            h.setText("LAYERS (top draws last)");
+            h.setTextSize(13);
+            h.setTextColor(0xFF66CCFF);
+            h.setPadding(dp(4), dp(8), dp(4), dp(2));
+            controls.addView(h);
+        }
+        layerList = new LinearLayout(this);
+        layerList.setOrientation(LinearLayout.VERTICAL);
+        controls.addView(layerList);
+        if (layerOrder.isEmpty()) {
+            layerOrder.add("ZBUF");
+            layerOrder.add("WIRE");
+        }
+        rebuildLayerList();
 
         // --- MXAO-style ambient occlusion ---
         beginTab();
@@ -1273,33 +1377,15 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         camStatusView.setPadding(dp(4), dp(10), dp(4), dp(4));
         controls.addView(camStatusView);
 
-        // --- Gameplay enhancements: sub-tabbed ---
+        // --- DEBUG: MOVE / PORTAL / BALL / SYS (+ LOGS in the strip) ---
         beginTab();
         {
             final String[] pageNames = { "MOVE", "PORTAL", "BALL", "SYS" };
-            // The sub-tab strip lives in tabContent (outside the scroll view) so
-            // it stays put while the page content scrolls.
-            LinearLayout tabRow = new LinearLayout(this);
-            tabRow.setOrientation(LinearLayout.HORIZONTAL);
-            if (enhSubBar != null && enhSubBar.getParent() instanceof ViewGroup) {
-                ((ViewGroup) enhSubBar.getParent()).removeView(enhSubBar);
-            }
-            enhSubBar = tabRow;
-            tabContent.addView(tabRow, 0, new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
             enhPages = new LinearLayout[pageNames.length];
             enhPageTabs = new TextView[pageNames.length];
             enhPageColumns = new LinearLayout[pageNames.length][3];
             for (int i = 0; i < pageNames.length; i++) {
                 final int page = i;
-                TextView tab = new TextView(this);
-                tab.setText(pageNames[i]);
-                tab.setTextSize(16);
-                tab.setPadding(dp(10), dp(8), dp(10), dp(8));
-                tab.setTextColor(i == 0 ? 0xFF66FF99 : 0xFF888888);
-                tab.setOnClickListener(v -> showEnhPage(page));
-                tabRow.addView(tab);
-                enhPageTabs[i] = tab;
 
                 LinearLayout pageLayout = new LinearLayout(this);
                 pageLayout.setOrientation(LinearLayout.VERTICAL);
@@ -1492,6 +1578,56 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             }
             nativeStepTicks(1);
         });
+        enhColumnTarget = enhPageColumns[3][2];
+        addEnhSection("HUD");
+        {
+            final TextView gh = new TextView(this);
+            gh.setText("GAME HUD: ON");
+            gh.setTextSize(16);
+            gh.setTextColor(0xFF66FF99);
+            gh.setPadding(dp(4), dp(8), dp(4), dp(8));
+            gh.setOnClickListener(v -> {
+                boolean on = gh.getCurrentTextColor() != 0xFF66FF99;
+                gameHudOn = !on;
+                nativeSetGameHudHidden(on ? 0 : 1);
+                gh.setText("GAME HUD: " + (on ? "ON" : "OFF"));
+                gh.setTextColor(on ? 0xFF66FF99 : 0xFF888888);
+                refreshTabStyles();
+            });
+            enhParent().addView(gh);
+        }
+        {
+            final TextView cap = new TextView(this);
+            cap.setText("DEBUG CAPTIONS: ON");
+            cap.setTextSize(16);
+            cap.setTextColor(0xFF66FF99);
+            cap.setPadding(dp(4), dp(8), dp(4), dp(8));
+            cap.setOnClickListener(v -> {
+                boolean on = cap.getCurrentTextColor() != 0xFF66FF99;
+                debugCapsOn = !on;
+                debugFx(217, on ? 1 : 0);
+                cap.setText("DEBUG CAPTIONS: " + (on ? "ON" : "OFF"));
+                cap.setTextColor(on ? 0xFF66FF99 : 0xFF888888);
+                refreshTabStyles();
+            });
+            enhParent().addView(cap);
+        }
+        {
+            final TextView oc = new TextView(this);
+            oc.setText("TOUCH CONTROLS: ON");
+            oc.setTextSize(16);
+            oc.setTextColor(0xFF66FF99);
+            oc.setPadding(dp(4), dp(8), dp(4), dp(8));
+            oc.setOnClickListener(v -> {
+                boolean on = oc.getCurrentTextColor() != 0xFF66FF99;
+                touchCtlOn = !on;
+                if (touchOverlay != null) touchOverlay.setControlsHidden(!on);
+                oc.setText("TOUCH CONTROLS: " + (on ? "ON" : "OFF"));
+                oc.setTextColor(on ? 0xFF66FF99 : 0xFF888888);
+                refreshTabStyles();
+            });
+            enhParent().addView(oc);
+        }
         enhColumnTarget = null;
 
         // --- Realtime dynamic shadows (quality / performance) ---
@@ -1636,7 +1772,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
 
         // --- Dynamic light / blur / probes / lens / views (second-tier tabs) ---
         beginTab();
-        final String[] lightNames = { "BLUR", "LIGHTS", "PROBES", "LENS", "VIEWS", "RATE/DN" };
+        final String[] lightNames = { "BLUR", "LIGHTS", "PROBES", "LENS", "RATE/DN" };
         LinearLayout lightBar = new LinearLayout(this);
         lightBar.setOrientation(LinearLayout.HORIZONTAL);
         lightBar.setPadding(dp(4), dp(2), dp(4), dp(2));
@@ -1710,7 +1846,11 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             addToggleCell(r, "LIGHT SHADOWS", 104, false);
         }
         moveGridLast();
-        addIntSlider("Light count", 0, 4, 0, v -> debugFx(103, v));
+        addIntSlider("Light count", 0, 4, 0, v -> {
+            lightCountOn = v > 0;
+            refreshTabStyles();
+            debugFx(103, v);
+        });
         addIntSlider("Light intensity", 0, 300, 120, v -> debugFx(105, v));
         addIntSlider("Shadow steps", 0, 8, 6, v -> debugFx(106, v));
         addIntSlider("Light 0 R", 0, 255, 255, v -> debugFx(120, v));
@@ -1755,30 +1895,8 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addIntSlider("Bokeh highlight %", 0, 300, 100, v -> debugFx(165, v));
         addIntSlider("Cat eye %", 0, 100, 0, v -> debugFx(166, v));
 
-        // VIEWS: every debug view in two rows of five, heatmap last.
-        controls = lightPages[4];
-        grid = new android.widget.GridLayout(this);
-        grid.setColumnCount(2);
-        controls.addView(grid);
-        {
-            LinearLayout r = addRow();
-            addDebugCell(r, "OFF", 0);
-            addDebugCell(r, "AO", 1);
-            addDebugCell(r, "CoC", 2);
-            addDebugCell(r, "GI", 3);
-            addDebugCell(r, "SSRTX", 4);
-        }
-        {
-            LinearLayout r = addRow();
-            addDebugCell(r, "LIGHTS", 5);
-            addDebugCell(r, "L-ACCUM", 6);
-            addDebugCell(r, "PROBE VIS", 7);
-            addDebugCell(r, "L-DIST", 8);
-            addDebugCell(r, "MOTION VECTORS", 9);
-        }
-
         // RATE / DENOISE
-        controls = lightPages[5];
+        controls = lightPages[4];
         grid = new android.widget.GridLayout(this);
         grid.setColumnCount(2);
         controls.addView(grid);
@@ -2213,14 +2331,90 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     private TextView[] enhPageTabs;
     private LinearLayout[][] enhPageColumns;
 
+    private void rebuildLayerList() {
+        if (layerList == null) return;
+        layerList.removeAllViews();
+        for (int i = 0; i < layerOrder.size(); i++) {
+            final String name = layerOrder.get(i);
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+            row.setPadding(0, dp(2), 0, dp(2));
+
+            TextView handle = new TextView(this);
+            handle.setText("\u283F");
+            handle.setTextSize(16);
+            handle.setTextColor(0xFF777777);
+            handle.setPadding(dp(6), dp(4), dp(8), dp(4));
+            row.addView(handle);
+
+            TextView label = new TextView(this);
+            label.setText(name);
+            label.setTextSize(15);
+            label.setTextColor(0xFFFFFFFF);
+            row.addView(label, new LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+            TextView up = new TextView(this);
+            up.setText("\u25B2");
+            up.setTextSize(13);
+            up.setTextColor(i == 0 ? 0xFF444444 : 0xFFCCCCCC);
+            up.setPadding(dp(10), dp(4), dp(10), dp(4));
+            up.setOnClickListener(v -> {
+                int idx = layerOrder.indexOf(name);
+                if (idx > 0) {
+                    java.util.Collections.swap(layerOrder, idx, idx - 1);
+                    rebuildLayerList();
+                }
+            });
+            row.addView(up);
+
+            TextView down = new TextView(this);
+            down.setText("\u25BC");
+            down.setTextSize(13);
+            down.setTextColor(i == layerOrder.size() - 1 ? 0xFF444444 : 0xFFCCCCCC);
+            down.setPadding(dp(10), dp(4), dp(10), dp(4));
+            down.setOnClickListener(v -> {
+                int idx = layerOrder.indexOf(name);
+                if (idx >= 0 && idx < layerOrder.size() - 1) {
+                    java.util.Collections.swap(layerOrder, idx, idx + 1);
+                    rebuildLayerList();
+                }
+            });
+            row.addView(down);
+
+            final boolean isZbuf = name.equals("ZBUF");
+            final TextView sw = new TextView(this);
+            boolean on = isZbuf ? zbufOn : wireOn;
+            sw.setText(on ? "ON" : "OFF");
+            sw.setTextSize(14);
+            sw.setTextColor(on ? 0xFF66FF99 : 0xFF888888);
+            sw.setPadding(dp(12), dp(6), dp(12), dp(6));
+            sw.setBackgroundColor(0x22FFFFFF);
+            sw.setOnClickListener(v -> {
+                boolean now = !(isZbuf ? zbufOn : wireOn);
+                if (isZbuf) zbufOn = now; else wireOn = now;
+                nativeSetStereoInt(isZbuf ? 15 : 16, now ? 1 : 0);
+                sw.setText(now ? "ON" : "OFF");
+                sw.setTextColor(now ? 0xFF66FF99 : 0xFF888888);
+                refreshTabStyles();
+            });
+            row.addView(sw);
+
+            layerList.addView(row, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        }
+    }
+
     private void showEnhPage(int page) {
         if (enhPages == null) {
             return;
         }
+        enhSelected = page;
         for (int i = 0; i < enhPages.length; i++) {
             enhPages[i].setVisibility(i == page ? View.VISIBLE : View.GONE);
-            enhPageTabs[i].setTextColor(i == page ? 0xFF66FF99 : 0xFF888888);
         }
+        refreshTabStyles();
     }
 
     private void addCamButton(String name, final Runnable action) {
@@ -2245,7 +2439,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             if (key == 2) ppcamOn = on;
             Log.i(TAG, name + "=" + on);
         });
-        enhParent().addView(b);
+        addCompact(enhParent(), b);
         nativeSetEnh(key, initial ? 1 : 0);
         return b;
     }
@@ -2263,7 +2457,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             nativeSetStereoInt(key, on ? 1 : 0);
             Log.i(TAG, name + "=" + on);
         });
-        controls.addView(b);
+        addCompact(controls, b);
         nativeSetStereoInt(key, initial ? 1 : 0);
         return b;
     }
@@ -2289,7 +2483,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         b.setPadding(dp(4), dp(10), dp(4), dp(10));
         b.setOnClickListener(v -> action.run());
         addPressFeedback(b);
-        enhParent().addView(b);
+        addCompact(enhParent(), b);
         return b;
     }
 
@@ -2320,7 +2514,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             Log.i(TAG, "KNOB " + knob + "=" + (on ? 1 : 0));
         });
         addPressFeedback(b);
-        enhParent().addView(b);
+        addCompact(enhParent(), b);
         return b;
     }
 
@@ -2352,7 +2546,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             Log.i(TAG, "KNOB " + knob + "=" + values[idx[0]]);
         });
         addPressFeedback(b);
-        enhParent().addView(b);
+        addCompact(enhParent(), b);
         return b;
     }
 
@@ -2668,7 +2862,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             boolean on = b.getCurrentTextColor() != 0xFF66FF99;
             applyFxToggle(b, name, key, on);
         });
-        controls.addView(b);
+        addCompact(controls, b);
         nativeSetSSFX(key, initial ? 1 : 0);
         return b;
     }
@@ -2678,6 +2872,8 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         b.setTextColor(on ? 0xFF66FF99 : 0xFF888888);
         nativeSetSSFX(key, on ? 1 : 0);
         if (key == 1) aoOn = on;
+        else if (key == 100) mbOn = on;
+        else if (key == 110) probeOn = on;
         else if (key == 11) dofOn = on;
         else if (key == 21) giOn = on;
         else if (key == 70) ssrtxOn = on;
@@ -2690,6 +2886,15 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         if (grid == null || controls == null) return;
         controls.removeView(grid);
         controls.addView(grid);
+    }
+
+    /** Add a button-like TextView at its natural width, not full row width. */
+    private void addCompact(android.view.ViewGroup parent, TextView b) {
+        b.setBackgroundColor(0x22FFFFFF);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.setMargins(0, dp(2), dp(8), dp(2));
+        parent.addView(b, lp);
     }
 
     /** Horizontal row inside the current tab page (compact multi-column layout). */
@@ -2754,7 +2959,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         b.setTextColor(0xFF888888);
         b.setPadding(dp(4), dp(6), dp(4), dp(6));
         b.setOnClickListener(v -> setFxDebug(mode));
-        controls.addView(b);
+        addCompact(controls, b);
         fxDebugButtons.add(b);
         fxDebugModes.add(mode);
     }
@@ -3277,6 +3482,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     static native void nativeDebugLevel(int level);
     static native void nativeShootPortal(int which);
     static native void nativeJetpack(int on);
+    static native void nativeSetGameHudHidden(int on);
     static native int nativeGetPortalGun();
     static native void nativeToolToggle();
     static native int nativeGetTool();
