@@ -109,6 +109,12 @@ public class TouchOverlay extends View {
     private boolean toolDown;
     private int toolPointer = -1;
 
+    // Hold-to-thrust jetpack button.
+    private final float[] jetPos = new float[2];
+    private final float jetRadius = 46f;
+    private boolean jetDown;
+    private int jetPointer = -1;
+
     // Overall opacity of the control layer (0.1 .. 1.0).
     private float overlayAlpha = 1f;
 
@@ -174,6 +180,9 @@ public class TouchOverlay extends View {
         // Tool swap: one button between the camera and portal clusters.
         toolPos[0] = w * 0.75f; toolPos[1] = h * 0.27f;
 
+        // Jetpack: above the bottom control strip, clear of the tab bar.
+        jetPos[0] = w * 0.72f; jetPos[1] = h * 0.76f;
+
         // C-buttons / analog-camera toggle, below the C cluster.
         modePos[0] = w * 0.68f; modePos[1] = h * 0.88f;
     }
@@ -193,6 +202,11 @@ public class TouchOverlay extends View {
             if (dx * dx + dy * dy <= (portalRadius * 1.25f) * (portalRadius * 1.25f)) return i;
         }
         return -1;
+    }
+
+    private boolean hitJetButton(float x, float y) {
+        float dx = x - jetPos[0], dy = y - jetPos[1];
+        return dx * dx + dy * dy <= (jetRadius * 1.25f) * (jetRadius * 1.25f);
     }
 
     private boolean hitToolButton(float x, float y) {
@@ -339,7 +353,8 @@ public class TouchOverlay extends View {
                 int cb = b < 0 ? hitCButton(px, py) : -1;
                 int cam = (b < 0 && cb < 0) ? hitCamButton(px, py) : -1;
                 boolean tb = (b < 0 && cb < 0 && cam < 0) && hitToolButton(px, py);
-                int pb = (b < 0 && cb < 0 && cam < 0 && !tb && portalGunHeld())
+                boolean jb = (b < 0 && cb < 0 && cam < 0 && !tb) && hitJetButton(px, py);
+                int pb = (b < 0 && cb < 0 && cam < 0 && !tb && !jb && portalGunHeld())
                         ? hitPortalButton(px, py) : -1;
                 if (b >= 0) {
                     buttons |= btnIds[b];
@@ -354,6 +369,11 @@ public class TouchOverlay extends View {
                     toolDown = true;
                     toolPointer = id;
                     sm64portActivity.nativeToolToggle();
+                    invalidate();
+                } else if (jb) {
+                    jetDown = true;
+                    jetPointer = id;
+                    sm64portActivity.nativeJetpack(1);
                     invalidate();
                 } else if (pb >= 0) {
                     sm64portActivity.nativeShootPortal(pb);
@@ -460,6 +480,12 @@ public class TouchOverlay extends View {
                 if (id == toolPointer) {
                     toolDown = false;
                     toolPointer = -1;
+                    invalidate();
+                }
+                if (id == jetPointer) {
+                    jetDown = false;
+                    jetPointer = -1;
+                    sm64portActivity.nativeJetpack(0);
                     invalidate();
                 }
                 for (int b = 0; b < btnIds.length; b++) {
@@ -646,6 +672,22 @@ public class TouchOverlay extends View {
             paint.setTextSize(30f);
             c.drawText(grappleEquipped ? "HOOK" : "GUN",
                     toolPos[0], toolPos[1] + 11f, paint);
+        }
+
+        // Jetpack: hold to thrust (equips on the first press).
+        {
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(jetDown ? 0xEEFF9933 : 0xAAFF8020);
+            c.drawCircle(jetPos[0], jetPos[1], jetRadius, paint);
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setColor(0xCCFFFFFF);
+            paint.setStrokeWidth(4f);
+            c.drawCircle(jetPos[0], jetPos[1], jetRadius, paint);
+            paint.setStrokeWidth(6f);
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(Color.WHITE);
+            paint.setTextSize(30f);
+            c.drawText("JET", jetPos[0], jetPos[1] + 11f, paint);
         }
 
         // Jetpack fuel gauge: bottom-left, outside the opacity layer.

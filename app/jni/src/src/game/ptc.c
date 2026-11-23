@@ -2643,13 +2643,19 @@ void ptc_chain_hud_text(void) {
         int path = gfx_opengl_denoise_state(0);
         int don = gfx_opengl_denoise_state(1);
         extern void print_caption_small(s32 x, s32 y, const char *str);
-        snprintf(line, sizeof(line),
-                 "PATH %s | DN %s | I%d P%d F%d B%d | %dFPS%s",
-                 path ? "ALT" : "MAIN", don ? "ON" : "OFF",
-                 gfx_opengl_denoise_state(2), gfx_opengl_denoise_state(3),
-                 gfx_opengl_denoise_state(5), gfx_opengl_denoise_state(6),
-                 gfx_rate_state(1) > 0 ? gfx_rate_state(1) : 30,
-                 gfx_rate_state(2) ? " ADAPT" : "");
+        if (gfx_rate_state(1) > 0) {
+            snprintf(line, sizeof(line), "PATH %s | DN %s | I%d P%d F%d B%d | %dFPS%s",
+                     path ? "ALT" : "MAIN", don ? "ON" : "OFF",
+                     gfx_opengl_denoise_state(2), gfx_opengl_denoise_state(3),
+                     gfx_opengl_denoise_state(5), gfx_opengl_denoise_state(6),
+                     gfx_rate_state(1), gfx_rate_state(2) ? " ADAPT" : "");
+        } else {
+            snprintf(line, sizeof(line), "PATH %s | DN %s | I%d P%d F%d B%d | MODE FPS%s",
+                     path ? "ALT" : "MAIN", don ? "ON" : "OFF",
+                     gfx_opengl_denoise_state(2), gfx_opengl_denoise_state(3),
+                     gfx_opengl_denoise_state(5), gfx_opengl_denoise_state(6),
+                     gfx_rate_state(2) ? " ADAPT" : "");
+        }
         print_caption_small(SCREEN_WIDTH / 2, 34, line);
     }
     /* Momentum demo: label the drop and the launch even though it is not part

@@ -443,6 +443,23 @@ Java_com_vdavid003_sm64port_sm64portActivity_nativeGetPortalGun(JNIEnv *env, jcl
 }
 
 JNIEXPORT void JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeJetpack(JNIEnv *env, jclass clazz, jint on) {
+    (void) env; (void) clazz;
+    extern void movekit_set_flag(int which, int on);
+    extern void movekit_force_trigger(int on);
+    static int equipped;
+    if (on) {
+        if (!equipped) {
+            movekit_set_flag(2, 1);
+            equipped = 1;
+        }
+        movekit_force_trigger(1);
+    } else {
+        movekit_force_trigger(0);
+    }
+}
+
+JNIEXPORT void JNICALL
 Java_com_vdavid003_sm64port_sm64portActivity_nativeToolToggle(JNIEnv *env, jclass clazz) {
     (void) env; (void) clazz;
     extern void movekit_tool_toggle(void);
