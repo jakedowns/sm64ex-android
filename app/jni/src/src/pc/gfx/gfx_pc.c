@@ -1049,7 +1049,12 @@ static void gfx_portal_apply_near_plane(float p[4][4]) {
      * 2-unit push keeps the wall itself off the plane. */
     {
         extern int g_ptc_relay_flip;
-        float sgn = g_ptc_relay_flip ? 1.0f : -1.0f;
+        /* The keep-side depends on the wall orientation: +X (west wall) keeps
+         * the space behind, while Z-facing walls (the run's south-wall loop)
+         * render black with that side and need the room side.  Verified live:
+         * south wall flip=1 shows the destination scene and Mario's
+         * reflection; flip=0 is black. */
+        float sgn = (g_ptc_relay_flip || fabsf(vs->normal[2]) > 0.7f) ? 1.0f : -1.0f;
         nw[0] = sgn * vs->normal[0];
         nw[1] = sgn * vs->normal[1];
         nw[2] = sgn * vs->normal[2];

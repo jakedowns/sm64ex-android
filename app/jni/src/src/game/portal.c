@@ -67,10 +67,12 @@ static int s_lastPlaced = 1;
 // surface, 3 could not fit the ellipse, 4 no gun.
 int g_portal_debug = 0;
 /* Depth limit for the screen-space relay recursion (0 = off). */
-int g_ptc_portal_recursion = 2;
+int g_ptc_portal_recursion = 3;
 /* Diagnostic: flip the relay near-plane side (0 keeps the space behind the
  * portal, 1 keeps the room side). */
 int g_ptc_relay_flip = 0;
+/* 1 = enable the relay window during the run's CH_PORTAL_LOOP (knob). */
+int g_ptc_relay_loop = 1;
 int g_portal_debug_align = 0;   /* magenta source fan behind the relay decal */
 int g_portal_debug_color = 0;   /* solid relay colour: isolate geometry/UVs */
 PortalViewState g_portal_view;
@@ -852,6 +854,10 @@ void portal_view_set(int on) {
         g_portal_view.active = 0;
         g_portal_view2.active = 0;
     }
+}
+
+int portal_view_enabled(void) {
+    return s_portal_view_enabled;
 }
 
 void portal_view_force(int src) {

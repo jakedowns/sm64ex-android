@@ -30,6 +30,7 @@ extern PortalViewState g_portal_view2;   /* the other portal */
 void portal_view_toggle(void);
 void portal_view_set(int on);
 void portal_view_force(int src);
+int  portal_view_enabled(void);
 
 /** Portal gun state: pickup prop, two portals, hitscan placement, teleport. */
 extern int g_portal_debug;

@@ -3343,7 +3343,10 @@ static void ptc_chain_update(void) {
                  * the relay pass, so the flat coloured fans read better.  The
                  * recursion overlay is validated on the west-wall pair
                  * (marioportalwalkloop + relay.recursion). */
-                portal_view_set(0);
+                {
+                    extern int g_ptc_relay_loop;
+                    portal_view_set(g_ptc_relay_loop);
+                }
                 ptc_mpw_begin(aPos, bPos, aOrig, bOrig, start, 0x8000, 0);
                 {
                     extern int gfx_stereo_fov_pct;
@@ -4008,7 +4011,7 @@ void ptc_format_status(char *buf, int len) {
     snprintf(buf, len,
              "PTC level=%d area=%d phase=%d mode=%d active=%d fail=%d reason=\"%s\" "
              "star=%d star2=%d star_visible=%d portals=%d shotA=%d shotB=%d pdbg=%d "
-             "view=%d vsrc=%d "
+             "view=%d vsrc=%d pven=%d "
              "mom_enter=%.1f mom_exit=%.1f mom_apex=%.1f momy=%.1f momv=%.1f,%.1f,%.1f "
              "mom_hold=%.1f mom_hcos=%.3f mom_ratio=%.3f mom_turn=%.3f walltest=0x%X "
              "p0=%.1f,%.1f,%.1f n0=%.3f,%.3f,%.3f p1=%.1f,%.1f,%.1f n1=%.3f,%.3f,%.3f "
@@ -4024,7 +4027,7 @@ void ptc_format_status(char *buf, int len) {
              "mpw=%d,%d,%d,%d,%d,%d,%d fc=%d,%d,%d,%d cg=%d,%.0f,%.0f,%.0f,0x%x",
              gCurrLevelNum, gCurrAreaIndex, s_phase, s_testMode, s_testActive, s_failed, s_failReason,
              s_starCollected[0], s_starCollected[1], ptc_star_visible(), portal_count(), s_shotA, s_shotB, g_portal_debug,
-             g_portal_view.active, g_portal_view.source,
+             g_portal_view.active, g_portal_view.source, portal_view_enabled(),
              s_momEntrySpeed, s_momExitSpeed, s_momApex,
              s_momExitY, s_momExitVX, s_momExitVY, s_momExitVZ,
              s_momHoldSpeed, s_momHoldCos, s_momRatio, s_momTurnDot, s_wallTest,
