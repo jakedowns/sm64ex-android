@@ -5,6 +5,12 @@
 #include <string.h>
 #include <stdbool.h>
 #include <assert.h>
+#if defined(__ANDROID__)
+#include <android/log.h>
+#define SM64_VEL_LOG(...) __android_log_print(ANDROID_LOG_INFO, "SM64VEL", __VA_ARGS__)
+#else
+#define SM64_VEL_LOG(...) fprintf(stderr, __VA_ARGS__)
+#endif
 
 #ifdef EXTERNAL_DATA
 #define STB_IMAGE_IMPLEMENTATION
@@ -89,6 +95,9 @@ struct XYWidthHeight {
 struct LoadedVertex {
     float x, y, z, w;
     float u, v;
+    /* Screen-space motion since the previous frame (0.5 * NDC delta), filled
+     * only during the velocity pass. */
+    float vel[2];
     struct RGBA color;
     uint8_t clip_rej;
 };
@@ -450,6 +459,80 @@ static float buf_vbo[MAX_BUFFERED * (26 * 3)]; // 3 vertices in a triangle and 2
 static size_t buf_vbo_len;
 static size_t buf_vbo_num_tris;
 
+/* ---------------------------------------------------------------- motion
+ * vectors: a second scene replay writes per-vertex screen motion into a
+ * dedicated 6-float vertex buffer (x,y,z,w, velx, vely).  The previous
+ * modelview for each object is cached under the matrix pointer the game
+ * passes to gSPMatrix, which is stable from frame to frame. */
+#define GFX_VEL_CACHE 256
+/* 3 vertices per triangle, 6 floats each (x,y,z,w, velx, vely). */
+static float vel_vbo[MAX_BUFFERED * 6 * 3];
+static size_t vel_vbo_len;
+static size_t vel_vbo_num_tris;
+static int s_vel_pass;
+int gfx_vel_enabled = 1;      /* fx 130: 1 = per-vertex vectors, 0 = camera only */
+int gfx_vel_divisor = 4;      /* fx 134: reserved (target size) */
+int gfx_vel_stride = 1;       /* fx 135: replay every N frames */
+static unsigned s_vel_frame = 1;
+static unsigned s_vel_counter;
+static struct {
+    const void *key;
+    float mv[4][4];
+    unsigned stamp;
+} s_vel_cache[GFX_VEL_CACHE];
+static float s_vel_prev_proj[4][4];
+static float s_vel_cur_proj[4][4];
+static int s_vel_prev_proj_valid;
+static int s_vel_cur_proj_valid;
+static float s_vel_prev_mp[4][4];
+static int s_vel_prev_mp_valid;
+static unsigned s_vel_lookups, s_vel_hits;
+
+extern int gfx_opengl_velocity_begin(int w, int h, int divisor);
+extern void gfx_opengl_velocity_end(void);
+extern void gfx_opengl_draw_velocity(float buf[], size_t len, size_t tris);
+extern int gfx_opengl_velocity_wanted(void);
+
+/* The display list lives in a per-frame pool, so matrix pointers are not
+ * stable across frames. The scene is built in a stable order, so the Nth
+ * modelview load of a pass is the same object as the Nth load of the previous
+ * pass; we key the previous modelview by that sequence number instead. */
+static unsigned s_vel_seq;
+
+static void gfx_vel_store(unsigned seq, const float mv[4][4]) {
+    if (seq >= GFX_VEL_CACHE) return;
+    memcpy(s_vel_cache[seq].mv, mv, sizeof(s_vel_cache[seq].mv));
+    s_vel_cache[seq].stamp = s_vel_frame;
+    s_vel_cache[seq].key = (const void *)(uintptr_t)(seq + 1);
+}
+
+/* The game double-buffers its display list, so the same object's matrix
+ * pointer comes back every other frame. Accept an entry up to 4 frames old and
+ * report the gap so the vertex code can scale the velocity. */
+static int s_vel_gap = 1;
+
+static int gfx_vel_lookup(unsigned seq, float out[4][4]) {
+    if (seq >= GFX_VEL_CACHE) return 0;
+    int gap = (int)(s_vel_frame - s_vel_cache[seq].stamp);
+    if (gap < 1 || gap > 2) return 0;
+    memcpy(out, s_vel_cache[seq].mv, sizeof(s_vel_cache[seq].mv));
+    s_vel_gap = gap;
+    return 1;
+}
+
+static void gfx_vel_frame_begin(void) {
+    s_vel_frame++;
+    s_vel_counter++;
+    if (s_vel_lookups > 0 && (s_vel_counter % 120) == 0) {
+        SM64_VEL_LOG("prev-matrix hits %u/%u", s_vel_hits, s_vel_lookups);
+        s_vel_lookups = s_vel_hits = 0;
+    }
+    if (s_vel_cur_proj_valid) {
+        memcpy(s_vel_prev_proj, s_vel_cur_proj, sizeof(s_vel_prev_proj));
+        s_vel_prev_proj_valid = 1;
+    }
+}
+
 static struct GfxWindowManagerAPI *gfx_wapi;
 static struct GfxRenderingAPI *gfx_rapi;
 
@@ -467,6 +550,11 @@ static unsigned long get_time(void) {
 }
 
 static void gfx_flush(void) {
+    if (vel_vbo_len > 0) {
+        gfx_opengl_draw_velocity(vel_vbo, vel_vbo_len, vel_vbo_num_tris);
+        vel_vbo_len = 0;
+        vel_vbo_num_tris = 0;
+    }
     if (buf_vbo_len > 0) {
         int num = buf_vbo_num_tris;
         unsigned long t0 = get_time();
@@ -1262,6 +1350,23 @@ static void gfx_sp_matrix(uint8_t parameters, const int32_t *addr) {
         if (parameters & G_MTX_LOAD) {
             gfx_cam_tracking_apply(matrix);
             memcpy(rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1], matrix, sizeof(matrix));
+            /* Motion vectors: remember this object's modelview under its
+             * source pointer, and resolve the previous frame's MP. */
+            if (!gfx_shadow_pass && !gfx_portal_pass) {
+                float prev_mv[4][4];
+                s_vel_prev_mp_valid = 0;
+                if (s_vel_pass) {
+                    s_vel_lookups++;
+                    if (s_vel_prev_proj_valid && gfx_vel_lookup(s_vel_seq, prev_mv)) {
+                        s_vel_hits++;
+                        gfx_matrix_mul(s_vel_prev_mp, prev_mv, s_vel_prev_proj);
+                        s_vel_prev_mp_valid = 1;
+                    }
+                } else if (gfx_stereo_eye == 0 && !gfx_ui_pass) {
+                    gfx_vel_store(s_vel_seq, matrix);
+                }
+                s_vel_seq++;
+            }
         } else {
             gfx_matrix_mul(rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1], matrix, rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1]);
         }
@@ -1271,6 +1376,10 @@ static void gfx_sp_matrix(uint8_t parameters, const int32_t *addr) {
     gfx_apply_portal_mp();
     gfx_apply_stereo_shear();
     gfx_update_shadow_mp();
+    if (!s_vel_pass && !gfx_shadow_pass && gfx_stereo_eye == 0 && !gfx_ui_pass) {
+        memcpy(s_vel_cur_proj, rsp.P_matrix, sizeof(s_vel_cur_proj));
+        s_vel_cur_proj_valid = 1;
+    }
 }
 
 static void gfx_sp_pop_matrix(uint32_t count) {
@@ -1315,12 +1424,28 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx *verti
         struct LoadedVertex *d = &rsp.loaded_vertices[dest_index];
         const float (*mp)[4] = gfx_shadow_pass ? (const float (*)[4])rsp.shadow_MP_matrix
                                                : (const float (*)[4])rsp.MP_matrix;
+        d->vel[0] = d->vel[1] = 0.0f;
         
         float x = v->ob[0] * mp[0][0] + v->ob[1] * mp[1][0] + v->ob[2] * mp[2][0] + mp[3][0];
         float y = v->ob[0] * mp[0][1] + v->ob[1] * mp[1][1] + v->ob[2] * mp[2][1] + mp[3][1];
         float z = v->ob[0] * mp[0][2] + v->ob[1] * mp[1][2] + v->ob[2] * mp[2][2] + mp[3][2];
         float w = v->ob[0] * mp[0][3] + v->ob[1] * mp[1][3] + v->ob[2] * mp[2][3] + mp[3][3];
         
+        if (s_vel_pass) {
+            /* Previous clip position with the same object's previous MP. */
+            if (s_vel_prev_mp_valid) {
+                const float (*pp)[4] = (const float (*)[4]) s_vel_prev_mp;
+                float px = v->ob[0] * pp[0][0] + v->ob[1] * pp[1][0] + v->ob[2] * pp[2][0] + pp[3][0];
+                float py = v->ob[0] * pp[0][1] + v->ob[1] * pp[1][1] + v->ob[2] * pp[2][1] + pp[3][1];
+                float pw = v->ob[0] * pp[0][3] + v->ob[1] * pp[1][3] + v->ob[2] * pp[2][3] + pp[3][3];
+                if (pw > 0.0001f && w > 0.0001f) {
+                    float inv_gap = 1.0f / (float)(s_vel_gap > 0 ? s_vel_gap : 1);
+                    d->vel[0] = 0.5f * (px / pw - x / w) * inv_gap;
+                    d->vel[1] = 0.5f * (py / pw - y / w) * inv_gap;
+                }
+            }
+        }
+
         if (!gfx_shadow_pass) {
             if (!rsp.proj_is_perspective) {
                 /* 2D/UI ortho only: the 3D perspective already has the aspect.
@@ -1477,6 +1602,36 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx) {
             buf_vbo[buf_vbo_len++] = v_arr[i]->w;
         }
         if (++buf_vbo_num_tris == MAX_BUFFERED) {
+            gfx_flush();
+        }
+        return;
+    }
+
+    // Velocity pass: opaque, depth-writing geometry only, six floats/vertex.
+    if (s_vel_pass) {
+        bool use_alpha = (rdp.other_mode_l & (G_BL_A_MEM << 18)) == 0;
+        bool texture_edge = (rdp.other_mode_l & CVG_X_ALPHA) == CVG_X_ALPHA;
+        bool z_upd = (rdp.other_mode_l & Z_UPD) == Z_UPD;
+        bool z_test = (rsp.geometry_mode & G_ZBUFFER) == G_ZBUFFER;
+
+        if (use_alpha || texture_edge || !z_upd || !z_test) {
+            return;
+        }
+        if (v1->clip_rej & v2->clip_rej & v3->clip_rej) {
+            return;
+        }
+        if (vel_vbo_len + 18 > (size_t)(MAX_BUFFERED * 6 * 3)) {
+            gfx_flush();
+        }
+        for (int i = 0; i < 3; i++) {
+            vel_vbo[vel_vbo_len++] = v_arr[i]->x;
+            vel_vbo[vel_vbo_len++] = v_arr[i]->y;
+            vel_vbo[vel_vbo_len++] = v_arr[i]->z;
+            vel_vbo[vel_vbo_len++] = v_arr[i]->w;
+            vel_vbo[vel_vbo_len++] = v_arr[i]->vel[0];
+            vel_vbo[vel_vbo_len++] = v_arr[i]->vel[1];
+        }
+        if (++vel_vbo_num_tris == MAX_BUFFERED) {
             gfx_flush();
         }
         return;
@@ -1957,6 +2112,9 @@ static void gfx_dp_set_fill_color(uint32_t packed_color) {
 }
 
 static void gfx_draw_rectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_t lry) {
+    if (s_vel_pass) {
+        return; // 2D quads never carry velocity
+    }
     uint32_t saved_other_mode_h = rdp.other_mode_h;
     uint32_t cycle_type = (rdp.other_mode_h & (3U << G_MDSFT_CYCLETYPE));
     
@@ -2043,6 +2201,9 @@ static void gfx_draw_rectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_t lr
 }
 
 static void gfx_dp_texture_rectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_t lry, uint8_t tile, int16_t uls, int16_t ult, int16_t dsdx, int16_t dtdy, bool flip) {
+    if (s_vel_pass) {
+        return;
+    }
     if (gfx_shadow_pass) {
         return; // 2D UI quads never cast shadows
     }
@@ -2379,6 +2540,7 @@ static void gfx_run_dl(Gfx* cmd) {
 }
 
 static void gfx_sp_reset() {
+    s_vel_seq = 0;
     rsp.modelview_matrix_stack_size = 1;
     rsp.current_num_lights = 2;
     rsp.lights_changed = true;
@@ -2522,7 +2684,11 @@ void gfx_run(Gfx *commands) {
         return;
     }
     dropped_frame = false;
-    
+
+#ifdef __ANDROID__
+    gfx_vel_frame_begin();
+#endif
+
 #ifdef __ANDROID__
     // Realtime shadow map: one view-independent depth pass per frame, before
     // the per-eye scene passes. The UI split point keeps HUD quads out.
@@ -2629,6 +2795,24 @@ void gfx_run(Gfx *commands) {
             // Mirrored sign for per-eye effects (toe-in/out canting).
             gfx_stereo_eye_sign = (v == 0) ? 1.0f : -1.0f;
 #ifdef __ANDROID__
+            // Motion vectors: replay the scene range once per frame (eye 0)
+            // into a small velocity target before the colour pass.
+            if (eye == 0 && gfx_opengl_velocity_wanted()
+                && (s_vel_counter % (gfx_vel_stride < 1 ? 1 : gfx_vel_stride)) == 0) {
+                gfx_sp_reset();
+                if (gfx_opengl_velocity_begin(gfx_stereo_eye_width, gfx_stereo_full_h,
+                                              gfx_vel_divisor)) {
+                    s_vel_pass = 1;
+                    gfx_run_dl_range(commands, ui_sep ? gGfxUiStart : NULL);
+                    gfx_flush();
+                    s_vel_pass = 0;
+                    gfx_opengl_velocity_end();
+                    gfx_invalidate_state();
+                    /* The colour pass follows immediately and must record the
+                     * same sequence numbers the replay just consumed. */
+                    s_vel_seq = 0;
+                }
+            }
             // Render this eye into its own FBO (own color + depth).
             gfx_opengl_stereo_begin(eye, gfx_stereo_eye_width, gfx_stereo_full_h,
                     gfx_stereo_canvas[0], gfx_stereo_canvas[1],

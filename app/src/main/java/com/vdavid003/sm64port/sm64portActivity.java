@@ -119,8 +119,8 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     private LinearLayout effectsSubBar;
     private final java.util.List<TextView> effectsSubButtons = new java.util.ArrayList<>();
     private static final int EFFECTS_TOP_INDEX = 1;
-    private static final int[] EFFECT_PAGES = {1, 2, 3, 4, 5, 8, 9};
-    private static final String[] EFFECT_LABELS = {"GENERIC", "MXAO", "C.DOF", "SSGI", "SSRTX", "SHADOW", "SPLAT"};
+    private static final int[] EFFECT_PAGES = {1, 2, 3, 4, 5, 8, 9, 13};
+    private static final String[] EFFECT_LABELS = {"GENERIC", "MXAO", "C.DOF", "SSGI", "SSRTX", "SHADOW", "SPLAT", "LIGHT"};
     private int lastEffectPage = 1;
     private final java.util.List<TextView> fxDebugButtons = new java.util.ArrayList<>();
     private final java.util.List<Integer> fxDebugModes = new java.util.ArrayList<>();
@@ -813,7 +813,6 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addTabButton(tabBar, "EFFECTS", -1);
         addTabButton(tabBar, "CAMERA", 6);
         addTabButton(tabBar, "ENH", 7);
-        addTabButton(tabBar, "LIGHT", 13);
         addTabButton(tabBar, "CHANGELOG", 10);
         addTabButton(tabBar, "EXPORT", 11);
         addTabButton(tabBar, "ABOUT", 12);
@@ -1675,12 +1674,21 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         {
             LinearLayout r = addRow();
             addToggleCell(r, "MOTION BLUR", 100, false);
+            addToggleCell(r, "VERTEX VECTORS", 140, true);
             addDebugCell(r, "VECTOR HEATMAP", 9);
         }
         moveGridLast();
         addIntSlider("Blur strength", 0, 200, 40, v -> debugFx(101, v));
-        addIntSlider("Blur samples", 1, 16, 8, v -> debugFx(102, v));
+        addIntSlider("Sub-steps", 1, 8, 4, v -> debugFx(142, v));
+        addIntSlider("Max blur px", 0, 64, 16, v -> debugFx(143, v));
+        addIntSlider("Shutter deg", 0, 360, 180, v -> debugFx(141, v));
+        addIntSlider("Sub-step jitter %", 0, 100, 100, v -> debugFx(146, v));
+        addIntSlider("Depth reject %", 0, 100, 20, v -> debugFx(147, v));
+        addIntSlider("Velocity clamp px", 4, 200, 60, v -> debugFx(148, v));
+        addIntSlider("Velocity res 1/n", 1, 8, 4, v -> debugFx(144, v));
+        addIntSlider("Vector update every", 1, 4, 1, v -> debugFx(145, v));
         addIntSlider("Vector heat gain", 20, 500, 120, v -> debugFx(118, v));
+        addIntSlider("Heat style 0/1/2", 0, 2, 2, v -> debugFx(149, v));
 
         // LIGHTS: demo buttons, then count/intensity/shadows, then per-light RGB.
         controls = lightPages[1];

@@ -132,6 +132,17 @@ static inline void gfx_opengl_set_shader_uniforms(struct ShaderProgram *prg) {
 }
 
 static inline void gfx_opengl_set_texture_uniforms(struct ShaderProgram *prg, const int tile) {
+    if (prg == NULL) {
+        /* A texture bind with no program loaded (e.g. right after an internal
+         * pass unbound its shader): nothing to update. */
+        static int logged;
+        if (logged < 4) {
+            logged++;
+            __android_log_print(ANDROID_LOG_WARN, "SM64VEL",
+                                "texture bind with no shader program (tile %d)", tile);
+        }
+        return;
+    }
     if (prg->used_textures[tile] && opengl_tex[tile]) {
         glUniform2f(prg->uniform_locations[tile*2 + 0], opengl_tex[tile]->size[0], opengl_tex[tile]->size[1]);
         glUniform1i(prg->uniform_locations[tile*2 + 1], opengl_tex[tile]->filter);
@@ -747,6 +758,20 @@ static int s_denoise_bounces = 1;
 static int s_denoise_caption = 1;
 /* Motion-vector heatmap normalisation (pixels of motion = full scale). */
 static int s_fx_vec_gain = 120;
+extern int gfx_vel_enabled;
+extern int gfx_vel_divisor;
+extern int gfx_vel_stride;
+/* Motion-vector / sub-frame blur dials. */
+static int s_vel_source = 1;        /* 130: 1 = vertex vectors, 0 = camera only */
+static int s_mb_shutter = 180;      /* 131: degrees */
+static int s_mb_substeps = 4;       /* 132: taps along the vector */
+static int s_mb_maxpx = 16;         /* 133: max blur radius, px */
+static int s_vel_divisor_ui = 4;    /* 134: velocity target divisor */
+static int s_vel_stride_ui = 1;     /* 135: replay every N frames */
+static int s_mb_jitter = 100;       /* 136: per-frame sub-step jitter % */
+static int s_mb_depth_reject = 20;  /* 137: depth rejection threshold */
+static int s_mb_clamp_px = 60;      /* 138: velocity clamp, px */
+static int s_vec_style = 2;         /* 139: 0 magnitude, 1 direction, 2 segments */
 
 static int s_fx_gi_on = 0;
 static int s_fx_gi_intensity = 100;   // percent
@@ -903,6 +928,15 @@ static const char *s_fx_fs =
     "uniform float uMBOn;\n"
     "uniform float uMBStrength;\n"
     "uniform float uMBSamples;\n"
+    "uniform sampler2D uVelocity;\n"
+    "uniform float uVelOn;\n"
+    "uniform float uMBShutter;\n"
+    "uniform float uMBSubSteps;\n"
+    "uniform float uMBMaxPx;\n"
+    "uniform float uMBJitter;\n"
+    "uniform float uMBDepthReject;\n"
+    "uniform float uMBClampPx;\n"
+    "uniform float uVecStyle;\n"
     "uniform float uLightCount;\n"
     "uniform vec3 uLightPos[4];\n"
     "uniform vec3 uLightPosView[4];\n"
@@ -1145,24 +1179,40 @@ static const char *s_fx_fs =
     "  vec3 Pw = (uCamInv * vec4(P, 1.0)).xyz;\n"
     "  vec3 Nw = normalize((uCamInv * vec4(N, 0.0)).xyz);\n"
     "  vec3 color = baseColor;\n"
-    "  if (uMBOn > 0.5) {\n"
+    "  vec2 mvPx = vec2(0.0);\n"
+    "  if (uVelOn > 0.5) {\n"
+    "    vec4 e = texture2D(uVelocity, vUV);\n"
+    "    vec2 d = vec2(e.r * 255.0 * 256.0 + e.g * 255.0,\n"
+    "                  e.b * 255.0 * 256.0 + e.a * 255.0) / 65535.0;\n"
+    "    mvPx = (d * 2.0 - 1.0) * uRes;\n"
+    "  } else {\n"
     "    vec3 pvn = worldToViewM(Pw, uPrevCamInv);\n"
-    "    {\n"
-    "      vec2 v = (viewToNdc(worldToView(Pw)) - viewToNdc(pvn)) * 0.5;\n"
-    "      float px = length(v * uRes);\n"
-    "      if (px > 0.4) {\n"
-    "        vec3 acc = baseColor;\n"
-    "        float ws = 1.0;\n"
-    "        float ns = max(uMBSamples, 1.0);\n"
-    "        for (int i = 0; i < 16; i++) {\n"
-    "          if (float(i) >= ns) break;\n"
-    "          float t = ns > 1.5 ? (float(i) / (ns - 1.0) - 0.5) : 0.0;\n"
-    "          vec2 suv = vUV + v * t * (uMBStrength / 100.0);\n"
-    "          acc += texture2D(uColor, suv).rgb;\n"
-    "          ws += 1.0;\n"
-    "        }\n"
-    "        color = acc / ws;\n"
+    "    mvPx = (viewToNdc(worldToView(Pw)) - viewToNdc(pvn)) * 0.5 * uRes;\n"
+    "  }\n"
+    "  float mvLen = length(mvPx);\n"
+    "  if (mvLen > uMBClampPx) mvPx *= uMBClampPx / mvLen;\n"
+    "  if (uMBOn > 0.5) {\n"
+    "    vec2 v = mvPx / uRes;\n"
+    "    float shutter = uMBShutter / 360.0;\n"
+    "    float px = length(v * uRes) * shutter * (uMBStrength / 100.0);\n"
+    "    if (px > 0.4) {\n"
+    "      float ns = clamp(uMBSubSteps, 1.0, 8.0);\n"
+    "      float jit = (uMBJitter / 100.0) * fract(sin(dot(vUV * uRes,\n"
+    "                  vec2(12.9898, 78.233))) * 43758.5453 + uFrame * 0.618);\n"
+    "      vec3 acc = baseColor;\n"
+    "      float ws = 1.0;\n"
+    "      for (int i = 0; i < 8; i++) {\n"
+    "        if (float(i) >= ns) break;\n"
+    "        float t = ns > 1.5 ? ((float(i) + jit) / (ns - 1.0) - 0.5) : 0.0;\n"
+    "        vec2 suv = vUV + v * t * shutter * (uMBStrength / 100.0);\n"
+    "        vec2 sc = clamp(suv, vec2(0.0), vec2(1.0));\n"
+    "        float sd = linZ(texture2D(uDepth, sc).r);\n"
+    "        float rel = abs(sd - z) / max(z, 1.0);\n"
+    "        float w = rel > (uMBDepthReject / 100.0) * 2.0 ? 0.0 : 1.0;\n"
+    "        acc += texture2D(uColor, suv).rgb * w;\n"
+    "        ws += w;\n"
     "      }\n"
+    "      color = acc / max(ws, 1.0);\n"
     "    }\n"
     "  }\n"
     "  float shadow = 1.0;\n"
@@ -1287,30 +1337,28 @@ static const char *s_fx_fs =
     "  if (uShadowDebug > 1.5) gl_FragColor = vec4(vec3(unpackDepth(texture2D(uShadowMap, clamp(cuv, 0.0, 1.0)))), 1.0);\n"
     "  else if (uShadowDebug > 0.5) gl_FragColor = vec4(vec3(shadow), 1.0);\n"
     "  else if (uDebug > 8.5) {\n"
-    "    vec3 hc = vec3(0.0);\n"
-    "    for (int oy = -2; oy <= 2; oy++) {\n"
-    "      for (int ox = -2; ox <= 2; ox++) {\n"
-    "        vec2 suv = vUV + vec2(float(ox), float(oy)) / uRes;\n"
-    "        vec2 scuv = canvasUV(suv);\n"
-    "        if (scuv.x < 0.0 || scuv.x > 1.0 || scuv.y < 0.0 || scuv.y > 1.0) continue;\n"
-    "        float sz = linZ(texture2D(uDepth, suv).r);\n"
-    "        vec3 Pn = viewPos(scuv, sz);\n"
-    "        vec3 Pwn = (uCamInv * vec4(Pn, 1.0)).xyz;\n"
-    "        vec3 pvn = worldToViewM(Pwn, uPrevCamInv);\n"
-    "        vec2 vv = (viewToNdc(Pn) - viewToNdc(pvn)) * 0.5;\n"
-    "        vec2 seg = vv * uRes;\n"
-    "        float segLen = length(seg);\n"
-    "        if (segLen < 1.0) continue;\n"
-    "        float tcol = sqrt(clamp(segLen / max(uVecGain, 1.0), 0.0, 1.0));\n"
-    "        if (segLen > 26.0) seg = seg * (26.0 / segLen);\n"
-    "        vec2 a = vec2(float(ox), float(oy));\n"
-    "        vec2 ab = seg;\n"
-    "        float tt = clamp(dot(-a, ab) / max(dot(ab, ab), 0.001), 0.0, 1.0);\n"
-    "        float dist = length(a + ab * tt);\n"
-    "        if (dist < 0.85) hc = max(hc, heatColour(tcol));\n"
+    "    float tcol = sqrt(clamp(mvLen / max(uVecGain, 1.0), 0.0, 1.0));\n"
+    "    if (uVecStyle > 1.5) {\n"
+    "      vec3 hc = vec3(0.0);\n"
+    "      vec2 seg = mvPx;\n"
+    "      if (mvLen > 26.0) seg = seg * (26.0 / mvLen);\n"
+    "      for (int oy = -2; oy <= 2; oy++) {\n"
+    "        for (int ox = -2; ox <= 2; ox++) {\n"
+    "          vec2 a = vec2(float(ox), float(oy));\n"
+    "          float tt = clamp(dot(-a, seg) / max(dot(seg, seg), 0.001), 0.0, 1.0);\n"
+    "          float dist = length(a + seg * tt);\n"
+    "          if (dist < 0.85 && mvLen > 0.5) hc = max(hc, heatColour(tcol));\n"
+    "        }\n"
     "      }\n"
+    "      gl_FragColor = vec4(hc, 1.0);\n"
+    "    } else if (uVecStyle > 0.5) {\n"
+    "      float ang = atan(mvPx.y, mvPx.x) / 6.2831853 + 0.5;\n"
+    "      vec3 k = mod(vec3(5.0, 3.0, 1.0) + ang * 6.0, 6.0);\n"
+    "      vec3 hue = 1.0 - clamp(min(k, 4.0 - k), 0.0, 1.0);\n"
+    "      gl_FragColor = vec4(hue * clamp(tcol * 1.4, 0.0, 1.0), 1.0);\n"
+    "    } else {\n"
+    "      gl_FragColor = vec4(heatColour(tcol), 1.0);\n"
     "    }\n"
-    "    gl_FragColor = vec4(hc, 1.0);\n"
     "  }\n"
     "  else if (uDebug > 7.5) gl_FragColor = vec4(vec3(clamp(length(uLightPos[0] - Pw) / 3000.0, 0.0, 1.0)), 1.0);\n"
     "  else if (uDebug > 6.5) gl_FragColor = vec4(vec3(uProbeVis), 1.0);\n"
@@ -1365,6 +1413,8 @@ static struct {
     GLint ssrtx_on, ssrtx_intensity, ssrtx_dist, ssrtx_steps;
     GLint ssrtx_rays, ssrtx_thick, ssrtx_rough, ssrtx_fade;
     GLint mb_on, mb_strength, mb_samples, cur_vp, prev_vp, prev_cam_inv;
+    GLint velocity, vel_on, mb_shutter, mb_substeps, mb_maxpx, mb_jitter;
+    GLint mb_depth_reject, mb_clamp_px, vec_style;
     GLint light_count, light_pos, light_pos_view, light_color, light_radius;
     GLint light_intensity, light_shadows, light_shadow_steps;
     GLint probe_vis, probe_center, probe_spacing, probe_dim, probe_radius, probe_res;
@@ -1461,6 +1511,27 @@ void gfx_opengl_ssfx_set(int which, int value) {
         case 117: s_probe_depth = value < 1 ? 1 : (value > 4 ? 4 : value); break;
         /* Motion-vector heatmap gain (px of motion mapped to full scale). */
         case 118: s_fx_vec_gain = value < 20 ? 20 : (value > 500 ? 500 : value); break;
+        /* Motion-vector source + sub-frame blur dials. */
+        case 140: s_vel_source = value ? 1 : 0; break;
+        case 141: s_mb_shutter = value < 0 ? 0 : (value > 360 ? 360 : value); break;
+        case 142: s_mb_substeps = value < 1 ? 1 : (value > 8 ? 8 : value); break;
+        case 143: s_mb_maxpx = value < 0 ? 0 : (value > 64 ? 64 : value); break;
+        case 144: {
+            extern int gfx_vel_divisor;
+            s_vel_divisor_ui = value < 1 ? 1 : (value > 8 ? 8 : value);
+            gfx_vel_divisor = s_vel_divisor_ui;
+            break;
+        }
+        case 145: {
+            extern int gfx_vel_stride;
+            s_vel_stride_ui = value < 1 ? 1 : (value > 4 ? 4 : value);
+            gfx_vel_stride = s_vel_stride_ui;
+            break;
+        }
+        case 146: s_mb_jitter = value < 0 ? 0 : (value > 100 ? 100 : value); break;
+        case 147: s_mb_depth_reject = value < 0 ? 0 : (value > 100 ? 100 : value); break;
+        case 148: s_mb_clamp_px = value < 4 ? 4 : (value > 200 ? 200 : value); break;
+        case 149: s_vec_style = value < 0 ? 0 : (value > 2 ? 2 : value); break;
         /* Lens bokeh kernel. */
         case 160: s_fx_bokeh_on = value ? 1 : 0; break;
         case 161: s_fx_bokeh_aspect = value < 25 ? 25 : (value > 400 ? 400 : value); break;
@@ -1565,6 +1636,16 @@ int gfx_opengl_ssfx_get(int which) {
         case 116: return s_probe_rows;
         case 117: return s_probe_depth;
         case 118: return s_fx_vec_gain;
+        case 140: return s_vel_source;
+        case 141: return s_mb_shutter;
+        case 142: return s_mb_substeps;
+        case 143: return s_mb_maxpx;
+        case 144: return s_vel_divisor_ui;
+        case 145: return s_vel_stride_ui;
+        case 146: return s_mb_jitter;
+        case 147: return s_mb_depth_reject;
+        case 148: return s_mb_clamp_px;
+        case 149: return s_vec_style;
         case 160: return s_fx_bokeh_on;
         case 161: return s_fx_bokeh_aspect;
         case 162: return s_fx_bokeh_blades;
@@ -1690,6 +1771,15 @@ static void stereo_fx_init(void) {
     s_fx_u.mb_on = glGetUniformLocation(s_fx_prog, "uMBOn");
     s_fx_u.mb_strength = glGetUniformLocation(s_fx_prog, "uMBStrength");
     s_fx_u.mb_samples = glGetUniformLocation(s_fx_prog, "uMBSamples");
+    s_fx_u.velocity = glGetUniformLocation(s_fx_prog, "uVelocity");
+    s_fx_u.vel_on = glGetUniformLocation(s_fx_prog, "uVelOn");
+    s_fx_u.mb_shutter = glGetUniformLocation(s_fx_prog, "uMBShutter");
+    s_fx_u.mb_substeps = glGetUniformLocation(s_fx_prog, "uMBSubSteps");
+    s_fx_u.mb_maxpx = glGetUniformLocation(s_fx_prog, "uMBMaxPx");
+    s_fx_u.mb_jitter = glGetUniformLocation(s_fx_prog, "uMBJitter");
+    s_fx_u.mb_depth_reject = glGetUniformLocation(s_fx_prog, "uMBDepthReject");
+    s_fx_u.mb_clamp_px = glGetUniformLocation(s_fx_prog, "uMBClampPx");
+    s_fx_u.vec_style = glGetUniformLocation(s_fx_prog, "uVecStyle");
     s_fx_u.cur_vp = glGetUniformLocation(s_fx_prog, "uCurVP");
     s_fx_u.prev_vp = glGetUniformLocation(s_fx_prog, "uPrevVP");
     s_fx_u.prev_cam_inv = glGetUniformLocation(s_fx_prog, "uPrevCamInv");
@@ -1935,6 +2025,166 @@ void gfx_opengl_shadow_end(void) {
     s_shadow_map_valid = 1;
 }
 
+/* ---------------- Motion-vector (velocity) pass ----------------
+ * A second scene replay writes per-vertex screen motion into a small RGBA8
+ * target: two 16-bit fixed-point channels per axis, 0.5 = no motion.
+ * gfx_pc.c computes the delta from the object's previous modelview. */
+static GLuint s_vel_fbo, s_vel_tex, s_vel_depth, s_vel_prog;
+static int s_vel_prog_state;
+static int s_vel_w, s_vel_h, s_vel_div = 4;
+static GLint s_vel_apos = -1, s_vel_avel = -1;
+static int s_vel_rendering;
+static int s_vel_tex_valid;
+
+static const char *s_vel_vs =
+    "attribute vec4 aVtxPos;\n"
+    "attribute vec2 aVel;\n"
+    "varying vec2 vVel;\n"
+    "void main(){ gl_Position = aVtxPos; vVel = aVel; }\n";
+
+static const char *s_vel_fs =
+#ifdef USE_GLES
+    "precision highp float;\n"
+#endif
+    "varying vec2 vVel;\n"
+    "vec2 enc16(float x) {\n"
+    "  float v = clamp(x * 0.5 + 0.5, 0.0, 1.0) * 65535.0;\n"
+    "  float hi = floor(v / 256.0);\n"
+    "  return vec2(hi, v - hi * 256.0) / 255.0;\n"
+    "}\n"
+    "void main(){\n"
+    "  vec2 v = clamp(vVel, -1.0, 1.0);\n"
+    "  gl_FragColor = vec4(enc16(v.x), enc16(v.y));\n"
+    "}\n";
+
+static int velocity_ensure_program(void) {
+    if (s_vel_prog_state != 0) return s_vel_prog_state == 1;
+    GLuint vs = compile_shader_checked(GL_VERTEX_SHADER, s_vel_vs, "velocity vertex");
+    GLuint fs = compile_shader_checked(GL_FRAGMENT_SHADER, s_vel_fs, "velocity fragment");
+    if (!vs || !fs) {
+        s_vel_prog_state = -1;
+        if (vs) glDeleteShader(vs);
+        if (fs) glDeleteShader(fs);
+        return 0;
+    }
+    s_vel_prog = glCreateProgram();
+    glAttachShader(s_vel_prog, vs);
+    glAttachShader(s_vel_prog, fs);
+    glLinkProgram(s_vel_prog);
+    GLint ok = 0;
+    glGetProgramiv(s_vel_prog, GL_LINK_STATUS, &ok);
+    glDeleteShader(vs);
+    glDeleteShader(fs);
+    if (!ok) {
+        __android_log_print(ANDROID_LOG_ERROR, "SM64VEL", "velocity program link failed");
+        glDeleteProgram(s_vel_prog);
+        s_vel_prog = 0;
+        s_vel_prog_state = -1;
+        return 0;
+    }
+    s_vel_apos = glGetAttribLocation(s_vel_prog, "aVtxPos");
+    s_vel_avel = glGetAttribLocation(s_vel_prog, "aVel");
+    s_vel_prog_state = 1;
+    return 1;
+}
+
+static int velocity_ensure_fbo(int w, int h) {
+    if (w < 64) w = 64;
+    if (h < 64) h = 64;
+    if (w == s_vel_w && h == s_vel_h && s_vel_fbo != 0) return 1;
+
+    if (s_vel_fbo) glDeleteFramebuffers(1, &s_vel_fbo);
+    if (s_vel_tex) glDeleteTextures(1, &s_vel_tex);
+    if (s_vel_depth) glDeleteRenderbuffers(1, &s_vel_depth);
+    s_vel_fbo = s_vel_tex = s_vel_depth = 0;
+
+    glGenTextures(1, &s_vel_tex);
+    glBindTexture(GL_TEXTURE_2D, s_vel_tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    glGenRenderbuffers(1, &s_vel_depth);
+    glBindRenderbuffer(GL_RENDERBUFFER, s_vel_depth);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT16, w, h);
+
+    glGenFramebuffers(1, &s_vel_fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, s_vel_fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, s_vel_tex, 0);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, s_vel_depth);
+
+    GLenum st = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    s_vel_w = w;
+    s_vel_h = h;
+    s_vel_tex_valid = 0;
+    __android_log_print(ANDROID_LOG_INFO, "SM64VEL", "target %dx%d fbo=%u status=0x%x",
+                        w, h, s_vel_fbo, st);
+    return st == GL_FRAMEBUFFER_COMPLETE;
+}
+
+int gfx_opengl_velocity_begin(int w, int h, int divisor) {
+    if (!velocity_ensure_program()) return 0;
+    if (divisor < 1) divisor = 1;
+    if (divisor > 8) divisor = 8;
+    s_vel_div = divisor;
+    if (!velocity_ensure_fbo(w / divisor, h / divisor)) return 0;
+
+    glActiveTexture(GL_TEXTURE3);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glActiveTexture(GL_TEXTURE0);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, s_vel_fbo);
+    glViewport(0, 0, s_vel_w, s_vel_h);
+    glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_BLEND);
+    glEnable(GL_DEPTH_TEST);
+    glDepthMask(GL_TRUE);
+    glDepthFunc(GL_LEQUAL);
+    /* 0.5 in both 16-bit channels decodes to zero motion. */
+    glClearColor(128.0f / 255.0f, 0.0f, 128.0f / 255.0f, 0.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    glUseProgram(s_vel_prog);
+    if (!opengl_vbo) glGenBuffers(1, &opengl_vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, opengl_vbo);
+    s_vel_rendering = 1;
+    return 1;
+}
+
+void gfx_opengl_velocity_end(void) {
+    if (s_vel_apos >= 0) glDisableVertexAttribArray(s_vel_apos);
+    if (s_vel_avel >= 0) glDisableVertexAttribArray(s_vel_avel);
+    glUseProgram(0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    s_vel_rendering = 0;
+    s_vel_tex_valid = 1;
+}
+
+void gfx_opengl_draw_velocity(float buf[], size_t len, size_t tris) {
+    if (!s_vel_rendering || !s_vel_prog || len == 0 || tris == 0) return;
+    glUseProgram(s_vel_prog);
+    glBindBuffer(GL_ARRAY_BUFFER, opengl_vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(float) * len, buf, GL_STREAM_DRAW);
+    if (s_vel_apos >= 0) {
+        glEnableVertexAttribArray(s_vel_apos);
+        glVertexAttribPointer(s_vel_apos, 4, GL_FLOAT, GL_FALSE,
+                              6 * sizeof(float), (void *)0);
+    }
+    if (s_vel_avel >= 0) {
+        glEnableVertexAttribArray(s_vel_avel);
+        glVertexAttribPointer(s_vel_avel, 2, GL_FLOAT, GL_FALSE,
+                              6 * sizeof(float), (void *)(4 * sizeof(float)));
+    }
+    glDrawArrays(GL_TRIANGLES, 0, (GLsizei)(3 * tris));
+}
+
+int gfx_opengl_velocity_wanted(void) {
+    return gfx_vel_enabled && (s_fx_mb_on || s_fx_debug == 9);
+}
+
 static void stereo_ensure_pp(int w, int h) {
     if (w == s_pp_w && h == s_pp_h && s_pp_fbo[0] != 0) return;
     for (int i = 0; i < 2; i++) {
@@ -2021,6 +2271,10 @@ static int stereo_fx_pass(void) {
                     && gfx_shadow_matrices_ready;
     glActiveTexture(GL_TEXTURE2);
     glBindTexture(GL_TEXTURE_2D, shadow_on ? s_shadow_tex : 0);
+    glActiveTexture(GL_TEXTURE3);
+    glBindTexture(GL_TEXTURE_2D, (s_vel_tex_valid && s_vel_source) ? s_vel_tex : 0);
+    if (s_fx_u.velocity >= 0) glUniform1i(s_fx_u.velocity, 3);
+    glActiveTexture(GL_TEXTURE0);
     glUniform1i(s_fx_u.shadow_map, 2);
     glUniform1f(s_fx_u.shadow_on, shadow_on ? 1.0f : 0.0f);
     glUniform1f(s_fx_u.shadow_strength, (float)gfx_shadow_strength / 100.0f);
@@ -2079,6 +2333,15 @@ static int stereo_fx_pass(void) {
         glUniform1f(s_fx_u.mb_on, s_fx_mb_on ? 1.0f : 0.0f);
         glUniform1f(s_fx_u.mb_strength, (float)s_fx_mb_strength);
         glUniform1f(s_fx_u.mb_samples, (float)s_fx_mb_samples);
+        glUniform1f(s_fx_u.vel_on,
+                    (s_vel_tex_valid && s_vel_source && gfx_vel_enabled) ? 1.0f : 0.0f);
+        glUniform1f(s_fx_u.mb_shutter, (float)s_mb_shutter);
+        glUniform1f(s_fx_u.mb_substeps, (float)s_mb_substeps);
+        glUniform1f(s_fx_u.mb_maxpx, (float)s_mb_maxpx);
+        glUniform1f(s_fx_u.mb_jitter, (float)s_mb_jitter);
+        glUniform1f(s_fx_u.mb_depth_reject, (float)s_mb_depth_reject);
+        glUniform1f(s_fx_u.mb_clamp_px, (float)s_mb_clamp_px);
+        glUniform1f(s_fx_u.vec_style, (float)s_vec_style);
         glUniform1f(s_fx_u.light_count, (float)s_light_count);
         glUniform3fv(s_fx_u.light_pos, 4, &s_light_pos[0][0]);
         glUniform3fv(s_fx_u.light_pos_view, 4, &pvpos[0][0]);
@@ -2507,6 +2770,11 @@ void gfx_opengl_stereo_composite(int w, int h, int full_w, int full_h, int has_u
 #endif
 
 static void gfx_opengl_set_viewport(int x, int y, int width, int height) {
+    if (s_vel_rendering) {
+        int d = s_vel_div > 0 ? s_vel_div : 1;
+        glViewport(x / d, y / d, width / d, height / d);
+        return;
+    }
 #ifdef __ANDROID__
     if (s_fbo_mode) {
         glViewport(s_canvas_x + x, s_canvas_y + y, width, height);
