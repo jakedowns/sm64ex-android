@@ -503,16 +503,41 @@ in-scale %, `15` ZBUF, `16` wireframe, `17` toe %, `18` aspect %, `19` no cull,
 `44` gyro strength %, `45` gyro pivot height.
 
 FX knobs (`cmd fx`): AO `1`-`6`, DOF `11`-`15` (`16` auto focus, `17` reports
-the auto distance), SSGI `21`-`25`, SSRTX `70`-`77`, debug view `31`
-(0 off, 1 AO, 2 CoC, 3 GI, 4 SSRTX), normal flip `32`.
+the auto distance), SSGI `21`-`25`, SSRTX `70`-`77`, normal flip `32`.
+
+| group | keys |
+| --- | --- |
+| debug view `31` | 0 off, 1 AO, 2 CoC, 3 GI, 4 SSRTX, 5 light count, 6 light accumulation, 7 probe visibility, 8 light distance, 9 **motion-vector heatmap** |
+| motion blur | `100` on, `101` strength, `102` samples, `118` vector-heatmap gain (px = full scale) |
+| dynamic lights | `103` count, `104` shadows, `105` intensity, `106` shadow steps, `120`-`122` / `124`-`126` light 0/1 RGB |
+| light probes | `110` show, `111` spacing, `113` radius, `114` resolution, `115` grid cols (X), `116` grid rows (Y), `117` grid repeats (Z); `112` sets all three axes at once |
+| bokeh / DOF | `160` kernel, `161` aspect %, `162` blades, `163` rotation, `164` anamorphic %, `165` highlight %, `166` cat eye % |
+| rate limit | `200` on, `201` target fps, `202` adaptive, `203` reset stats |
+| denoiser | `210` alternative path, `211` on, `212` intensity, `213` passes, `214` radius, `215` frames, `216` bounces, `217` test captions |
+
+The probe grid is a `cols x rows x repeats` lattice around the probe centre,
+capped at 16 probes (4x4x1, 2x2x2, 2x2x4, ...). It is only used for the probe
+visualisation/reflection debug view.
 
 `cmd pad` injects raw overlay input for headless menu/gameplay driving:
 `--ei sx/-127..127 --ei sy/-127..127 --ei buttons <N64 pad bits> --ei ms <hold>`.
 Handy bits: `4096` START, `32768` A, `16384` B, `8192` Z, `16` R.
 
 The on-screen tuning panel is collapsed by default (**SHOW**/**HIDE**) so it does
-not cover the controls; it has tabs for STEREO / MXAO / C.DOF / SSGI / SSRTX /
-CAMERA / ENH / SHADOW, a toggle row, and a live status line plus FPS meter. The status line is **green (`FREE`)**
+not cover the controls. Tabs: STEREO / EFFECTS / CAMERA / ENH / LIGHT /
+CHANGELOG / EXPORT / ABOUT.
+
+- **EFFECTS** has a second-tier strip (AO / DOF / SSGI / SSRTX) that is only
+  visible on that tab.
+- **ENH** has MOVE / PORTAL / BALL / SYS pages in three columns each, again only
+  visible while ENH is the active tab.
+- **LIGHT** has BLUR / LIGHTS / PROBES / LENS / VIEWS / RATE-DN pages. VIEWS is
+  the full debug-view selector (including the motion-vector heatmap), PROBES
+  carries the grid shape sliders, and toggles/actions sit in shared rows so a
+  page fits without scrolling.
+
+The live status line is **green (`FREE`)** when the app is free to touch and
+**red (`BUSY - hands off`)** while an automated agent is driving it. The status line is **green (`FREE`)**
 when the app is free to touch and **red (`BUSY - hands off`)** while an automated
 agent is driving it.
 

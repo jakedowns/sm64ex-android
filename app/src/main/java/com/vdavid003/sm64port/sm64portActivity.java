@@ -1409,6 +1409,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                     () -> nativePtcCommand("chain"), 2500);
         });
         addEnhButton("STOP NINJA CHAIN", () -> nativePtcCommand("chainoff"));
+        addEnhButton("CHAIN LOOP (ALL)", () -> nativePtcCommand("chainloop"));
 
         addEnhSection("PORTAL TESTS");
         addEnhButton("WARP TO PTC", () -> debugLevel(38));
@@ -1439,6 +1440,12 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addEnhKnobToggle("RELAY SOLID", "relay.solid", false);
         addEnhKnobToggle("RELAY BLIT", "relay.blit", false);
         addEnhKnobToggle("SOURCE FAN", "fan.src", false);
+        addEnhKnobToggle("RELAY LOOP", "relay.loop", true);
+        addEnhKnobToggle("RELAY FLIP", "relay.flip", false);
+        addEnhKnobCycle("RECURSION", "relay.recursion",
+                new float[] {1f, 2f, 3f, 4f, 6f, 8f}, true, 3f);
+        addEnhButton("TOOL SWAP (GUN/HOOK)", () -> nativePtcCommand("toolswap"));
+        addEnhButton("PORTAL LOOP BEAT", () -> nativePtcCommand("chainportal"));
 
         addEnhSection("MOVE ANNEXES");
         addEnhButton("WALL-RUN ANNEX", () -> nativePtcCommand("wallrun"));
@@ -1628,9 +1635,9 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                 + " details are written to the debug log on the EXPORT tab.");
         controls.addView(aboutEnv);
 
-        // --- Dynamic light + motion blur + probe debug (second-tier tabs) ---
+        // --- Dynamic light / blur / probes / lens / views (second-tier tabs) ---
         beginTab();
-        final String[] lightNames = { "BLUR", "LIGHTS", "PROBES", "LENS", "RATE/DN" };
+        final String[] lightNames = { "BLUR", "LIGHTS", "PROBES", "LENS", "VIEWS", "RATE/DN" };
         LinearLayout lightBar = new LinearLayout(this);
         lightBar.setOrientation(LinearLayout.HORIZONTAL);
         lightBar.setPadding(dp(4), dp(2), dp(4), dp(2));
@@ -1660,32 +1667,42 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             lightPages[i] = lp;
         }
 
-        // BLUR
+        // BLUR: one toggle row, then the two blur sliders side by side.
         controls = lightPages[0];
         grid = new android.widget.GridLayout(this);
         grid.setColumnCount(2);
         controls.addView(grid);
-        addFxToggle("MOTION BLUR", 100, false);
+        {
+            LinearLayout r = addRow();
+            addToggleCell(r, "MOTION BLUR", 100, false);
+            addDebugCell(r, "VECTOR HEATMAP", 9);
+        }
+        moveGridLast();
         addIntSlider("Blur strength", 0, 200, 40, v -> debugFx(101, v));
         addIntSlider("Blur samples", 1, 16, 8, v -> debugFx(102, v));
+        addIntSlider("Vector heat gain", 20, 500, 120, v -> debugFx(118, v));
 
-        // LIGHTS
+        // LIGHTS: demo buttons, then count/intensity/shadows, then per-light RGB.
         controls = lightPages[1];
         grid = new android.widget.GridLayout(this);
         grid.setColumnCount(2);
         controls.addView(grid);
         {
-            TextView ltest = new TextView(this);
-            ltest.setText("RUN PTC LIGHT TEST");
-            ltest.setTextSize(15);
-            ltest.setTextColor(0xFFFFFFFF);
-            ltest.setPadding(dp(8), dp(8), dp(8), dp(8));
-            ltest.setBackgroundColor(0xCC224422);
-            ltest.setOnClickListener(v -> debugPtc("lighttest"));
-            controls.addView(ltest);
+            LinearLayout r = addRow();
+            addActionCell(r, "LIGHT TEST", () -> debugPtc("lighttest"));
+            addActionCell(r, "LIGHT LOOP 10s", () -> {
+                debugLevel(38);
+                new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(
+                        () -> debugPtc("lightshow"), 2500);
+            });
+            addActionCell(r, "STOP LOOP", () -> debugPtc("lightshowstop"));
         }
+        {
+            LinearLayout r = addRow();
+            addToggleCell(r, "LIGHT SHADOWS", 104, false);
+        }
+        moveGridLast();
         addIntSlider("Light count", 0, 4, 0, v -> debugFx(103, v));
-        addFxToggle("LIGHT SHADOWS", 104, false);
         addIntSlider("Light intensity", 0, 300, 120, v -> debugFx(105, v));
         addIntSlider("Shadow steps", 0, 8, 6, v -> debugFx(106, v));
         addIntSlider("Light 0 R", 0, 255, 255, v -> debugFx(120, v));
@@ -1695,24 +1712,34 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addIntSlider("Light 1 G", 0, 255, 140, v -> debugFx(125, v));
         addIntSlider("Light 1 B", 0, 255, 255, v -> debugFx(126, v));
 
-        // PROBES
+        // PROBES: grid shape (cols/rows/repeats), then spacing/size/quality.
         controls = lightPages[2];
         grid = new android.widget.GridLayout(this);
         grid.setColumnCount(2);
         controls.addView(grid);
-        addFxToggle("SHOW PROBES", 110, false);
-        addIntSlider("Probe spacing", 100, 2000, 450, v -> debugFx(111, v));
-        addIntSlider("Probe dim", 1, 4, 3, v -> debugFx(112, v));
+        {
+            LinearLayout r = addRow();
+            addToggleCell(r, "SHOW PROBES", 110, false);
+        }
+        moveGridLast();
+        addIntSlider("Grid cols (X)", 1, 4, 2, v -> debugFx(115, v));
+        addIntSlider("Grid rows (Y)", 1, 4, 2, v -> debugFx(116, v));
+        addIntSlider("Grid repeats (Z)", 1, 4, 2, v -> debugFx(117, v));
+        addIntSlider("Grid spacing", 100, 2000, 450, v -> debugFx(111, v));
         addIntSlider("Probe radius", 5, 120, 18, v -> debugFx(113, v));
         addIntSlider("Probe res", 2, 64, 16, v -> debugFx(114, v));
 
-        // LENS
+        // LENS: bokeh kernel + aperture shape.
         controls = lightPages[3];
         grid = new android.widget.GridLayout(this);
         grid.setColumnCount(2);
         controls.addView(grid);
-        addFxToggle("CINEMATIC DOF", 11, false);
-        addFxToggle("BOKEH KERNEL", 160, false);
+        {
+            LinearLayout r = addRow();
+            addToggleCell(r, "CINEMATIC DOF", 11, false);
+            addToggleCell(r, "BOKEH KERNEL", 160, false);
+        }
+        moveGridLast();
         addIntSlider("Bokeh aspect %", 25, 400, 100, v -> debugFx(161, v));
         addIntSlider("Bokeh blades", 3, 12, 6, v -> debugFx(162, v));
         addIntSlider("Bokeh rotation", 0, 359, 0, v -> debugFx(163, v));
@@ -1720,22 +1747,51 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addIntSlider("Bokeh highlight %", 0, 300, 100, v -> debugFx(165, v));
         addIntSlider("Cat eye %", 0, 100, 0, v -> debugFx(166, v));
 
-        // RATE / DENOISE
+        // VIEWS: every debug view in two rows of five, heatmap last.
         controls = lightPages[4];
         grid = new android.widget.GridLayout(this);
         grid.setColumnCount(2);
         controls.addView(grid);
-        addFxToggle("RATE LIMIT", 200, true);
+        {
+            LinearLayout r = addRow();
+            addDebugCell(r, "OFF", 0);
+            addDebugCell(r, "AO", 1);
+            addDebugCell(r, "CoC", 2);
+            addDebugCell(r, "GI", 3);
+            addDebugCell(r, "SSRTX", 4);
+        }
+        {
+            LinearLayout r = addRow();
+            addDebugCell(r, "LIGHTS", 5);
+            addDebugCell(r, "L-ACCUM", 6);
+            addDebugCell(r, "PROBE VIS", 7);
+            addDebugCell(r, "L-DIST", 8);
+            addDebugCell(r, "MOTION VECTORS", 9);
+        }
+
+        // RATE / DENOISE
+        controls = lightPages[5];
+        grid = new android.widget.GridLayout(this);
+        grid.setColumnCount(2);
+        controls.addView(grid);
+        {
+            LinearLayout r = addRow();
+            addToggleCell(r, "RATE LIMIT", 200, true);
+            addToggleCell(r, "ADAPTIVE RATE", 202, false);
+            addToggleCell(r, "SHOW CAPTIONS", 217, true);
+        }
+        {
+            LinearLayout r = addRow();
+            addToggleCell(r, "ALT DENOISE PATH", 210, false);
+            addToggleCell(r, "DENOISER", 211, false);
+        }
+        moveGridLast();
         addIntSlider("Target FPS", 0, 120, 60, v -> debugFx(201, v));
-        addFxToggle("ADAPTIVE RATE", 202, false);
-        addFxToggle("ALT DENOISE PATH", 210, false);
-        addFxToggle("DENOISER", 211, false);
         addIntSlider("Denoise intensity", 0, 100, 60, v -> debugFx(212, v));
         addIntSlider("Denoise passes", 1, 3, 2, v -> debugFx(213, v));
         addIntSlider("Denoise radius", 1, 4, 1, v -> debugFx(214, v));
         addIntSlider("Denoise frames", 1, 8, 1, v -> debugFx(215, v));
         addIntSlider("Denoise bounces", 1, 4, 1, v -> debugFx(216, v));
-        addFxToggle("SHOW TEST CAPTIONS", 217, true);
     }
 
     private String buildBranch() {
@@ -2263,8 +2319,17 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     /** ENH control that cycles a runtime PTC knob through fixed values. */
     private TextView addEnhKnobCycle(String name, final String knob, final float[] values,
                                      final boolean integerFormat) {
+        return addEnhKnobCycle(name, knob, values, integerFormat, values[0]);
+    }
+
+    /** As above, but the label starts at the knob's current value. */
+    private TextView addEnhKnobCycle(String name, final String knob, final float[] values,
+                                     final boolean integerFormat, float initial) {
         final TextView b = new TextView(this);
         final int[] idx = {0};
+        for (int i = 0; i < values.length; i++) {
+            if (Math.abs(values[i] - initial) < 0.01f) { idx[0] = i; break; }
+        }
         Runnable render = () -> b.setText(name + ": "
                 + (integerFormat ? String.valueOf((int) values[idx[0]])
                                  : String.format(java.util.Locale.US, "%.1f", values[idx[0]])));
@@ -2610,6 +2675,68 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         else if (key == 70) ssrtxOn = on;
         refreshTabStyles();
         Log.i(TAG, "FX toggle " + name + "=" + (on ? 1 : 0));
+    }
+
+    /** Put the current page's slider grid after the rows already added to it. */
+    private void moveGridLast() {
+        if (grid == null || controls == null) return;
+        controls.removeView(grid);
+        controls.addView(grid);
+    }
+
+    /** Horizontal row inside the current tab page (compact multi-column layout). */
+    private LinearLayout addRow() {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        controls.addView(row);
+        return row;
+    }
+
+    /** Toggle cell for a row built with {@link #addRow()}. */
+    private TextView addToggleCell(LinearLayout row, String name, final int key, boolean initial) {
+        final TextView b = new TextView(this);
+        b.setText(name + ": " + (initial ? "ON" : "OFF"));
+        b.setTextSize(14);
+        b.setTextColor(initial ? 0xFF66FF99 : 0xFF888888);
+        b.setPadding(dp(4), dp(8), dp(4), dp(8));
+        b.setOnClickListener(v -> {
+            boolean on = b.getCurrentTextColor() != 0xFF66FF99;
+            applyFxToggle(b, name, key, on);
+        });
+        row.addView(b, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        nativeSetSSFX(key, initial ? 1 : 0);
+        return b;
+    }
+
+    /** Debug-view cell (shares the highlight state with the EFFECTS buttons). */
+    private TextView addDebugCell(LinearLayout row, String name, final int mode) {
+        TextView b = new TextView(this);
+        b.setText(name);
+        b.setTextSize(14);
+        b.setTextColor(0xFF888888);
+        b.setPadding(dp(4), dp(8), dp(4), dp(8));
+        b.setOnClickListener(v -> setFxDebug(mode));
+        row.addView(b, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        fxDebugButtons.add(b);
+        fxDebugModes.add(mode);
+        return b;
+    }
+
+    /** Action cell for a row built with {@link #addRow()}. */
+    private TextView addActionCell(LinearLayout row, String name, final Runnable action) {
+        TextView b = new TextView(this);
+        b.setText(name);
+        b.setTextSize(14);
+        b.setTextColor(0xFFFFCC66);
+        b.setPadding(dp(4), dp(10), dp(4), dp(10));
+        b.setOnClickListener(v -> action.run());
+        addPressFeedback(b);
+        row.addView(b, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        return b;
     }
 
     private void addFxDebugButton(String name, final int mode) {

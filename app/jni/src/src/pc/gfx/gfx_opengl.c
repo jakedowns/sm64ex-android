@@ -745,6 +745,8 @@ static int s_denoise_radius = 1;
 static int s_denoise_frames = 1;
 static int s_denoise_bounces = 1;
 static int s_denoise_caption = 1;
+/* Motion-vector heatmap normalisation (pixels of motion = full scale). */
+static int s_fx_vec_gain = 120;
 
 static int s_fx_gi_on = 0;
 static int s_fx_gi_intensity = 100;   // percent
@@ -779,10 +781,14 @@ static float s_light_color[4][3] = {
 static float s_light_radius[4] = { 3200.0f, 2800.0f, 2400.0f, 2000.0f };
 static int s_probe_vis = 0;
 static float s_probe_center[3] = { 0.0f, 700.0f, -2800.0f };
-static float s_probe_pos_u[8][3];
-static float s_probe_col_u[8][3];
+#define PTC_PROBE_MAX 16
+static float s_probe_pos_u[PTC_PROBE_MAX][3];
+static float s_probe_col_u[PTC_PROBE_MAX][3];
 static int s_probe_spacing = 700;
-static int s_probe_dim = 3;
+static int s_probe_dim = 3;      /* preset: 1 = single, 2 = 2x2x2 (see 115-117) */
+static int s_probe_cols = 2;     /* probes along X */
+static int s_probe_rows = 2;     /* probes along Y */
+static int s_probe_depth = 2;    /* probes along Z (repeats) */
 static int s_probe_radius = 55;
 static int s_probe_res = 16;
 static float s_fx_cur_vp[4][4];
@@ -866,6 +872,7 @@ static const char *s_fx_fs =
     "uniform float uGISteps;\n"
     "uniform float uGIRays;\n"
     "uniform float uDebug;\n"
+    "uniform float uVecGain;\n"
     "uniform float uNormalFlip;\n"
     "uniform float uShear;\n"
     "uniform float uToe;\n"
@@ -910,8 +917,8 @@ static const char *s_fx_fs =
     "uniform float uProbeDim;\n"
     "uniform float uProbeRadiusW;\n"
     "uniform float uProbeRes;\n"
-    "uniform vec3 uProbePos[8];\n"
-    "uniform vec3 uProbeCol[8];\n"
+    "uniform vec3 uProbePos[16];\n"
+    "uniform vec3 uProbeCol[16];\n"
     "uniform float uProbeCount;\n"
     "uniform float uBokehOn;\n"
     "uniform float uBokehAspect;\n"
@@ -1294,7 +1301,7 @@ static const char *s_fx_fs =
     "        vec2 seg = vv * uRes;\n"
     "        float segLen = length(seg);\n"
     "        if (segLen < 1.0) continue;\n"
-    "        float tcol = sqrt(clamp(segLen / 120.0, 0.0, 1.0));\n"
+    "        float tcol = sqrt(clamp(segLen / max(uVecGain, 1.0), 0.0, 1.0));\n"
     "        if (segLen > 26.0) seg = seg * (26.0 / segLen);\n"
     "        vec2 a = vec2(float(ox), float(oy));\n"
     "        vec2 ab = seg;\n"
@@ -1319,7 +1326,7 @@ static const char *s_fx_fs =
     "    outc += (lightAcc + specAcc * 0.6) * (uLightIntensity / 100.0);\n"
     "    if (uProbeVis > 0.5) {\n"
     "      float worldR = max(uProbeRadiusW, 1.0);\n"
-    "      for (int pi = 0; pi < 8; pi++) {\n"
+    "      for (int pi = 0; pi < 16; pi++) {\n"
     "        if (float(pi) >= uProbeCount) break;\n"
     "        vec3 pp = uProbePos[pi];\n"
     "        vec3 state = uProbeCol[pi];\n"
@@ -1365,6 +1372,7 @@ static struct {
     GLint probe_pos, probe_col, probe_count;
     GLint denoise_path, denoise_on, denoise_intensity, denoise_passes;
     GLint denoise_radius, denoise_frames, denoise_bounces;
+    GLint vec_gain;
 } s_fx_u;
 
 static GLuint s_fx_prog = 0;
@@ -1441,9 +1449,18 @@ void gfx_opengl_ssfx_set(int which, int value) {
         /* Probe grid debug. */
         case 110: s_probe_vis = value ? 1 : 0; break;
         case 111: s_probe_spacing = value < 100 ? 100 : (value > 2000 ? 2000 : value); break;
-        case 112: s_probe_dim = value < 1 ? 1 : (value > 4 ? 4 : value); break;
+        case 112:
+            s_probe_dim = value < 1 ? 1 : (value > 4 ? 4 : value);
+            s_probe_cols = s_probe_rows = s_probe_depth = s_probe_dim;
+            break;
         case 113: s_probe_radius = value < 5 ? 5 : (value > 400 ? 400 : value); break;
         case 114: s_probe_res = value < 2 ? 2 : (value > 64 ? 64 : value); break;
+        /* Probe grid shape: columns (X), rows (Y), repeats (Z). */
+        case 115: s_probe_cols = value < 1 ? 1 : (value > 4 ? 4 : value); break;
+        case 116: s_probe_rows = value < 1 ? 1 : (value > 4 ? 4 : value); break;
+        case 117: s_probe_depth = value < 1 ? 1 : (value > 4 ? 4 : value); break;
+        /* Motion-vector heatmap gain (px of motion mapped to full scale). */
+        case 118: s_fx_vec_gain = value < 20 ? 20 : (value > 500 ? 500 : value); break;
         /* Lens bokeh kernel. */
         case 160: s_fx_bokeh_on = value ? 1 : 0; break;
         case 161: s_fx_bokeh_aspect = value < 25 ? 25 : (value > 400 ? 400 : value); break;
@@ -1544,6 +1561,10 @@ int gfx_opengl_ssfx_get(int which) {
         case 112: return s_probe_dim;
         case 113: return s_probe_radius;
         case 114: return s_probe_res;
+        case 115: return s_probe_cols;
+        case 116: return s_probe_rows;
+        case 117: return s_probe_depth;
+        case 118: return s_fx_vec_gain;
         case 160: return s_fx_bokeh_on;
         case 161: return s_fx_bokeh_aspect;
         case 162: return s_fx_bokeh_blades;
@@ -1696,6 +1717,7 @@ static void stereo_fx_init(void) {
     s_fx_u.denoise_radius = glGetUniformLocation(s_fx_prog, "uDenoiseRadius");
     s_fx_u.denoise_frames = glGetUniformLocation(s_fx_prog, "uDenoiseFrames");
     s_fx_u.denoise_bounces = glGetUniformLocation(s_fx_prog, "uDenoiseBounces");
+    s_fx_u.vec_gain = glGetUniformLocation(s_fx_prog, "uVecGain");
     s_fx_u.bokeh_on = glGetUniformLocation(s_fx_prog, "uBokehOn");
     s_fx_u.bokeh_aspect = glGetUniformLocation(s_fx_prog, "uBokehAspect");
     s_fx_u.bokeh_blades = glGetUniformLocation(s_fx_prog, "uBokehBlades");
@@ -2073,14 +2095,19 @@ static int stereo_fx_pass(void) {
         glUniform1f(s_fx_u.probe_radius, (float)s_probe_radius);
         glUniform1f(s_fx_u.probe_res, (float)s_probe_res);
         {
-            int dim = s_probe_dim < 1 ? 1 : (s_probe_dim > 2 ? 2 : s_probe_dim);
+            int cols = s_probe_cols < 1 ? 1 : (s_probe_cols > 4 ? 4 : s_probe_cols);
+            int rows = s_probe_rows < 1 ? 1 : (s_probe_rows > 4 ? 4 : s_probe_rows);
+            int depth = s_probe_depth < 1 ? 1 : (s_probe_depth > 4 ? 4 : s_probe_depth);
             int pn = 0;
-            for (int ix = 0; ix < dim; ix++) {
-                for (int iy = 0; iy < dim; iy++) {
-                    for (int iz = 0; iz < dim; iz++) {
-                        float px = s_probe_center[0] + (float)(ix - dim / 2) * s_probe_spacing;
-                        float py = s_probe_center[1] + (float)iy * s_probe_spacing;
-                        float pz = s_probe_center[2] + (float)(iz - dim / 2) * s_probe_spacing;
+            for (int iz = 0; iz < depth && pn < PTC_PROBE_MAX; iz++) {
+                for (int iy = 0; iy < rows && pn < PTC_PROBE_MAX; iy++) {
+                    for (int ix = 0; ix < cols && pn < PTC_PROBE_MAX; ix++) {
+                        float px = s_probe_center[0]
+                                 + ((float)ix - (float)(cols - 1) * 0.5f) * s_probe_spacing;
+                        float py = s_probe_center[1]
+                                 + ((float)iy - (float)(rows - 1) * 0.5f) * s_probe_spacing;
+                        float pz = s_probe_center[2]
+                                 + ((float)iz - (float)(depth - 1) * 0.5f) * s_probe_spacing;
                         float cr = 0.02f, cg = 0.02f, cb = 0.02f;
                         for (int li = 0; li < s_light_count; li++) {
                             float dx = s_light_pos[li][0] - px;
@@ -2094,7 +2121,7 @@ static int stereo_fx_pass(void) {
                             cg += s_light_color[li][1] * aa;
                             cb += s_light_color[li][2] * aa;
                         }
-                        if (pn < 8) {
+                        if (pn < PTC_PROBE_MAX) {
                             s_probe_pos_u[pn][0] = px;
                             s_probe_pos_u[pn][1] = py;
                             s_probe_pos_u[pn][2] = pz;
@@ -2106,8 +2133,8 @@ static int stereo_fx_pass(void) {
                     }
                 }
             }
-            glUniform3fv(s_fx_u.probe_pos, 8, &s_probe_pos_u[0][0]);
-            glUniform3fv(s_fx_u.probe_col, 8, &s_probe_col_u[0][0]);
+            glUniform3fv(s_fx_u.probe_pos, PTC_PROBE_MAX, &s_probe_pos_u[0][0]);
+            glUniform3fv(s_fx_u.probe_col, PTC_PROBE_MAX, &s_probe_col_u[0][0]);
             glUniform1f(s_fx_u.probe_count, (float)pn);
         }
         glUniform1f(s_fx_u.bokeh_on, s_fx_bokeh_on ? 1.0f : 0.0f);
@@ -2124,6 +2151,7 @@ static int stereo_fx_pass(void) {
         glUniform1f(s_fx_u.denoise_radius, (float)s_denoise_radius);
         glUniform1f(s_fx_u.denoise_frames, (float)s_denoise_frames);
         glUniform1f(s_fx_u.denoise_bounces, (float)s_denoise_bounces);
+        glUniform1f(s_fx_u.vec_gain, (float)s_fx_vec_gain);
     }
     glUniform1f(s_fx_u.ssrtx_on, s_fx_ssrtx_on ? 1.0f : 0.0f);
     glUniform1f(s_fx_u.ssrtx_intensity, (float)s_fx_ssrtx_intensity);

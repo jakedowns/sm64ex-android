@@ -3863,7 +3863,7 @@ static void ptc_apply_command(const char *action) {
         gfx_opengl_ssfx_set(101, 40);
         gfx_opengl_ssfx_set(102, 6);
         gfx_opengl_probe_config(mx, my + 250.0f, mz, 450, 3, 18, 16, 1);
-        gfx_set_debug_note("LIGHT TEST: 2 lights + shadows + blur + 3x3x3 probes");
+        gfx_set_debug_note("LIGHT TEST: 2 lights + shadows + blur + probe grid");
         printf("PTC lighttest lights=%d shadows=%d probes=%d\n",
                gfx_opengl_light_state(0), gfx_opengl_light_state(1),
                gfx_opengl_light_state(3));
