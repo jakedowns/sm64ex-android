@@ -1660,6 +1660,14 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addIntSlider("Light 0 R", 0, 255, 255, v -> debugFx(120, v));
         addIntSlider("Light 0 G", 0, 255, 140, v -> debugFx(121, v));
         addIntSlider("Light 0 B", 0, 255, 64, v -> debugFx(122, v));
+        addFxToggle("BOKEH KERNEL", 160, false);
+        addIntSlider("Bokeh aspect %", 25, 400, 100, v -> debugFx(161, v));
+        addIntSlider("Bokeh blades", 3, 12, 6, v -> debugFx(162, v));
+        addIntSlider("Bokeh rotation", 0, 359, 0, v -> debugFx(163, v));
+        addIntSlider("Anamorphic %", 50, 400, 100, v -> debugFx(164, v));
+        addIntSlider("Bokeh highlight %", 0, 300, 100, v -> debugFx(165, v));
+        addIntSlider("Cat eye %", 0, 100, 0, v -> debugFx(166, v));
+
         addIntSlider("Light 1 R", 0, 255, 64, v -> debugFx(124, v));
         addIntSlider("Light 1 G", 0, 255, 140, v -> debugFx(125, v));
         addIntSlider("Light 1 B", 0, 255, 255, v -> debugFx(126, v));

@@ -297,7 +297,9 @@ def emit_walls():
         start = vcount
         # Subdivide so the checker tiles at a consistent size across the room
         # instead of being stretched over one giant quad.
-        for cell in subdiv_quad(pts):
+        # Keep each checker cell's UV span below the 1024-texel s16 wrap so
+        # the texture tiles instead of stretching back to 0 at a cell corner.
+        for cell in subdiv_quad(pts, 120.0):
             for p in [(int(round(v[0])), int(round(v[1])), int(round(v[2]))) for v in cell]:
                 s, t = uv(p)
                 # 32-texel checker: wrap in 10.5 fixed point so the bigger room

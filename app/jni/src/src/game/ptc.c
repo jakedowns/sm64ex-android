@@ -418,6 +418,13 @@ static int s_realStarsAfter;
 static int s_saveStarsBefore;
 static int s_saveStarsAfter;
 static int s_inputHookCalls;
+/* 10 s seamless light/camera orbit showcase. */
+static int s_showOn;
+static int s_showTimer;
+static float s_showCenter[3];
+static u32 s_showStartMs;
+static int s_showFlipped;
+
 
 static char s_pendingCommand[24];
 static volatile int s_pendingCommandReady;
@@ -1453,12 +1460,93 @@ static void ptc_finish_ok(void) {
     s_phase = PTC_PHASE_DONE;
 }
 
+static void ptc_show_hsv(float h, float sat, float v, float *r, float *g, float *b) {
+    h = h - floorf(h);
+    float i = floorf(h * 6.0f);
+    float f = h * 6.0f - i;
+    float p = v * (1.0f - sat);
+    float q = v * (1.0f - f * sat);
+    float t = v * (1.0f - (1.0f - f) * sat);
+    switch (((int) i) % 6) {
+        case 0: *r = v; *g = t; *b = p; break;
+        case 1: *r = q; *g = v; *b = p; break;
+        case 2: *r = p; *g = v; *b = t; break;
+        case 3: *r = p; *g = q; *b = v; break;
+        case 4: *r = t; *g = p; *b = v; break;
+        default:*r = v; *g = p; *b = q; break;
+    }
+}
+
+/* 600 ticks = 20.0 s at 30 Hz, played back at 2x for a 10 s clip so the
+ * ~17 fps screenrecord source yields ~34 unique frames per output second.
+ * Camera and lights are linear in phase, so tick 600 is exactly tick 0. */
+static void ptc_lightshow_update(void) {
+    struct MarioState *m = gMarioState;
+    extern void gfx_opengl_light_set(int index, float x, float y, float z,
+                                     float r, float g, float b, float radius);
+    extern void gfx_opengl_probe_config(float x, float y, float z, int spacing,
+                                        int dim, int radius, int resolution, int vis);
+    extern void custom_camera_set_freelook(int on, const Vec3f pos, const Vec3f focus);
+
+    if (!s_showOn || m == NULL) {
+        return;
+    }
+    {
+        /* Wall-clock phase: the sim frame rate varies (30-40 fps), so a
+         * tick-based period would not line up with the video.  20 s wall is
+         * exactly one period at any frame rate; 2x playback makes it 10 s. */
+        u32 now = (u32) osGetTime();
+        float sec;
+        float ph;
+        float camR = 900.0f, camH = 620.0f;
+        float lr = 780.0f;
+        if (s_showStartMs == 0) {
+            s_showStartMs = now;
+        }
+        sec = (float)(now - s_showStartMs) * 0.001f;
+        ph = (2.0f * 3.14159265f) * fmodf(sec, 20.0f) / 20.0f;
+        Vec3f pos, focus;
+        int i;
+
+        pos[0] = s_showCenter[0] - sinf(ph) * camR;
+        pos[1] = s_showCenter[1] + camH;
+        pos[2] = s_showCenter[2] - cosf(ph) * camR;
+        focus[0] = s_showCenter[0];
+        focus[1] = s_showCenter[1] + 90.0f;
+        focus[2] = s_showCenter[2];
+        custom_camera_set_freelook(1, pos, focus);
+
+        for (i = 0; i < 3; i++) {
+            float ang = ph + (float) i * 2.0943951f;   /* 120 deg apart */
+            float hue = fmodf(sec, 20.0f) / 20.0f + (float) i / 3.0f;
+            float r, g, b;
+            ptc_show_hsv(hue, 0.80f, 1.0f, &r, &g, &b);
+            gfx_opengl_light_set(i,
+                s_showCenter[0] + cosf(ang) * lr,
+                s_showCenter[1] + 1000.0f,
+                s_showCenter[2] + sinf(ang) * lr,
+                r, g, b, 1900.0f);
+        }
+        if (!s_showFlipped && sec >= 10.0f) {
+            s_showFlipped = 1;
+            m->faceAngle[1] = 0x0000;
+            set_mario_action(m, ACT_BACKFLIP, 0);
+            m->vel[1] = 31.0f;
+            m->forwardVel = 0.0f;
+        }
+        gfx_opengl_probe_config(s_showCenter[0], s_showCenter[1] + 240.0f,
+                                s_showCenter[2], 700, 2, 30, 16, 1);
+    }
+    s_showTimer++;
+}
+
 void ptc_update(void) {
     struct MarioState *m = gMarioState;
     extern void portal_telemetry_tick(void);
 
     ptc_occlusion_update();
     portal_telemetry_tick();
+    ptc_lightshow_update();
 
     if (s_pendingCommandReady) {
         s_pendingCommandReady = 0;
@@ -2549,6 +2637,10 @@ void ptc_chain_hud_text(void) {
     /* Momentum demo: label the drop and the launch even though it is not part
      * of the cinematic chain (this is the playable proof that portals preserve
      * velocity). */
+    if (s_showOn) {
+        print_caption(SCREEN_WIDTH / 2, 168, "LIGHT LOOP");
+        return;
+    }
     if (s_testMode == 1 && s_testActive
         && s_phase >= PTC_PHASE_MOM_DROP && s_phase <= PTC_PHASE_MOM_FLY) {
         print_caption(SCREEN_WIDTH / 2, 168,
@@ -3671,6 +3763,53 @@ static void ptc_apply_command(const char *action) {
         ptc_calibrate_start();
     } else if (strcmp(action, "momentum") == 0 || strcmp(action, "launch") == 0) {
         ptc_momentum_start();
+    } else if (strcmp(action, "lightshow") == 0 || strcmp(action, "lensorbit") == 0) {
+        extern void gfx_opengl_light_count(int count);
+        extern void gfx_opengl_light_shadows(int on);
+        extern void gfx_opengl_ssfx_set(int which, int value);
+        extern void custom_camera_apply_mode(int mode);
+        extern void custom_camera_set_freelook(int on, const Vec3f pos, const Vec3f focus);
+        struct MarioState *sm = gMarioState;
+
+        s_chainMode = CH_OFF;
+        s_testMode = 0;
+        s_showOn = 1;
+        s_showTimer = 0;
+        s_showStartMs = 0;
+        s_showFlipped = 0;
+        if (sm != NULL) {
+            sm->pos[0] = 0.0f;
+            sm->pos[1] = 0.0f;
+            sm->pos[2] = -1800.0f;
+            sm->vel[0] = sm->vel[1] = sm->vel[2] = 0.0f;
+            sm->forwardVel = 0.0f;
+            sm->faceAngle[1] = 0x0000;
+            set_mario_action(sm, ACT_IDLE, 0);
+            if (sm->marioObj != NULL) {
+                vec3f_copy(sm->marioObj->header.gfx.pos, sm->pos);
+            }
+            s_showCenter[0] = sm->pos[0];
+            s_showCenter[1] = sm->pos[1] + 80.0f;
+            s_showCenter[2] = sm->pos[2];
+        }
+        gfx_opengl_light_count(3);
+        gfx_opengl_light_shadows(1);
+        gfx_opengl_ssfx_set(105, 100);   /* intensity */
+        gfx_opengl_ssfx_set(104, 1);     /* light shadows */
+        gfx_opengl_ssfx_set(106, 3);
+        {
+            extern int gfx_stereo_in_scale_pct;
+            gfx_stereo_in_scale_pct = 100;
+        }
+        gfx_opengl_ssfx_set(100, 1);     /* motion blur on */
+        gfx_opengl_ssfx_set(101, 50);
+        gfx_opengl_ssfx_set(102, 6);
+        custom_camera_apply_mode(3);
+        custom_camera_set_freelook(1, (Vec3f){ 0.0f, 650.0f, -900.0f },
+                                   (Vec3f){ 0.0f, 90.0f, -1800.0f });
+        gfx_set_debug_note("LIGHT LOOP: 10 s orbit, counter-rotating camera, backflip @5 s");
+    } else if (strcmp(action, "lightshowstop") == 0) {
+        s_showOn = 0;
     } else if (strcmp(action, "lighttest") == 0) {
         /* Smoke test: two coloured lights around Mario, shadows on, motion
          * blur on, and a 3x3x3 probe grid with the reflective-sphere debug. */
@@ -3683,6 +3822,7 @@ static void ptc_apply_command(const char *action) {
                                             int vis);
         extern void gfx_opengl_ssfx_set(int which, int value);
         extern int gfx_opengl_light_state(int which);
+        extern int gfx_stereo_in_scale_pct;
         struct MarioState *lm = gMarioState;
         float mx = lm ? lm->pos[0] : 0.0f;
         float my = lm ? lm->pos[1] : 0.0f;
@@ -3697,7 +3837,7 @@ static void ptc_apply_command(const char *action) {
         gfx_opengl_ssfx_set(105, 90);    /* intensity */
         gfx_opengl_ssfx_set(100, 1);     /* motion blur on */
         gfx_opengl_ssfx_set(101, 40);
-        gfx_opengl_ssfx_set(102, 8);
+        gfx_opengl_ssfx_set(102, 6);
         gfx_opengl_probe_config(mx, my + 250.0f, mz, 450, 3, 18, 16, 1);
         gfx_set_debug_note("LIGHT TEST: 2 lights + shadows + blur + 3x3x3 probes");
         printf("PTC lighttest lights=%d shadows=%d probes=%d\n",
@@ -4054,7 +4194,7 @@ void ptc_format_status(char *buf, int len) {
              "wall=%d ceil=%d ledge=%d "
              "coins=%d stars=%d save=%d before=%d/%d "
              "cal=%.1f,%.1f,%.1f ledge_reach=%.1f goomba=%d,%.1f,%.1f gmodel=%d "
-             "gobj=%d,0x%x,%d,%d annex=%d,%d,%d gun=%d,%d,%d tool=%d lgt=%d,%d,%d,%d,%d,%d,%d,%d "
+             "gobj=%d,0x%x,%d,%d annex=%d,%d,%d gun=%d,%d,%d tool=%d lgt=%d,%d,%d,%d,%d,%d,%d,%d show=%d,%d "
              "chain=%d,%d,0x%x,%d,%d cmode=%d loop=%d "
              "face=%.1f,%.1f,%.1f anim=%d mh=%.1f remap=%d cdbg=%d,%d,%d,%d,%d walk=%d,%d,%d "
              "mpw=%d,%d,%d,%d,%d,%d,%d fc=%d,%d,%d,%d cg=%d,%.0f,%.0f,%.0f,0x%x",
@@ -4096,6 +4236,7 @@ void ptc_format_status(char *buf, int len) {
              gfx_opengl_light_state(2), gfx_opengl_light_state(3),
              gfx_opengl_light_state(4), gfx_opengl_light_state(5),
              gfx_opengl_light_state(6), gfx_opengl_light_state(7),
+             s_showOn, s_showTimer % 600,
              s_chainMode, s_chainTimer, s_chainFlags,
              s_chainGoombaCross,
              boxphys_test_boxes_near(CH_BOX_X, 120.0f, CH_BOX_B_Z, 300.0f),

@@ -729,6 +729,13 @@ float gfx_dof_focus_auto = 800.0f;
 static int s_fx_dof_aperture = 100;   // percent
 static int s_fx_dof_maxblur = 12;     // pixels
 static int s_fx_dof_samples = 16;
+static int s_fx_bokeh_on = 0;
+static int s_fx_bokeh_aspect = 100;   /* percent width/height */
+static int s_fx_bokeh_blades = 6;
+static int s_fx_bokeh_rot = 0;
+static int s_fx_anamorphic = 100;     /* percent horizontal stretch */
+static int s_fx_bokeh_highlight = 100;
+static int s_fx_cat_eye = 0;
 
 static int s_fx_gi_on = 0;
 static int s_fx_gi_intensity = 100;   // percent
@@ -763,12 +770,17 @@ static float s_light_color[4][3] = {
 static float s_light_radius[4] = { 3200.0f, 2800.0f, 2400.0f, 2000.0f };
 static int s_probe_vis = 0;
 static float s_probe_center[3] = { 0.0f, 700.0f, -2800.0f };
+static float s_probe_pos_u[8][3];
+static float s_probe_col_u[8][3];
 static int s_probe_spacing = 700;
 static int s_probe_dim = 3;
 static int s_probe_radius = 55;
 static int s_probe_res = 16;
 static float s_fx_cur_vp[4][4];
 static float s_fx_prev_vp[4][4];
+static float s_prev_cam_inv[4][4];
+static float s_fx_cur_cam_inv[4][4];
+static int s_have_prev_cam_inv = 0;
 static int s_fx_have_prev = 0;
 static uint32_t s_fx_vp_frame = 0xFFFFFFFFu;
 
@@ -871,6 +883,7 @@ static const char *s_fx_fs =
     "uniform float uSSRTXFade;\n"
     "uniform mat4 uCurVP;\n"
     "uniform mat4 uPrevVP;\n"
+    "uniform mat4 uPrevCamInv;\n"
     "uniform float uMBOn;\n"
     "uniform float uMBStrength;\n"
     "uniform float uMBSamples;\n"
@@ -888,6 +901,16 @@ static const char *s_fx_fs =
     "uniform float uProbeDim;\n"
     "uniform float uProbeRadiusW;\n"
     "uniform float uProbeRes;\n"
+    "uniform vec3 uProbePos[8];\n"
+    "uniform vec3 uProbeCol[8];\n"
+    "uniform float uProbeCount;\n"
+    "uniform float uBokehOn;\n"
+    "uniform float uBokehAspect;\n"
+    "uniform float uBokehBlades;\n"
+    "uniform float uBokehRot;\n"
+    "uniform float uAnamorphic;\n"
+    "uniform float uBokehHighlight;\n"
+    "uniform float uCatEye;\n"
     "float unpackDepth(vec4 rgba) {\n"
     "  return dot(rgba, vec4(1.0, 1.0/255.0, 1.0/65025.0, 1.0/16581375.0));\n"
     "}\n"
@@ -960,6 +983,18 @@ static const char *s_fx_fs =
     "  vec3 d = pw - uCamInv[3].xyz;\n"
     "  mat3 R = mat3(uCamInv);\n"
     "  return vec3(dot(R[0], d), dot(R[1], d), dot(R[2], d));\n"
+    "}\n"    "vec3 worldToViewM(vec3 pw, mat4 M) {\n"
+    "  vec3 d = pw - M[3].xyz;\n"
+    "  mat3 R = mat3(M);\n"
+    "  return vec3(dot(R[0], d), dot(R[1], d), dot(R[2], d));\n"
+    "}\n"
+    "vec2 viewToNdc(vec3 pv) {\n"
+    "  float z = max(-pv.z, 1.0);\n"
+    "  vec2 ndc = vec2(pv.x / (z * uTanHalf * uAspect), pv.y / (z * uTanHalf));\n"
+    "  float ndcz = (uFar + uNear - 2.0 * uNear * uFar / z) / (uFar - uNear);\n"
+    "  ndc.x += uShear + uToe * ndcz;\n"
+    "  if (uFlipY > 0.5) ndc.y = -ndc.y;\n"
+    "  return ndc;\n"
     "}\n"
     "float lightVis(vec3 Pv, vec3 Lv) {\n"
     "  float dist = length(Lv);\n"
@@ -977,6 +1012,14 @@ static const char *s_fx_fs =
     "    if (rz > sd + 3.0) return 0.0;\n"
     "  }\n"
     "  return 1.0;\n"
+    "}\n"
+    "vec3 heatColour(float t) {\n"
+    "  t = clamp(t, 0.0, 1.0);\n"
+    "  vec3 c = mix(vec3(0.04, 0.10, 0.85), vec3(0.0, 0.85, 0.95), smoothstep(0.0, 0.30, t));\n"
+    "  c = mix(c, vec3(0.10, 0.95, 0.25), smoothstep(0.25, 0.55, t));\n"
+    "  c = mix(c, vec3(1.0, 0.85, 0.10), smoothstep(0.50, 0.80, t));\n"
+    "  c = mix(c, vec3(1.0, 0.15, 0.05), smoothstep(0.75, 1.0, t));\n"
+    "  return c;\n"
     "}\n"
     "vec3 probeEnv(vec3 dir, vec3 state) {\n"
     "  float up = dir.y * 0.5 + 0.5;\n"
@@ -1049,10 +1092,9 @@ static const char *s_fx_fs =
     "  vec3 Nw = normalize((uCamInv * vec4(N, 0.0)).xyz);\n"
     "  vec3 color = baseColor;\n"
     "  if (uMBOn > 0.5) {\n"
-    "    vec4 c0 = uCurVP * vec4(Pw, 1.0);\n"
-    "    vec4 p0 = uPrevVP * vec4(Pw, 1.0);\n"
-    "    if (c0.w > 0.001 && p0.w > 0.001) {\n"
-    "      vec2 v = (c0.xy / c0.w - p0.xy / p0.w) * 0.5;\n"
+    "    vec3 pvn = worldToViewM(Pw, uPrevCamInv);\n"
+    "    {\n"
+    "      vec2 v = (viewToNdc(worldToView(Pw)) - viewToNdc(pvn)) * 0.5;\n"
     "      float px = length(v * uRes);\n"
     "      if (px > 0.4) {\n"
     "        vec3 acc = baseColor;\n"
@@ -1126,24 +1168,36 @@ static const char *s_fx_fs =
     "    float coc = abs(z - uFocus) / max(z, 1.0);\n"
     "    cocPx = clamp(coc * (uAperture / 100.0) * 220.0, 0.0, uMaxBlur);\n"
     "    if (cocPx > 0.5) {\n"
-    "      vec3 acc = color;\n"
-    "      float ws = 1.0;\n"
+    "      vec3 acc = vec3(0.0);\n"
+    "      float ws = 0.0;\n"
     "      float ns = max(uDOFSamples, 1.0);\n"
+    "      float blades = max(uBokehBlades, 3.0);\n"
+    "      float segA = 6.2831853 / blades;\n"
+    "      float edge = smoothstep(0.15, 1.0, abs(vUV.x * 2.0 - 1.0));\n"
     "      for (int i = 0; i < 32; i++) {\n"
     "        if (float(i) >= ns) break;\n"
     "        float fi = (float(i) + 0.5) / ns;\n"
-    "        float ang = float(i) * 2.39996323;\n"
-    "        float rad = sqrt(fi) * cocPx;\n"
-    "        vec2 suv = vUV + vec2(cos(ang), sin(ang)) * rad / uRes;\n"
+    "        float ang = float(i) * 2.39996323 + radians(uBokehRot);\n"
+    "        vec2 p = vec2(cos(ang), sin(ang)) * sqrt(fi);\n"
+    "        if (uBokehOn > 0.5) {\n"
+    "          p.x *= (uBokehAspect / 100.0) * (uAnamorphic / 100.0);\n"
+    "          p.x *= 1.0 - (uCatEye / 100.0) * 0.65 * edge;\n"
+    "          float aa = mod(atan(p.y, p.x) + segA * 0.5, segA) - segA * 0.5;\n"
+    "          float rpoly = cos(segA * 0.5) / max(cos(aa), 0.001);\n"
+    "          if (length(p) > rpoly) continue;\n"
+    "        }\n"
+    "        vec2 suv = vUV + p * cocPx / uRes;\n"
     "        vec2 scuv = canvasUV(suv);\n"
     "        if (scuv.x < 0.0 || scuv.x > 1.0 || scuv.y < 0.0 || scuv.y > 1.0) continue;\n"
     "        vec3 sc = texture2D(uColor, suv).rgb;\n"
     "        float sz = linZ(texture2D(uDepth, suv).r);\n"
     "        float scoc = abs(sz - uFocus) / max(sz, 1.0) * (uAperture / 100.0) * 220.0;\n"
     "        float w = (sz < z - 1.0 && scoc < 1.0) ? 0.15 : 1.0;\n"
+    "        float lum = dot(sc, vec3(0.299, 0.587, 0.114));\n"
+    "        w *= 1.0 + (uBokehHighlight / 100.0) * lum * lum * 2.0;\n"
     "        acc += sc * w; ws += w;\n"
     "      }\n"
-    "      dofColor = acc / ws;\n"
+    "      dofColor = ws > 0.0 ? acc / ws : color;\n"
     "    }\n"
     "  }\n"
     "  vec3 gi = vec3(0.0);\n"
@@ -1178,7 +1232,32 @@ static const char *s_fx_fs =
     "  }\n"
     "  if (uShadowDebug > 1.5) gl_FragColor = vec4(vec3(unpackDepth(texture2D(uShadowMap, clamp(cuv, 0.0, 1.0)))), 1.0);\n"
     "  else if (uShadowDebug > 0.5) gl_FragColor = vec4(vec3(shadow), 1.0);\n"
-    "  else if (uDebug > 8.5) { vec4 c0 = uCurVP * vec4(Pw,1.0); vec4 p0 = uPrevVP * vec4(Pw,1.0); vec2 vv = (c0.xy/c0.w - p0.xy/p0.w) * 0.5; gl_FragColor = vec4(vec3(clamp(length(vv * uRes) / 60.0, 0.0, 1.0)), 1.0); }\n"
+    "  else if (uDebug > 8.5) {\n"
+    "    vec3 hc = vec3(0.0);\n"
+    "    for (int oy = -2; oy <= 2; oy++) {\n"
+    "      for (int ox = -2; ox <= 2; ox++) {\n"
+    "        vec2 suv = vUV + vec2(float(ox), float(oy)) / uRes;\n"
+    "        vec2 scuv = canvasUV(suv);\n"
+    "        if (scuv.x < 0.0 || scuv.x > 1.0 || scuv.y < 0.0 || scuv.y > 1.0) continue;\n"
+    "        float sz = linZ(texture2D(uDepth, suv).r);\n"
+    "        vec3 Pn = viewPos(scuv, sz);\n"
+    "        vec3 Pwn = (uCamInv * vec4(Pn, 1.0)).xyz;\n"
+    "        vec3 pvn = worldToViewM(Pwn, uPrevCamInv);\n"
+    "        vec2 vv = (viewToNdc(Pn) - viewToNdc(pvn)) * 0.5;\n"
+    "        vec2 seg = vv * uRes;\n"
+    "        float segLen = length(seg);\n"
+    "        if (segLen < 1.0) continue;\n"
+    "        float tcol = sqrt(clamp(segLen / 120.0, 0.0, 1.0));\n"
+    "        if (segLen > 26.0) seg = seg * (26.0 / segLen);\n"
+    "        vec2 a = vec2(float(ox), float(oy));\n"
+    "        vec2 ab = seg;\n"
+    "        float tt = clamp(dot(-a, ab) / max(dot(ab, ab), 0.001), 0.0, 1.0);\n"
+    "        float dist = length(a + ab * tt);\n"
+    "        if (dist < 0.85) hc = max(hc, heatColour(tcol));\n"
+    "      }\n"
+    "    }\n"
+    "    gl_FragColor = vec4(hc, 1.0);\n"
+    "  }\n"
     "  else if (uDebug > 7.5) gl_FragColor = vec4(vec3(clamp(length(uLightPos[0] - Pw) / 3000.0, 0.0, 1.0)), 1.0);\n"
     "  else if (uDebug > 6.5) gl_FragColor = vec4(vec3(uProbeVis), 1.0);\n"
     "  else if (uDebug > 5.5) gl_FragColor = vec4(lightAcc, 1.0);\n"
@@ -1192,45 +1271,27 @@ static const char *s_fx_fs =
     "              + refl * mix(0.35, 1.0, ao);\n"
     "    outc += (lightAcc + specAcc * 0.6) * (uLightIntensity / 100.0);\n"
     "    if (uProbeVis > 0.5) {\n"
-    "      vec3 Vp = worldToView(Pw);\n"
-    "      int dim = int(uProbeDim + 0.5);\n"
-    "      if (dim < 1) dim = 1;\n"
-    "      if (dim > 4) dim = 4;\n"
     "      float worldR = max(uProbeRadiusW, 1.0);\n"
-    "      for (int ix = 0; ix < 4; ix++) {\n"
-    "        if (ix >= dim) break;\n"
-    "        for (int iy = 0; iy < 4; iy++) {\n"
-    "          if (iy >= dim) break;\n"
-    "          for (int iz = 0; iz < 4; iz++) {\n"
-    "            if (iz >= dim) break;\n"
-    "            vec3 pp = uProbeCenter + vec3(float(ix - dim / 2), float(iy), float(iz - dim / 2)) * uProbeSpacing;\n"
-    "            vec3 pv = worldToView(pp);\n"
-    "            if (pv.z > -1.0) continue;\n"
-    "            vec2 pcuv = viewToCanvas(pv);\n"
-    "            vec2 puv = eyeUVfromCanvas(pcuv);\n"
-    "            vec2 dpx = (puv - vUV) * uRes;\n"
-    "            float rpx = worldR * (uRes.y * 0.5 / uTanHalf) / max(-pv.z, 1.0);\n"
-    "            if (rpx < 2.0) continue;\n"
-    "            float r2 = dot(dpx, dpx) / (rpx * rpx);\n"
-    "            if (r2 > 1.0) continue;\n"
-    "            vec3 n = normalize(vec3(dpx / rpx, sqrt(max(1.0 - r2, 0.0))));\n"
-    "            vec3 viewDir = normalize(Pw - pp);\n"
-    "            vec3 reflDir = reflect(viewDir, n);\n"
-    "            vec3 state = vec3(0.02);\n"
-    "            for (int li = 0; li < 4; li++) {\n"
-    "              if (float(li) >= uLightCount) break;\n"
-    "              vec3 Ld = uLightPos[li] - pp;\n"
-    "              float dd = length(Ld);\n"
-    "              if (dd > uLightRadius[li]) continue;\n"
-    "              float aa = 1.0 - dd / max(uLightRadius[li], 1.0);\n"
-    "              state += uLightColor[li] * aa * aa;\n"
-    "            }\n"
-    "            vec3 env = probeEnv(reflDir, state);\n"
-    "            float fres = 0.15 + 0.85 * pow(1.0 - clamp(dot(-viewDir, n), 0.0, 1.0), 3.0);\n"
-    "            float spec = pow(max(dot(reflect(-viewDir, n), normalize(vec3(0.4, 0.8, 0.3))), 0.0), 8.0 + max(uProbeRes, 1.0) * 3.0);\n"
-    "            outc = mix(outc, env * fres + spec * 1.5 + state * 0.2, 0.92);\n"
-    "          }\n"
-    "        }\n"
+    "      for (int pi = 0; pi < 8; pi++) {\n"
+    "        if (float(pi) >= uProbeCount) break;\n"
+    "        vec3 pp = uProbePos[pi];\n"
+    "        vec3 state = uProbeCol[pi];\n"
+    "        vec3 pv = worldToView(pp);\n"
+    "        if (pv.z > -1.0) continue;\n"
+    "        vec2 pcuv = viewToCanvas(pv);\n"
+    "        vec2 puv = eyeUVfromCanvas(pcuv);\n"
+    "        vec2 dpx = (puv - vUV) * uRes;\n"
+    "        float rpx = worldR * (uRes.y * 0.5 / uTanHalf) / max(-pv.z, 1.0);\n"
+    "        if (rpx < 2.0) continue;\n"
+    "        float r2 = dot(dpx, dpx) / (rpx * rpx);\n"
+    "        if (r2 > 1.0) continue;\n"
+    "        vec3 n = normalize(vec3(dpx / rpx, sqrt(max(1.0 - r2, 0.0))));\n"
+    "        vec3 viewDir = normalize(Pw - pp);\n"
+    "        vec3 reflDir = reflect(viewDir, n);\n"
+    "        vec3 env = probeEnv(reflDir, state);\n"
+    "        float fres = 0.15 + 0.85 * pow(1.0 - clamp(dot(-viewDir, n), 0.0, 1.0), 3.0);\n"
+    "        float spec = pow(max(dot(reflect(-viewDir, n), normalize(vec3(0.4, 0.8, 0.3))), 0.0), 8.0 + max(uProbeRes, 1.0) * 3.0);\n"
+    "        outc = mix(outc, env * fres + spec * 1.5 + state * 0.2, 0.92);\n"
     "      }\n"
     "    }\n"
     "    gl_FragColor = vec4(outc, 1.0);\n"
@@ -1249,10 +1310,12 @@ static struct {
     GLint shadow_softness, shadow_taps, shadow_debug;
     GLint ssrtx_on, ssrtx_intensity, ssrtx_dist, ssrtx_steps;
     GLint ssrtx_rays, ssrtx_thick, ssrtx_rough, ssrtx_fade;
-    GLint mb_on, mb_strength, mb_samples, cur_vp, prev_vp;
+    GLint mb_on, mb_strength, mb_samples, cur_vp, prev_vp, prev_cam_inv;
     GLint light_count, light_pos, light_pos_view, light_color, light_radius;
     GLint light_intensity, light_shadows, light_shadow_steps;
     GLint probe_vis, probe_center, probe_spacing, probe_dim, probe_radius, probe_res;
+    GLint bokeh_on, bokeh_aspect, bokeh_blades, bokeh_rot, anamorphic, bokeh_highlight, cat_eye;
+    GLint probe_pos, probe_col, probe_count;
 } s_fx_u;
 
 static GLuint s_fx_prog = 0;
@@ -1332,6 +1395,14 @@ void gfx_opengl_ssfx_set(int which, int value) {
         case 112: s_probe_dim = value < 1 ? 1 : (value > 4 ? 4 : value); break;
         case 113: s_probe_radius = value < 5 ? 5 : (value > 400 ? 400 : value); break;
         case 114: s_probe_res = value < 2 ? 2 : (value > 64 ? 64 : value); break;
+        /* Lens bokeh kernel. */
+        case 160: s_fx_bokeh_on = value ? 1 : 0; break;
+        case 161: s_fx_bokeh_aspect = value < 25 ? 25 : (value > 400 ? 400 : value); break;
+        case 162: s_fx_bokeh_blades = value < 3 ? 3 : (value > 12 ? 12 : value); break;
+        case 163: s_fx_bokeh_rot = value < 0 ? 0 : (value > 359 ? 359 : value); break;
+        case 164: s_fx_anamorphic = value < 50 ? 50 : (value > 400 ? 400 : value); break;
+        case 165: s_fx_bokeh_highlight = value < 0 ? 0 : (value > 300 ? 300 : value); break;
+        case 166: s_fx_cat_eye = value < 0 ? 0 : (value > 100 ? 100 : value); break;
         /* Per-light colour + radius: 120 + i*4 (R,G,B,radius). */
         case 120: case 121: case 122: case 123:
         case 124: case 125: case 126: case 127:
@@ -1410,6 +1481,13 @@ int gfx_opengl_ssfx_get(int which) {
         case 112: return s_probe_dim;
         case 113: return s_probe_radius;
         case 114: return s_probe_res;
+        case 160: return s_fx_bokeh_on;
+        case 161: return s_fx_bokeh_aspect;
+        case 162: return s_fx_bokeh_blades;
+        case 163: return s_fx_bokeh_rot;
+        case 164: return s_fx_anamorphic;
+        case 165: return s_fx_bokeh_highlight;
+        case 166: return s_fx_cat_eye;
     }
     return -1;
 }
@@ -1519,6 +1597,7 @@ static void stereo_fx_init(void) {
     s_fx_u.mb_samples = glGetUniformLocation(s_fx_prog, "uMBSamples");
     s_fx_u.cur_vp = glGetUniformLocation(s_fx_prog, "uCurVP");
     s_fx_u.prev_vp = glGetUniformLocation(s_fx_prog, "uPrevVP");
+    s_fx_u.prev_cam_inv = glGetUniformLocation(s_fx_prog, "uPrevCamInv");
     s_fx_u.light_count = glGetUniformLocation(s_fx_prog, "uLightCount");
     s_fx_u.light_pos = glGetUniformLocation(s_fx_prog, "uLightPos[0]");
     s_fx_u.light_pos_view = glGetUniformLocation(s_fx_prog, "uLightPosView[0]");
@@ -1533,6 +1612,16 @@ static void stereo_fx_init(void) {
     s_fx_u.probe_dim = glGetUniformLocation(s_fx_prog, "uProbeDim");
     s_fx_u.probe_radius = glGetUniformLocation(s_fx_prog, "uProbeRadiusW");
     s_fx_u.probe_res = glGetUniformLocation(s_fx_prog, "uProbeRes");
+    s_fx_u.probe_pos = glGetUniformLocation(s_fx_prog, "uProbePos[0]");
+    s_fx_u.probe_col = glGetUniformLocation(s_fx_prog, "uProbeCol[0]");
+    s_fx_u.probe_count = glGetUniformLocation(s_fx_prog, "uProbeCount");
+    s_fx_u.bokeh_on = glGetUniformLocation(s_fx_prog, "uBokehOn");
+    s_fx_u.bokeh_aspect = glGetUniformLocation(s_fx_prog, "uBokehAspect");
+    s_fx_u.bokeh_blades = glGetUniformLocation(s_fx_prog, "uBokehBlades");
+    s_fx_u.bokeh_rot = glGetUniformLocation(s_fx_prog, "uBokehRot");
+    s_fx_u.anamorphic = glGetUniformLocation(s_fx_prog, "uAnamorphic");
+    s_fx_u.bokeh_highlight = glGetUniformLocation(s_fx_prog, "uBokehHighlight");
+    s_fx_u.cat_eye = glGetUniformLocation(s_fx_prog, "uCatEye");
     __android_log_print(ANDROID_LOG_INFO, "SM64FX",
         "new uniforms: mb=%d lc=%d pv=%d psp=%d",
         s_fx_u.mb_on, s_fx_u.light_count, s_fx_u.probe_vis, s_fx_u.probe_spacing);
@@ -1844,10 +1933,21 @@ static int stereo_fx_pass(void) {
                 s_fx_have_prev = 1;
             }
             memcpy(s_fx_cur_vp, vp, sizeof(vp));
+            /* Same one-per-frame guard for the camera matrix used by motion
+             * blur; updating it per pass would erase the velocity. */
+            if (!s_have_prev_cam_inv) {
+                memcpy(s_fx_cur_cam_inv, gfx_cam_inv_mtx, sizeof(s_fx_cur_cam_inv));
+                memcpy(s_prev_cam_inv, s_fx_cur_cam_inv, sizeof(s_prev_cam_inv));
+                s_have_prev_cam_inv = 1;
+            } else {
+                memcpy(s_prev_cam_inv, s_fx_cur_cam_inv, sizeof(s_prev_cam_inv));
+                memcpy(s_fx_cur_cam_inv, gfx_cam_inv_mtx, sizeof(s_fx_cur_cam_inv));
+            }
             s_fx_vp_frame = frame_count;
         }
         upload_mat4_rowvec(s_fx_u.cur_vp, s_fx_cur_vp);
         upload_mat4_rowvec(s_fx_u.prev_vp, s_fx_prev_vp);
+        upload_mat4_rowvec(s_fx_u.prev_cam_inv, s_prev_cam_inv);
         (void) camPos;
 
         /* world-space lights -> view space for the screen-space shadow march */
@@ -1877,6 +1977,51 @@ static int stereo_fx_pass(void) {
         glUniform1f(s_fx_u.probe_dim, (float)s_probe_dim);
         glUniform1f(s_fx_u.probe_radius, (float)s_probe_radius);
         glUniform1f(s_fx_u.probe_res, (float)s_probe_res);
+        {
+            int dim = s_probe_dim < 1 ? 1 : (s_probe_dim > 2 ? 2 : s_probe_dim);
+            int pn = 0;
+            for (int ix = 0; ix < dim; ix++) {
+                for (int iy = 0; iy < dim; iy++) {
+                    for (int iz = 0; iz < dim; iz++) {
+                        float px = s_probe_center[0] + (float)(ix - dim / 2) * s_probe_spacing;
+                        float py = s_probe_center[1] + (float)iy * s_probe_spacing;
+                        float pz = s_probe_center[2] + (float)(iz - dim / 2) * s_probe_spacing;
+                        float cr = 0.02f, cg = 0.02f, cb = 0.02f;
+                        for (int li = 0; li < s_light_count; li++) {
+                            float dx = s_light_pos[li][0] - px;
+                            float dy = s_light_pos[li][1] - py;
+                            float dz = s_light_pos[li][2] - pz;
+                            float dd = sqrtf(dx * dx + dy * dy + dz * dz);
+                            if (dd >= s_light_radius[li]) continue;
+                            float aa = 1.0f - dd / s_light_radius[li];
+                            aa *= aa;
+                            cr += s_light_color[li][0] * aa;
+                            cg += s_light_color[li][1] * aa;
+                            cb += s_light_color[li][2] * aa;
+                        }
+                        if (pn < 8) {
+                            s_probe_pos_u[pn][0] = px;
+                            s_probe_pos_u[pn][1] = py;
+                            s_probe_pos_u[pn][2] = pz;
+                            s_probe_col_u[pn][0] = cr;
+                            s_probe_col_u[pn][1] = cg;
+                            s_probe_col_u[pn][2] = cb;
+                            pn++;
+                        }
+                    }
+                }
+            }
+            glUniform3fv(s_fx_u.probe_pos, 8, &s_probe_pos_u[0][0]);
+            glUniform3fv(s_fx_u.probe_col, 8, &s_probe_col_u[0][0]);
+            glUniform1f(s_fx_u.probe_count, (float)pn);
+        }
+        glUniform1f(s_fx_u.bokeh_on, s_fx_bokeh_on ? 1.0f : 0.0f);
+        glUniform1f(s_fx_u.bokeh_aspect, (float)s_fx_bokeh_aspect);
+        glUniform1f(s_fx_u.bokeh_blades, (float)s_fx_bokeh_blades);
+        glUniform1f(s_fx_u.bokeh_rot, (float)s_fx_bokeh_rot);
+        glUniform1f(s_fx_u.anamorphic, (float)s_fx_anamorphic);
+        glUniform1f(s_fx_u.bokeh_highlight, (float)s_fx_bokeh_highlight);
+        glUniform1f(s_fx_u.cat_eye, (float)s_fx_cat_eye);
     }
     glUniform1f(s_fx_u.ssrtx_on, s_fx_ssrtx_on ? 1.0f : 0.0f);
     glUniform1f(s_fx_u.ssrtx_intensity, (float)s_fx_ssrtx_intensity);
