@@ -1047,9 +1047,13 @@ static void gfx_portal_apply_near_plane(float p[4][4]) {
 
     /* Keep side = behind the portal (opposite its room-facing normal).  The
      * 2-unit push keeps the wall itself off the plane. */
-    nw[0] = -vs->normal[0];
-    nw[1] = -vs->normal[1];
-    nw[2] = -vs->normal[2];
+    {
+        extern int g_ptc_relay_flip;
+        float sgn = g_ptc_relay_flip ? 1.0f : -1.0f;
+        nw[0] = sgn * vs->normal[0];
+        nw[1] = sgn * vs->normal[1];
+        nw[2] = sgn * vs->normal[2];
+    }
     dw = -(nw[0] * vs->center[0] + nw[1] * vs->center[1] + nw[2] * vs->center[2]) - 2.0f;
 
     /* Plane world -> eye (W = view^-1, affine). */

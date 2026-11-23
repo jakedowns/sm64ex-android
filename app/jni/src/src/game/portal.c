@@ -68,6 +68,9 @@ static int s_lastPlaced = 1;
 int g_portal_debug = 0;
 /* Depth limit for the screen-space relay recursion (0 = off). */
 int g_ptc_portal_recursion = 2;
+/* Diagnostic: flip the relay near-plane side (0 keeps the space behind the
+ * portal, 1 keeps the room side). */
+int g_ptc_relay_flip = 0;
 int g_portal_debug_align = 0;   /* magenta source fan behind the relay decal */
 int g_portal_debug_color = 0;   /* solid relay colour: isolate geometry/UVs */
 PortalViewState g_portal_view;

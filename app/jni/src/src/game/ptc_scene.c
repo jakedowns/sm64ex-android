@@ -41,7 +41,8 @@ int   g_ptc_select_facing = 1;
 
 extern int g_portal_debug_color;      /* solid relay colour */
 extern int gfx_portal_debug_blit;
-extern int g_ptc_portal_recursion;     /* full-screen relay FBO */
+extern int g_ptc_portal_recursion;
+extern int g_ptc_relay_flip;     /* full-screen relay FBO */
 extern int g_portal_debug_align;      /* magenta source fan */
 extern int gfx_stereo_same_both;      /* 0 off, 1 = L, 2 = R */
 extern float g_pov_cam_dist;          /* portal POV test rig (ptc.c) */
@@ -100,6 +101,7 @@ static const PtcKnob s_knobs[] = {
     { "relay.solid",       1, &g_portal_debug_color },
     { "relay.blit",        1, &gfx_portal_debug_blit },
     { "relay.recursion",   1, &g_ptc_portal_recursion },
+    { "relay.flip",        1, &g_ptc_relay_flip },
     { "fan.src",           1, &g_portal_debug_align },
     { "select.maxdeg",     0, &g_ptc_select_maxdeg },
     { "select.facing",     1, &g_ptc_select_facing },
