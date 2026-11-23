@@ -15,7 +15,9 @@ blur and the debug heatmap.
    hits). Vertices are transformed on the CPU by the same `rsp.MP_matrix` the
    colour pass uses, so instead the Nth model-view load of a pass is matched
    with the Nth load of the previous pass (`s_vel_seq`), with a 1-2 frame
-   window and a velocity scale by the gap. Measured hit rate: 98-99%.
+   window and a velocity scale by the gap, plus a translation sanity check
+   (more than 6000 units apart is treated as a despawn/spawn, not motion).
+   Measured hit rate: 98-99%.
    `s_vel_prev_mp = prev_modelview * prev_projection` and the per-vertex
    velocity is `0.5 * (prevNdc - curNdc)`.
 3. **Target** (`gfx_opengl.c`) — RGBA8 at the eye canvas divided by the
@@ -27,7 +29,9 @@ blur and the debug heatmap.
    camera reprojection. The vector is clamped (`Velocity clamp px`), scaled by
    `Shutter deg` and strength, and sampled in `Sub-steps` taps with optional
    per-pixel jitter. Taps whose depth differs by more than `Depth reject %`
-   are rejected so foreground/background do not bleed.
+   are rejected so foreground/background do not bleed. The kernel is also
+   bounded by a tile-max texture (8x8 max velocity, 3x3 neighbourhood), so one
+   fast pixel cannot smear the whole screen.
 5. **Heatmap** (view 9) — colour from the same buffer, with `Heat style`
    (0 magnitude, 1 direction hue, 2 one-pixel segments) and `Vector heat
    gain`.
@@ -64,11 +68,12 @@ blur is on or the heatmap view is selected.
 
 ## Limitations / next steps
 
-- Rigid object motion only: the previous modelview is matched per draw; limb
-  animation comes from the vertex data itself, which SM64 rebuilds per frame,
-  so it is not captured. Deformation vectors would need previous vertex
-  positions (double-buffered Vtx) or a depth-reprojection hybrid.
-- Tile-max / neighbour-max (McGuire 2012) is not implemented yet; the kernel
-  is bounded by the clamp dial instead.
+- Rigid object motion only: the previous modelview is matched per draw. SM64
+  gives each limb its own node matrix, so limb rotation is captured; vertex
+  morphs inside a single node are not. Deformation vectors would need previous
+  vertex positions (double-buffered Vtx) or a depth-reprojection hybrid.
+- Tile-max / neighbour-max is an 8x8 tile pass + 3x3 neighbourhood; a full
+  McGuire implementation would also reconstruct scattering, not just bound the
+  kernel.
 - The velocity target is RGBA8 packed; RG16F would be simpler if
   `EXT_color_buffer_half_float` is confirmed on the driver.

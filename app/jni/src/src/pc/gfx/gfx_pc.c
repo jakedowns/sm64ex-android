@@ -511,10 +511,17 @@ static void gfx_vel_store(unsigned seq, const float mv[4][4]) {
  * report the gap so the vertex code can scale the velocity. */
 static int s_vel_gap = 1;
 
-static int gfx_vel_lookup(unsigned seq, float out[4][4]) {
+static int gfx_vel_lookup(unsigned seq, const float cur[4][4], float out[4][4]) {
     if (seq >= GFX_VEL_CACHE) return 0;
     int gap = (int)(s_vel_frame - s_vel_cache[seq].stamp);
     if (gap < 1 || gap > 2) return 0;
+    /* Sequence matching assumes a stable draw order. If an object spawned or
+     * despawned, the slots shift: reject pairs whose translation jumped, so a
+     * stray projectile does not streak across the whole screen. */
+    float dx = s_vel_cache[seq].mv[3][0] - cur[3][0];
+    float dy = s_vel_cache[seq].mv[3][1] - cur[3][1];
+    float dz = s_vel_cache[seq].mv[3][2] - cur[3][2];
+    if (dx * dx + dy * dy + dz * dz > 6000.0f * 6000.0f) return 0;
     memcpy(out, s_vel_cache[seq].mv, sizeof(s_vel_cache[seq].mv));
     s_vel_gap = gap;
     return 1;
@@ -1357,7 +1364,8 @@ static void gfx_sp_matrix(uint8_t parameters, const int32_t *addr) {
                 s_vel_prev_mp_valid = 0;
                 if (s_vel_pass) {
                     s_vel_lookups++;
-                    if (s_vel_prev_proj_valid && gfx_vel_lookup(s_vel_seq, prev_mv)) {
+                    if (s_vel_prev_proj_valid
+                        && gfx_vel_lookup(s_vel_seq, matrix, prev_mv)) {
                         s_vel_hits++;
                         gfx_matrix_mul(s_vel_prev_mp, prev_mv, s_vel_prev_proj);
                         s_vel_prev_mp_valid = 1;

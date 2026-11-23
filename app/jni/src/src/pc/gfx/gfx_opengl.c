@@ -937,6 +937,9 @@ static const char *s_fx_fs =
     "uniform float uMBDepthReject;\n"
     "uniform float uMBClampPx;\n"
     "uniform float uVecStyle;\n"
+    "uniform sampler2D uVelMax;\n"
+    "uniform float uVelMaxOn;\n"
+    "uniform vec2 uVelMaxGrid;\n"
     "uniform float uLightCount;\n"
     "uniform vec3 uLightPos[4];\n"
     "uniform vec3 uLightPosView[4];\n"
@@ -1190,6 +1193,20 @@ static const char *s_fx_fs =
     "    mvPx = (viewToNdc(worldToView(Pw)) - viewToNdc(pvn)) * 0.5 * uRes;\n"
     "  }\n"
     "  float mvLen = length(mvPx);\n"
+    "  if (uVelMaxOn > 0.5) {\n"
+    "    vec2 base = floor(vUV * uVelMaxGrid);\n"
+    "    float bound = 0.0;\n"
+    "    for (int oy = -1; oy <= 1; oy++) {\n"
+    "      for (int ox = -1; ox <= 1; ox++) {\n"
+    "        vec2 tc = clamp(base + vec2(float(ox), float(oy)), vec2(0.0),\n"
+    "                        uVelMaxGrid - 1.0) + 0.5;\n"
+    "        bound = max(bound, texture2D(uVelMax, tc / uVelMaxGrid).r);\n"
+    "      }\n"
+    "    }\n"
+    "    float boundPx = bound * max(uRes.x, uRes.y);\n"
+    "    if (mvLen > boundPx) mvPx *= max(boundPx, 1.0) / max(mvLen, 0.001);\n"
+    "  }\n"
+    "  mvLen = length(mvPx);\n"
     "  if (mvLen > uMBClampPx) mvPx *= uMBClampPx / mvLen;\n"
     "  if (uMBOn > 0.5) {\n"
     "    vec2 v = mvPx / uRes;\n"
@@ -1414,6 +1431,7 @@ static struct {
     GLint ssrtx_rays, ssrtx_thick, ssrtx_rough, ssrtx_fade;
     GLint mb_on, mb_strength, mb_samples, cur_vp, prev_vp, prev_cam_inv;
     GLint velocity, vel_on, mb_shutter, mb_substeps, mb_maxpx, mb_jitter;
+    GLint vel_max, vel_max_on, vel_max_grid;
     GLint mb_depth_reject, mb_clamp_px, vec_style;
     GLint light_count, light_pos, light_pos_view, light_color, light_radius;
     GLint light_intensity, light_shadows, light_shadow_steps;
@@ -1780,6 +1798,9 @@ static void stereo_fx_init(void) {
     s_fx_u.mb_depth_reject = glGetUniformLocation(s_fx_prog, "uMBDepthReject");
     s_fx_u.mb_clamp_px = glGetUniformLocation(s_fx_prog, "uMBClampPx");
     s_fx_u.vec_style = glGetUniformLocation(s_fx_prog, "uVecStyle");
+    s_fx_u.vel_max = glGetUniformLocation(s_fx_prog, "uVelMax");
+    s_fx_u.vel_max_on = glGetUniformLocation(s_fx_prog, "uVelMaxOn");
+    s_fx_u.vel_max_grid = glGetUniformLocation(s_fx_prog, "uVelMaxGrid");
     s_fx_u.cur_vp = glGetUniformLocation(s_fx_prog, "uCurVP");
     s_fx_u.prev_vp = glGetUniformLocation(s_fx_prog, "uPrevVP");
     s_fx_u.prev_cam_inv = glGetUniformLocation(s_fx_prog, "uPrevCamInv");
@@ -2154,6 +2175,8 @@ int gfx_opengl_velocity_begin(int w, int h, int divisor) {
     return 1;
 }
 
+static void velocity_tilemax(void);
+
 void gfx_opengl_velocity_end(void) {
     if (s_vel_apos >= 0) glDisableVertexAttribArray(s_vel_apos);
     if (s_vel_avel >= 0) glDisableVertexAttribArray(s_vel_avel);
@@ -2161,6 +2184,7 @@ void gfx_opengl_velocity_end(void) {
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     s_vel_rendering = 0;
     s_vel_tex_valid = 1;
+    velocity_tilemax();
 }
 
 void gfx_opengl_draw_velocity(float buf[], size_t len, size_t tris) {
@@ -2179,6 +2203,139 @@ void gfx_opengl_draw_velocity(float buf[], size_t len, size_t tris) {
                               6 * sizeof(float), (void *)(4 * sizeof(float)));
     }
     glDrawArrays(GL_TRIANGLES, 0, (GLsizei)(3 * tris));
+}
+
+/* Tile-max: reduce the velocity target to max |v| per 8x8 block. The blur
+ * then bounds its kernel by the 3x3 neighbourhood (McGuire 2012), so one fast
+ * pixel cannot smear the whole screen. */
+static GLuint s_vmax_fbo, s_vmax_tex, s_vmax_prog;
+static int s_vmax_prog_state, s_vmax_w, s_vmax_h;
+static GLint s_vmax_apos = -1, s_vmax_vel = -1, s_vmax_texel = -1, s_vmax_grid = -1;
+static int s_vmax_valid;
+
+static const char *s_vmax_vs =
+    "attribute vec2 aPos;\n"
+    "varying vec2 vUV;\n"
+    "void main(){ vUV = aPos * 0.5 + 0.5; gl_Position = vec4(aPos, 0.0, 1.0); }\n";
+
+static const char *s_vmax_fs =
+#ifdef USE_GLES
+    "precision highp float;\n"
+#endif
+    "uniform sampler2D uVel;\n"
+    "uniform vec2 uTexel;\n"
+    "uniform vec2 uGrid;\n"
+    "varying vec2 vUV;\n"
+    "void main(){\n"
+    "  vec2 org = floor(vUV * uGrid) * 8.0;\n"
+    "  float m = 0.0;\n"
+    "  for (int y = 0; y < 8; y++) {\n"
+    "    for (int x = 0; x < 8; x++) {\n"
+    "      vec4 e = texture2D(uVel, (org + vec2(float(x) + 0.5, float(y) + 0.5)) * uTexel);\n"
+    "      vec2 v = vec2(e.r * 255.0 * 256.0 + e.g * 255.0,\n"
+    "                    e.b * 255.0 * 256.0 + e.a * 255.0) / 65535.0;\n"
+    "      m = max(m, length(v * 2.0 - 1.0));\n"
+    "    }\n"
+    "  }\n"
+    "  gl_FragColor = vec4(m, 0.0, 0.0, 1.0);\n"
+    "}\n";
+
+static int vmax_ensure_program(void) {
+    if (s_vmax_prog_state != 0) return s_vmax_prog_state == 1;
+    GLuint vs = compile_shader_checked(GL_VERTEX_SHADER, s_vmax_vs, "vmax vertex");
+    GLuint fs = compile_shader_checked(GL_FRAGMENT_SHADER, s_vmax_fs, "vmax fragment");
+    if (!vs || !fs) {
+        s_vmax_prog_state = -1;
+        if (vs) glDeleteShader(vs);
+        if (fs) glDeleteShader(fs);
+        return 0;
+    }
+    s_vmax_prog = glCreateProgram();
+    glAttachShader(s_vmax_prog, vs);
+    glAttachShader(s_vmax_prog, fs);
+    glLinkProgram(s_vmax_prog);
+    GLint ok = 0;
+    glGetProgramiv(s_vmax_prog, GL_LINK_STATUS, &ok);
+    glDeleteShader(vs);
+    glDeleteShader(fs);
+    if (!ok) {
+        s_vmax_prog_state = -1;
+        glDeleteProgram(s_vmax_prog);
+        s_vmax_prog = 0;
+        return 0;
+    }
+    s_vmax_apos = glGetAttribLocation(s_vmax_prog, "aPos");
+    s_vmax_vel = glGetUniformLocation(s_vmax_prog, "uVel");
+    s_vmax_texel = glGetUniformLocation(s_vmax_prog, "uTexel");
+    s_vmax_grid = glGetUniformLocation(s_vmax_prog, "uGrid");
+    s_vmax_prog_state = 1;
+    return 1;
+}
+
+static int vmax_ensure_fbo(int w, int h) {
+    if (w < 1) w = 1;
+    if (h < 1) h = 1;
+    if (w == s_vmax_w && h == s_vmax_h && s_vmax_fbo != 0) return 1;
+    if (s_vmax_fbo) glDeleteFramebuffers(1, &s_vmax_fbo);
+    if (s_vmax_tex) glDeleteTextures(1, &s_vmax_tex);
+    s_vmax_fbo = s_vmax_tex = 0;
+
+    glGenTextures(1, &s_vmax_tex);
+    glBindTexture(GL_TEXTURE_2D, s_vmax_tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    glGenFramebuffers(1, &s_vmax_fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, s_vmax_fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, s_vmax_tex, 0);
+    GLenum st = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    s_vmax_w = w;
+    s_vmax_h = h;
+    s_vmax_valid = 0;
+    return st == GL_FRAMEBUFFER_COMPLETE;
+}
+
+static void velocity_tilemax(void) {
+    if (!s_vel_tex_valid || !s_vel_tex) return;
+    if (!vmax_ensure_program()) return;
+    int gw = s_vel_w / 8; if (gw < 1) gw = 1;
+    int gh = s_vel_h / 8; if (gh < 1) gh = 1;
+    if (!vmax_ensure_fbo(gw, gh)) return;
+
+    glActiveTexture(GL_TEXTURE4);
+    glBindTexture(GL_TEXTURE_2D, s_vel_tex);
+    glActiveTexture(GL_TEXTURE0);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, s_vmax_fbo);
+    glViewport(0, 0, gw, gh);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
+    glDisable(GL_SCISSOR_TEST);
+    glUseProgram(s_vmax_prog);
+    if (s_vmax_vel >= 0) glUniform1i(s_vmax_vel, 4);
+    if (s_vmax_texel >= 0)
+        glUniform2f(s_vmax_texel, 1.0f / (float)s_vel_w, 1.0f / (float)s_vel_h);
+    if (s_vmax_grid >= 0) glUniform2f(s_vmax_grid, (float)gw, (float)gh);
+
+    static const float quad[8] = { -1, -1, 1, -1, -1, 1, 1, 1 };
+    if (!opengl_vbo) glGenBuffers(1, &opengl_vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, opengl_vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(quad), quad, GL_STREAM_DRAW);
+    if (s_vmax_apos >= 0) {
+        glEnableVertexAttribArray(s_vmax_apos);
+        glVertexAttribPointer(s_vmax_apos, 2, GL_FLOAT, GL_FALSE,
+                              2 * sizeof(float), (void *)0);
+    }
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    if (s_vmax_apos >= 0) glDisableVertexAttribArray(s_vmax_apos);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glUseProgram(0);
+    s_vmax_valid = 1;
 }
 
 int gfx_opengl_velocity_wanted(void) {
@@ -2274,6 +2431,9 @@ static int stereo_fx_pass(void) {
     glActiveTexture(GL_TEXTURE3);
     glBindTexture(GL_TEXTURE_2D, (s_vel_tex_valid && s_vel_source) ? s_vel_tex : 0);
     if (s_fx_u.velocity >= 0) glUniform1i(s_fx_u.velocity, 3);
+    glActiveTexture(GL_TEXTURE4);
+    glBindTexture(GL_TEXTURE_2D, (s_vmax_valid && s_vel_source) ? s_vmax_tex : 0);
+    if (s_fx_u.vel_max >= 0) glUniform1i(s_fx_u.vel_max, 4);
     glActiveTexture(GL_TEXTURE0);
     glUniform1i(s_fx_u.shadow_map, 2);
     glUniform1f(s_fx_u.shadow_on, shadow_on ? 1.0f : 0.0f);
@@ -2342,6 +2502,12 @@ static int stereo_fx_pass(void) {
         glUniform1f(s_fx_u.mb_depth_reject, (float)s_mb_depth_reject);
         glUniform1f(s_fx_u.mb_clamp_px, (float)s_mb_clamp_px);
         glUniform1f(s_fx_u.vec_style, (float)s_vec_style);
+        glUniform1f(s_fx_u.vel_max_on,
+                    (s_vmax_valid && s_vel_tex_valid && s_vel_source && gfx_vel_enabled)
+                        ? 1.0f : 0.0f);
+        glUniform2f(s_fx_u.vel_max_grid,
+                    (float)(s_vel_w / 8 > 0 ? s_vel_w / 8 : 1),
+                    (float)(s_vel_h / 8 > 0 ? s_vel_h / 8 : 1));
         glUniform1f(s_fx_u.light_count, (float)s_light_count);
         glUniform3fv(s_fx_u.light_pos, 4, &s_light_pos[0][0]);
         glUniform3fv(s_fx_u.light_pos_view, 4, &pvpos[0][0]);
