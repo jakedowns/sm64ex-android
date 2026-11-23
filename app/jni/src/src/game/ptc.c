@@ -3339,7 +3339,11 @@ static void ptc_chain_update(void) {
                 Vec3f camPos, camFocus;
                 vec3f_copy(camPos, gLakituState.pos);
                 vec3f_copy(camFocus, gLakituState.focus);
-                portal_view_set(1);   /* show the relay window for the loop */
+                /* Keep the relay off here: the south-wall pair clips black in
+                 * the relay pass, so the flat coloured fans read better.  The
+                 * recursion overlay is validated on the west-wall pair
+                 * (marioportalwalkloop + relay.recursion). */
+                portal_view_set(0);
                 ptc_mpw_begin(aPos, bPos, aOrig, bOrig, start, 0x8000, 0);
                 {
                     extern int gfx_stereo_fov_pct;
