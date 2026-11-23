@@ -3122,12 +3122,21 @@ void camera_portal_teleport(int srcIdx, int dstIdx, const Vec3f marioAfter,
         camera_portal_blend_begin();
         return;
     }
+    /* Custom chase camera: keep its world pose and let its spring turn
+     * towards Mario over the next frames.  Remapping the rig around Mario in
+     * one frame produced a ~1200-unit / 115-degree snap. */
+    if (g_camera_portal_mode == 1 && gfx_cam_mode == 3) {
+        extern void custom_camera_portal_crossing(void);
+        sPortalCamRemap.pending = 0;
+        custom_camera_portal_crossing();
+        return;
+    }
     sPortalCamRemap.pending = 1;
     sPortalCamRemap.src = srcIdx;
     sPortalCamRemap.dst = dstIdx;
     sPortalCamRemap.oldFaceYaw = oldFaceYaw;
     vec3f_copy(sPortalCamRemap.comAfter, marioAfter);
-    /* The rendered camera from the frame that is about to be replaced. */
+    /* Rendered camera from the frame that is about to be replaced. */
     vec3f_copy(sPortalCamRemap.fromPos, gLakituState.pos);
     vec3f_copy(sPortalCamRemap.fromFocus, gLakituState.focus);
 }

@@ -42,7 +42,7 @@
 #define PORTAL_RY        120.0f    // ellipse half height (1.5x)
 #define PORTAL_SEGMENTS  24
 #define PORTAL_RAY_DIST  4000.0f   // hitscan length
-#define PORTAL_EXIT_PUSH 130.0f    // clear the entry trigger after exiting
+#define PORTAL_EXIT_PUSH 40.0f    // clear the surface without a visible pop
 #define PORTAL_ENTER_DIST 110.0f    // proximity needed to use a floor/ramp portal
 #define PORTAL_COOLDOWN  20        // ticks before the next teleport
 #define PORTAL_PICKUP_R  200.0f
@@ -96,6 +96,12 @@ static Vec3f s_lastEntryVel;
 static Vec3f s_lastExitVel;
 static float s_lastSpeedRatio = 1.0f;
 static float s_lastTurnDot = 1.0f;
+/* Transition telemetry: camera pose before the crossing and one camera update
+ * after it, so a snapping camera shows up as a numeric jump. */
+static Vec3f s_telCamIn, s_telCamOut, s_telFocusIn, s_telFocusOut;
+static float s_telCamJump, s_telCamAngle;
+static float s_telMarioResidual;   /* |actual exit - ideal mapped exit| */
+static int s_telPending;
 
 /* ------------------------------------------------------------------ math */
 
@@ -432,6 +438,9 @@ static void portal_teleport(int srcIdx, const Vec3f at) {
     Vec3f rel, newCom, vel, newVel;
     float height = gMarioState->marioObj != NULL ? gMarioState->marioObj->hitboxHeight : 160.0f;
 
+    vec3f_copy(s_telCamIn, gLakituState.pos);
+    vec3f_copy(s_telFocusIn, gLakituState.focus);
+
     rel[0] = at[0] - src->pos[0];
     rel[1] = at[1] - src->pos[1];
     rel[2] = at[2] - src->pos[2];
@@ -455,6 +464,17 @@ static void portal_teleport(int srcIdx, const Vec3f at) {
     newCom[0] = dst->pos[0] + dst->tan[0] * x + dst->bitan[0] * y + dst->normal[0] * PORTAL_EXIT_PUSH;
     newCom[1] = dst->pos[1] + dst->tan[1] * x + dst->bitan[1] * y + dst->normal[1] * PORTAL_EXIT_PUSH;
     newCom[2] = dst->pos[2] + dst->tan[2] * x + dst->bitan[2] * y + dst->normal[2] * PORTAL_EXIT_PUSH;
+    {
+        /* Ideal mapped COM (no surface push) for the transition telemetry. */
+        Vec3f ideal;
+        ideal[0] = dst->pos[0] + dst->tan[0] * x + dst->bitan[0] * y;
+        ideal[1] = dst->pos[1] + dst->tan[1] * x + dst->bitan[1] * y;
+        ideal[2] = dst->pos[2] + dst->tan[2] * x + dst->bitan[2] * y;
+        s_telMarioResidual = sqrtf(
+            (newCom[0] - ideal[0]) * (newCom[0] - ideal[0])
+          + (newCom[1] - ideal[1]) * (newCom[1] - ideal[1])
+          + (newCom[2] - ideal[2]) * (newCom[2] - ideal[2]));
+    }
 
     gMarioState->pos[0] = newCom[0];
     gMarioState->pos[1] = newCom[1] - height * 0.5f;
@@ -531,6 +551,7 @@ static void portal_teleport(int srcIdx, const Vec3f at) {
     s_lastTeleportSrc = srcIdx;
     s_lastTeleportDst = 1 - srcIdx;
     s_teleportCount++;
+    s_telPending = 1;
     play_sound(SOUND_MENU_CAMERA_ZOOM_IN, gDefaultSoundArgs);
 }
 
@@ -1447,4 +1468,54 @@ float portal_last_speed_ratio(void) {
 
 float portal_last_turn_dot(void) {
     return s_lastTurnDot;
+}
+
+/* Called once per simulation tick after the camera has updated, so the
+ * post-crossing camera pose includes the handoff/remap for that frame. */
+void portal_telemetry_tick(void) {
+    Vec3f a, b;
+    float la, lb, dot;
+
+    if (!s_telPending) {
+        return;
+    }
+    /* ptc_update runs before the camera update, so defer one tick: the sample
+     * must include the camera update that followed the crossing. */
+    if (s_telPending == 1) {
+        s_telPending = 2;
+        return;
+    }
+    s_telPending = 0;
+    vec3f_copy(s_telCamOut, gLakituState.pos);
+    vec3f_copy(s_telFocusOut, gLakituState.focus);
+
+    s_telCamJump = sqrtf((s_telCamOut[0] - s_telCamIn[0]) * (s_telCamOut[0] - s_telCamIn[0])
+                       + (s_telCamOut[1] - s_telCamIn[1]) * (s_telCamOut[1] - s_telCamIn[1])
+                       + (s_telCamOut[2] - s_telCamIn[2]) * (s_telCamOut[2] - s_telCamIn[2]));
+
+    a[0] = s_telCamIn[0] - s_telFocusIn[0];
+    a[1] = s_telCamIn[1] - s_telFocusIn[1];
+    a[2] = s_telCamIn[2] - s_telFocusIn[2];
+    b[0] = s_telCamOut[0] - s_telFocusOut[0];
+    b[1] = s_telCamOut[1] - s_telFocusOut[1];
+    b[2] = s_telCamOut[2] - s_telFocusOut[2];
+    la = sqrtf(vdot3(a, a));
+    lb = sqrtf(vdot3(b, b));
+    if (la > 1e-3f && lb > 1e-3f) {
+        dot = vdot3(a, b) / (la * lb);
+        if (dot > 1.0f) dot = 1.0f;
+        if (dot < -1.0f) dot = -1.0f;
+        s_telCamAngle = acosf(dot) * 180.0f / 3.14159265f;
+    } else {
+        s_telCamAngle = 0.0f;
+    }
+}
+
+void portal_last_camera_jump(float *dist, float *angleDeg) {
+    if (dist != NULL) *dist = s_telCamJump;
+    if (angleDeg != NULL) *angleDeg = s_telCamAngle;
+}
+
+float portal_last_mario_residual(void) {
+    return s_telMarioResidual;
 }

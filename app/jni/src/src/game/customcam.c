@@ -148,6 +148,13 @@ void first_person_camera_update(struct Camera *c) {
 /* Debug freelook: pin the camera to an explicit position/focus so tests can
  * frame a portal exactly and nothing lerps it away. */
 static int s_freelook;
+/* Frames after a portal crossing: use a softer spring so the chase camera
+ * catches up over ~0.3 s instead of taking one large step. */
+static int s_crossFrames;
+
+void custom_camera_portal_crossing(void) {
+    s_crossFrames = 10;
+}
 static Vec3f s_flPos;
 static Vec3f s_flFocus;
 
@@ -377,6 +384,12 @@ void custom_camera_update(struct Camera *c) {
     Vec3f target, desired, rayHit, dir;
     struct Surface *surf = NULL;
     s16 inX = 0, inY = 0;
+    float camK = 0.35f;
+
+    if (s_crossFrames > 0) {
+        camK = 0.12f;
+        s_crossFrames--;
+    }
 
     if (gMarioState == NULL) {
         return;
@@ -497,9 +510,9 @@ void custom_camera_update(struct Camera *c) {
     if (gfx_cam_noclip) {
         /* No pull-in: ease straight to the orbit position and let ptc.c hide
          * the wall we pass through. */
-        s_pos[0] += (desired[0] - s_pos[0]) * 0.35f;
-        s_pos[1] += (desired[1] - s_pos[1]) * 0.35f;
-        s_pos[2] += (desired[2] - s_pos[2]) * 0.35f;
+        s_pos[0] += (desired[0] - s_pos[0]) * camK;
+        s_pos[1] += (desired[1] - s_pos[1]) * camK;
+        s_pos[2] += (desired[2] - s_pos[2]) * camK;
         surf = NULL;
     } else {
         find_surface_on_ray(target, rayHit, &surf, s_pos);
@@ -521,9 +534,9 @@ void custom_camera_update(struct Camera *c) {
         s_pos[1] = target[1] + (desired[1] - target[1]) * (d / dist);
         s_pos[2] = target[2] + (desired[2] - target[2]) * (d / dist);
     } else {
-        s_pos[0] += (desired[0] - s_pos[0]) * 0.35f;
-        s_pos[1] += (desired[1] - s_pos[1]) * 0.35f;
-        s_pos[2] += (desired[2] - s_pos[2]) * 0.35f;
+        s_pos[0] += (desired[0] - s_pos[0]) * camK;
+        s_pos[1] += (desired[1] - s_pos[1]) * camK;
+        s_pos[2] += (desired[2] - s_pos[2]) * camK;
     }
 
     // Never let the camera go under the floor.

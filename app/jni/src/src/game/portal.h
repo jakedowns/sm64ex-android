@@ -61,6 +61,11 @@ int  portal_teleport_count(void);
 void portal_last_velocities(Vec3f entry, Vec3f exitVel);
 float portal_last_speed_ratio(void);
 float portal_last_turn_dot(void);
+/* Camera continuity across the last crossing: world jump and view-angle jump
+ * between the pre-crossing camera and the first update after it. */
+void portal_telemetry_tick(void);
+void portal_last_camera_jump(float *dist, float *angleDeg);
+float portal_last_mario_residual(void);
 int  portal_test_walls(void);   // bitmask: front/back/left/right wall accepted
 
 /* Aiming reticle drawn in the N64 UI pass with its own stereo depth. */

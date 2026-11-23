@@ -386,6 +386,12 @@ static int s_mpwTimer;        /* ticks in the current phase */
 static int s_mpwTarget;       /* portal to walk into next: 0 = A, 1 = B */
 static int s_mpwTeleBase;
 static int s_mpwTurnYaw;
+/* Placement of the A/B pair for the loop.  The standalone smoke test uses the
+ * west wall; the ninja run reuses the same loop on the south wall behind the
+ * N6 star. */
+static Vec3f s_mpwA, s_mpwB, s_mpwStart;
+static s16 s_mpwEntryYaw = 0xC000;
+static int s_mpwSettle = 90;
 static int s_mpwLastSrc;
 static int s_mpwLastDst;
 static int s_wallTest;          // bitmask from the last walltest command
@@ -883,6 +889,13 @@ static void ptc_portal_walk_camera(const Vec3f mpos, s16 yaw) {
     vec3f_copy(gLakituState.curFocus, focus);
     vec3f_copy(gLakituState.goalPos, pos);
     vec3f_copy(gLakituState.goalFocus, focus);
+    /* Drop any cinematic freelook from the chain so this chase rig can track
+     * Mario through the loop. */
+    {
+        extern void custom_camera_set_freelook(int on, const Vec3f pos,
+                                               const Vec3f focus);
+        custom_camera_set_freelook(0, NULL, NULL);
+    }
     custom_camera_apply_mode(3);
     custom_camera_reset();
 }
@@ -1010,20 +1023,20 @@ static void ptc_mpw_place_mario(void) {
     if (m == NULL) {
         return;
     }
-    m->pos[0] = PTCL_START_X;
-    m->pos[1] = 0.0f;
-    m->pos[2] = PTCL_A_Z;
+    m->pos[0] = s_mpwStart[0];
+    m->pos[1] = s_mpwStart[1];
+    m->pos[2] = s_mpwStart[2];
     m->vel[0] = m->vel[1] = m->vel[2] = 0.0f;
     m->forwardVel = 0.0f;
     m->faceAngle[0] = 0;
-    m->faceAngle[1] = 0xC000;      /* west, into portal A */
+    m->faceAngle[1] = s_mpwEntryYaw;
     m->faceAngle[2] = 0;
-    m->intendedYaw = 0xC000;
+    m->intendedYaw = s_mpwEntryYaw;
     m->intendedMag = 0.0f;
     set_mario_action(m, ACT_IDLE, 0);
     if (m->marioObj != NULL) {
         vec3f_copy(m->marioObj->header.gfx.pos, m->pos);
-        m->marioObj->oMoveAngleYaw = 0xC000;
+        m->marioObj->oMoveAngleYaw = s_mpwEntryYaw;
     }
     gCameraMovementFlags |= CAM_MOVE_INIT_CAMERA;
 }
@@ -1036,11 +1049,11 @@ static void ptc_mpw_stop(void) {
 
 /* Places the deterministic A/B pair and starts the loop.  Calling it again
  * restarts from the same coordinates. */
-void ptc_mario_portal_walk_loop_start(void) {
-    Vec3f aOrig = { PTCL_START_X, PTCL_PORTAL_Y, PTCL_A_Z };
-    Vec3f aTgt  = { PTCL_WALL_X, PTCL_PORTAL_Y, PTCL_A_Z };
-    Vec3f bOrig = { PTCL_START_X, PTCL_PORTAL_Y, PTCL_B_Z };
-    Vec3f bTgt  = { PTCL_WALL_X, PTCL_PORTAL_Y, PTCL_B_Z };
+/* Shared loop rig.  `resetTest` keeps the standalone smoke test behaving as
+ * before; the ninja run passes 0 so the chain's stars/state survive. */
+static void ptc_mpw_begin(const Vec3f aPos, const Vec3f bPos,
+                          const Vec3f aOrig, const Vec3f bOrig,
+                          const Vec3f start, s16 yaw, int resetTest) {
     Vec3f mpos;
     struct MarioState *m;
 
@@ -1049,13 +1062,19 @@ void ptc_mario_portal_walk_loop_start(void) {
                  "marioportalwalkloop: not in Portal Test Chamber");
         return;
     }
-
-    ptc_reset();
+    if (resetTest) {
+        ptc_reset();
+    }
     portal_give_gun();
 
-    /* Same hitscan placement the player uses; deterministic coordinates. */
-    s_shotA = portal_shoot_at(0, aOrig, aTgt);
-    s_shotB = portal_shoot_at(1, bOrig, bTgt);
+    /* Same hitscan placement the player uses; explicit coordinates. */
+    s_shotA = portal_shoot_at(0, aOrig, aPos);
+    s_shotB = portal_shoot_at(1, bOrig, bPos);
+
+    vec3f_copy(s_mpwA, aPos);
+    vec3f_copy(s_mpwB, bPos);
+    vec3f_copy(s_mpwStart, start);
+    s_mpwEntryYaw = yaw;
 
     m = gMarioState;
     if (m == NULL) {
@@ -1066,17 +1085,28 @@ void ptc_mario_portal_walk_loop_start(void) {
     s_mpwPasses = 0;
     s_mpwPhase = 0;
     s_mpwTimer = 0;
-    s_mpwTarget = 0;               /* walk into A first */
+    s_mpwTarget = 0;
     s_mpwTeleBase = portal_teleport_count();
-    s_mpwTurnYaw = 0xC000;
+    s_mpwTurnYaw = yaw;
     s_mpwLastSrc = -1;
     s_mpwLastDst = -1;
+    s_mpwSettle = resetTest ? PTCL_SETTLE_TICKS : 20;
 
     ptc_mpw_place_mario();
     mpos[0] = m->pos[0];
     mpos[1] = m->pos[1];
     mpos[2] = m->pos[2];
-    ptc_portal_walk_camera(mpos, 0xC000);
+    ptc_portal_walk_camera(mpos, yaw);
+}
+
+void ptc_mario_portal_walk_loop_start(void) {
+    Vec3f aPos = { PTCL_WALL_X, PTCL_PORTAL_Y, PTCL_A_Z };
+    Vec3f bPos = { PTCL_WALL_X, PTCL_PORTAL_Y, PTCL_B_Z };
+    Vec3f aOrig = { PTCL_START_X, PTCL_PORTAL_Y, PTCL_A_Z };
+    Vec3f bOrig = { PTCL_START_X, PTCL_PORTAL_Y, PTCL_B_Z };
+    Vec3f start = { PTCL_START_X, 0.0f, PTCL_A_Z };
+
+    ptc_mpw_begin(aPos, bPos, aOrig, bOrig, start, 0xC000, 1);
 }
 
 /* Streaming version of the same rig: no reset, so the in-place teleport count
@@ -1091,9 +1121,11 @@ static void ptc_mpw_target_pos(Vec3f out) {
     Vec3f n;
 
     if (!portal_get(s_mpwTarget, out, n)) {
-        out[0] = PTCL_WALL_X;
-        out[1] = PTCL_PORTAL_Y;
-        out[2] = (s_mpwTarget == 0) ? PTCL_A_Z : PTCL_B_Z;
+        if (s_mpwTarget == 0) {
+            vec3f_copy(out, s_mpwA);
+        } else {
+            vec3f_copy(out, s_mpwB);
+        }
     }
 }
 
@@ -1106,7 +1138,7 @@ static void ptc_mpw_update(void) {
     s_mpwTimer++;
 
     if (s_mpwPhase == 0) {
-        if (s_mpwTimer >= PTCL_SETTLE_TICKS) {
+        if (s_mpwTimer >= s_mpwSettle) {
             s_mpwPhase = 1;
             s_mpwTimer = 0;
         }
@@ -1423,8 +1455,10 @@ static void ptc_finish_ok(void) {
 
 void ptc_update(void) {
     struct MarioState *m = gMarioState;
+    extern void portal_telemetry_tick(void);
 
     ptc_occlusion_update();
+    portal_telemetry_tick();
 
     if (s_pendingCommandReady) {
         s_pendingCommandReady = 0;
@@ -1524,6 +1558,10 @@ void ptc_update(void) {
     }
 }
 
+/* Appended after CH_DONE so the existing dump mode numbers stay stable; kept
+ * as a macro because the input override (defined earlier) needs it too. */
+#define CH_PORTAL_LOOP 34
+
 void ptc_mario_input_override(struct MarioState *m) {
     if (m == NULL) {
         return;
@@ -1531,6 +1569,12 @@ void ptc_mario_input_override(struct MarioState *m) {
     s_inputHookCalls++;
 
     if (s_chainMode != 0) {
+        /* The portal-loop phase hands control to the smoke-test rig, which
+         * owns both the stick and the camera for its duration. */
+        if (s_chainMode == CH_PORTAL_LOOP && s_mpw) {
+            ptc_mpw_input(m);
+            return;
+        }
         ptc_chain_input(m);
         return;
     }
@@ -1971,6 +2015,11 @@ enum {
     CH_GRAPPLE_FIRE,
     CH_GRAPPLE_HOLD,
     CH_GRAPPLE_RELEASE,
+    CH_GRAPPLE_TRAVEL,
+    CH_GRAPPLE_AIM2,
+    CH_GRAPPLE_FIRE2,
+    CH_GRAPPLE_HOLD2,
+    CH_GRAPPLE_RELEASE2,
     CH_LAND_N4,
     CH_STAR1,
     CH_JET_N5,
@@ -2019,6 +2068,13 @@ static int s_chainHudSaved;
 static int s_finaleSplatSaved[4];
 static int s_chainTeleBase;
 static int s_chainJumped;
+static int s_chainLoop;      /* chainloop action: restart after the finale */
+/* Second grapple stage: anchor computed above Mario after the first release,
+ * plus the start pose of the second swing so it begins without a snap. */
+static Vec3f s_chainAnchorB;
+static Vec3f s_chainSwingPrev;
+static float s_chainSwingAng0;
+static float s_chainSwingR0;
 #define CH_GOOMBA_N 1
 static int s_chainGoombaState[CH_GOOMBA_N];
 static int s_chainGoombaTimer[CH_GOOMBA_N];
@@ -2279,14 +2335,20 @@ extern int gfx_cam_mode;
         case CH_GRAPPLE_AIM:
         case CH_GRAPPLE_FIRE:
         case CH_GRAPPLE_HOLD:  return "NINJA 4/8 grapple: hook the ceiling and swing";
-        case CH_GRAPPLE_RELEASE:
-        case CH_LAND_N4:       return "NINJA 4/8 grapple: release over N4";
+        case CH_GRAPPLE_RELEASE: return "NINJA 4/8 grapple: release into the gap";
+        case CH_GRAPPLE_TRAVEL:  return "NINJA 4/8 grapple: carry to the second hook";
+        case CH_GRAPPLE_AIM2:
+        case CH_GRAPPLE_FIRE2:   return "NINJA 4/8 grapple: re-grab";
+        case CH_GRAPPLE_HOLD2:   return "NINJA 4/8 grapple: SWING 2";
+        case CH_GRAPPLE_RELEASE2:return "NINJA 4/8 grapple: release 2 over N4";
+        case CH_LAND_N4:         return "NINJA 4/8 grapple: land on N4";
         case CH_STAR1:         return "NINJA 4/8: collect the N4 star";
         case CH_JET_N5:        return "NINJA 5/8 jetpack: climb east to N5";
         case CH_LAND_N5:       return "NINJA 5/8 jetpack: land on N5";
         case CH_PORTAL_RUN:    return "NINJA 6/8 portals: run into the N7 portal";
         case CH_PORTAL_FALL:   return "NINJA 6/8 portals: drop out of the ceiling onto N6";
         case CH_STAR2:         return "NINJA 6/8: collect the N6 star";
+        case CH_PORTAL_LOOP:   return "NINJA 6/8 portals: walk the A/B loop x4";
         case CH_GOOMBA_SETUP:
         case CH_GOOMBA_LOOP:   return "NINJA 7/8: GOOMBA GRIEFING";
         case CH_FINALE:        return "NINJA: SPLAT 360";
@@ -2461,11 +2523,17 @@ static const char *ptc_chain_caption(int ph) {
         case CH_GRAPPLE_FIRE:
         case CH_GRAPPLE_HOLD:
         case CH_GRAPPLE_RELEASE: return "CEILING GRAPPLE";
+        case CH_GRAPPLE_TRAVEL:  return "RELEASE";
+        case CH_GRAPPLE_AIM2:
+        case CH_GRAPPLE_FIRE2:   return "RE-GRAB";
+        case CH_GRAPPLE_HOLD2:   return "SWING 2";
+        case CH_GRAPPLE_RELEASE2:return "RELEASE 2";
         case CH_LAND_N4:
         case CH_STAR1:
         case CH_STAR2:           return "STAR";
         case CH_PORTAL_RUN:
         case CH_PORTAL_FALL:     return "PORTALS";
+        case CH_PORTAL_LOOP:     return "PORTAL LOOP";
         case CH_GOOMBA_SETUP:
         case CH_GOOMBA_LOOP:     return "GOOMBA GRIEFING";
         case CH_FINALE:          return "SPLAT 360";
@@ -2505,10 +2573,25 @@ void ptc_chain_hud_text(void) {
             cap = "SPLAT";
         }
     }
+    if (s_chainMode == CH_PORTAL_LOOP) {
+        static char pbuf[24];
+        if (s_mpwPhase == 2) {
+            snprintf(pbuf, sizeof(pbuf), "PASS %d/4", s_mpwPasses + 1);
+            cap = pbuf;
+        } else {
+            cap = "PORTAL LOOP";
+        }
+    }
     if (s_chainMode == CH_GRAPPLE_HOLD) {
         cap = (s_chainTimer > 35) ? "RETRACT" : "SWING";
     } else if (s_chainMode == CH_GRAPPLE_RELEASE) {
         cap = "RELEASE";
+    } else if (s_chainMode == CH_GRAPPLE_HOLD2) {
+        cap = "SWING 2";
+    } else if (s_chainMode == CH_GRAPPLE_RELEASE2) {
+        cap = "RELEASE 2";
+    } else if (s_chainMode == CH_GRAPPLE_AIM2 || s_chainMode == CH_GRAPPLE_FIRE2) {
+        cap = "RE-GRAB";
     }
     if (cap != NULL) {
         print_caption(SCREEN_WIDTH / 2, 168, cap);
@@ -2543,6 +2626,9 @@ static void ptc_chain_camera(struct MarioState *m) {
 
     if (!s_cineOn || m == NULL) {
         return;
+    }
+    if (ph == CH_PORTAL_LOOP) {
+        return;   /* the smoke-test rig owns the camera while it runs */
     }
     vec3f_copy(mpos, m->pos);
     mpos[1] += 70.0f;
@@ -2602,12 +2688,35 @@ static void ptc_chain_camera(struct MarioState *m) {
             break;
         case CH_GRAPPLE_HOLD:
         case CH_GRAPPLE_RELEASE:
+        case CH_GRAPPLE_TRAVEL:
             /* Wide shot from the north: the whole rope and the swing arc,
              * with N3 behind Mario instead of in front of him. */
             pos[0] = 0.0f; pos[1] = 1300.0f; pos[2] = -1900.0f;
             focus[0] = -250.0f; focus[1] = 800.0f; focus[2] = -2700.0f;
             fov = 180.0f; k = 0.14f;
             break;
+        case CH_GRAPPLE_AIM2:
+        case CH_GRAPPLE_FIRE2:
+        case CH_GRAPPLE_HOLD2:
+        case CH_GRAPPLE_RELEASE2: {
+            /* Track the second hook: frame the midpoint between Mario and the
+             * anchor so the rope, the hook and the arc all read.  Before the
+             * anchor exists (TRAVEL) assume it is directly above. */
+            float ax = s_chainAnchorB[0];
+            float ay = s_chainAnchorB[1];
+            if (ay < 1.0f) {
+                ax = mpos[0];
+                ay = mpos[1] + 1200.0f;
+            }
+            pos[0] = mpos[0] - 300.0f;
+            pos[1] = mpos[1] + 280.0f;
+            pos[2] = mpos[2] + 950.0f;
+            focus[0] = (mpos[0] + ax) * 0.5f;
+            focus[1] = (mpos[1] + ay) * 0.5f - 80.0f;
+            focus[2] = mpos[2];
+            fov = 160.0f; k = 0.08f;
+            break;
+        }
         case CH_LAND_N4:
         case CH_STAR1:
             pos[0] = 700.0f; pos[1] = 520.0f; pos[2] = -2680.0f;
@@ -2706,6 +2815,59 @@ static void ptc_chain_camera(struct MarioState *m) {
     }
     custom_camera_set_freelook(1, s_cinePos, s_cineFocus);
     gfx_stereo_fov_pct = (int) (s_cineFov + 0.5f);
+}
+
+/* Put the course and Mario back to the start without reloading the level, so
+ * `ptc chainloop` can demonstrate the whole run continuously. */
+static void ptc_chain_loop_restart(void) {
+    struct MarioState *m = gMarioState;
+
+    if (m == NULL) {
+        return;
+    }
+    for (int gi = 0; gi < CH_GOOMBA_N; gi++) {
+        s_chainGoombaState[gi] = 0;
+        s_chainGoombaTimer[gi] = 0;
+        if (s_chainGoomba[gi] != NULL) {
+            s_chainGoomba[gi]->header.gfx.node.flags |= GRAPH_RENDER_INVISIBLE;
+        }
+    }
+    s_chainGoombaPortalPlaced = 0;
+    s_chainGoombaLoops = 0;
+    s_chainGoombaShifted = 0;
+    s_chainGoombaSquash = 0;
+
+    ptc_star_reset();
+    ptc_chain_star_place(0, CH_STAR1_X, CH_STAR1_Y, CH_STAR1_Z);
+    ptc_chain_star_place(1, CH_STAR2_X, CH_STAR2_Y, CH_STAR2_Z);
+    ptc_chain_spawn_boxes();
+    portal_reset();
+    portal_give_gun();
+    ptc_chain_shoot_player_portals();
+
+    gfx_splat_active = 0;
+    gfx_splat_target = 0;
+    gfx_splat_shape = 0;
+
+    m->pos[0] = CH_BOX_X;
+    m->pos[1] = 0.0f;
+    m->pos[2] = -1000.0f;
+    m->vel[0] = m->vel[1] = m->vel[2] = 0.0f;
+    m->forwardVel = 0.0f;
+    m->faceAngle[1] = 0x8000;
+    m->intendedMag = 0.0f;
+    set_mario_action(m, ACT_IDLE, 0);
+    if (m->marioObj != NULL) {
+        vec3f_copy(m->marioObj->header.gfx.pos, m->pos);
+        m->marioObj->header.gfx.unk38.animFrame = 0;
+    }
+
+    s_chainFlags = 0;
+    s_chainTimer = 0;
+    s_chainJumped = 0;
+    s_chainMode = CH_BOX_BALL;
+    s_chainTeleBase = portal_teleport_count();
+    s_cineInit = 0;            /* deliberate reset to the opening shot */
 }
 
 static void ptc_chain_update(void) {
@@ -2967,6 +3129,101 @@ static void ptc_chain_update(void) {
                 gfx_cam_noclip = 1;   /* back to the noclip chase camera */
             }
             if (s_chainTimer > 8) {
+                ptc_chain_advance(CH_GRAPPLE_TRAVEL);
+            }
+            break;
+
+        case CH_GRAPPLE_TRAVEL:
+            /* Ballistic carry after the first release: keep the momentum and
+             * show the gap before the second hook, instead of dropping
+             * straight onto N4. */
+            if (s_chainTimer == 1) {
+                s_chainFlags |= CH_FLAG_GRAPPLE;
+                m->vel[0] = 12.0f;
+                m->vel[1] = 6.0f;
+                m->vel[2] = -3.0f;
+                m->forwardVel = 12.0f;
+                m->faceAngle[1] = atan2s(-3.0f, 12.0f);
+            }
+            if (s_chainTimer > 10) {
+                ptc_chain_advance(CH_GRAPPLE_AIM2);
+            }
+            break;
+
+        case CH_GRAPPLE_AIM2:
+            if (s_chainTimer == 1) {
+                /* Anchor B is above and east of the carry.  It is fixed now;
+                 * the swing start pose is measured at attach time, so the
+                 * second rope begins exactly where Mario is. */
+                s_chainAnchorB[0] = m->pos[0] + 300.0f;
+                s_chainAnchorB[1] = m->pos[1] + 1200.0f;
+                s_chainAnchorB[2] = m->pos[2] - 20.0f;
+                ptc_chain_hint(1, s_chainAnchorB[0], s_chainAnchorB[1], s_chainAnchorB[2]);
+            }
+            if (s_chainTimer > 6) {
+                ptc_chain_advance(CH_GRAPPLE_FIRE2);
+            }
+            break;
+
+        case CH_GRAPPLE_FIRE2:
+            if (s_chainTimer == 1) {
+                movekit_force_anchor(s_chainAnchorB[0], s_chainAnchorB[1],
+                                     s_chainAnchorB[2]);
+                movekit_force_trigger(1);
+                s_chainSwingAng0 = atan2f(m->pos[0] - s_chainAnchorB[0],
+                                          -(m->pos[1] - s_chainAnchorB[1]));
+                s_chainSwingR0 = sqrtf(
+                    (m->pos[0] - s_chainAnchorB[0]) * (m->pos[0] - s_chainAnchorB[0])
+                  + (m->pos[1] - s_chainAnchorB[1]) * (m->pos[1] - s_chainAnchorB[1])
+                  + (m->pos[2] - s_chainAnchorB[2]) * (m->pos[2] - s_chainAnchorB[2]));
+                vec3f_copy(s_chainSwingPrev, m->pos);
+            }
+            if ((movekit_state() & 8) || s_chainTimer > 2) {
+                s_chainFlags |= CH_FLAG_GRAPPLE;
+                ptc_chain_advance(CH_GRAPPLE_HOLD2);
+            }
+            break;
+
+        case CH_GRAPPLE_HOLD2:
+            s_chainFlags |= CH_FLAG_GRAPPLE;
+            if (s_chainTimer <= 55) {
+                /* Second pendulum, same eased shape as the first: the start
+                 * angle/radius come from the attach pose, so there is no
+                 * positional pop when the new rope takes over. */
+                float t = (float) (s_chainTimer - 1) / 54.0f;
+                float e = t * t * (3.0f - 2.0f * t);
+                float ang = s_chainSwingAng0 - 0.85f * e;
+                float R = s_chainSwingR0 - 180.0f * e;
+                float px = m->pos[0], py = m->pos[1], pz = m->pos[2];
+
+                m->pos[0] = s_chainAnchorB[0] + sinf(ang) * R;
+                m->pos[1] = s_chainAnchorB[1] - cosf(ang) * R;
+                m->pos[2] = s_chainAnchorB[2] + (pz - s_chainAnchorB[2]) * (1.0f - e);
+                vec3f_set(s_chainSwingPrev, px, py, pz);
+                m->vel[0] = m->vel[1] = m->vel[2] = 0.0f;
+                m->forwardVel = 0.0f;
+            } else {
+                ptc_chain_advance(CH_GRAPPLE_RELEASE2);
+            }
+            break;
+
+        case CH_GRAPPLE_RELEASE2:
+            if (s_chainTimer == 1) {
+                float vx = m->pos[0] - s_chainSwingPrev[0];
+                float vy = m->pos[1] - s_chainSwingPrev[1];
+                float vz = m->pos[2] - s_chainSwingPrev[2];
+                movekit_force_trigger(0);
+                movekit_force_retract(0);
+                m->vel[0] = vx * 1.15f;
+                m->vel[1] = vy * 1.15f + 3.0f;
+                m->vel[2] = vz * 1.15f;
+                m->forwardVel = sqrtf(m->vel[0] * m->vel[0] + m->vel[2] * m->vel[2]);
+                if (m->forwardVel > 1.0f) {
+                    m->faceAngle[1] = atan2s(m->vel[2], m->vel[0]);
+                }
+                ptc_chain_hint(0, 0.0f, 0.0f, 0.0f);
+            }
+            if (s_chainTimer > 8) {
                 ptc_chain_advance(CH_LAND_N4);
             }
             break;
@@ -3062,9 +3319,49 @@ static void ptc_chain_update(void) {
             if (s_starCollected[1]) {
                 s_chainFlags |= CH_FLAG_STAR2;
                 if (s_chainTimer > 50) {
-                    ptc_chain_advance(CH_GOOMBA_SETUP);
+                    ptc_chain_advance(CH_PORTAL_LOOP);
                 }
             } else if (s_chainTimer > 120) {
+                ptc_chain_advance(CH_PORTAL_LOOP);
+            }
+            break;
+
+        case CH_PORTAL_LOOP:
+            if (s_chainTimer == 1) {
+                /* Reuse the deterministic smoke-test loop on the room's south
+                 * wall behind the N6 star: two portals 180 apart, Mario walks
+                 * in, turns right and re-enters, for four real crossings. */
+                Vec3f aPos = { -1000.0f, 1660.0f, -3196.0f };
+                Vec3f bPos = {  -820.0f, 1660.0f, -3196.0f };
+                Vec3f aOrig = { -1000.0f, 1660.0f, -2900.0f };
+                Vec3f bOrig = {  -820.0f, 1660.0f, -2900.0f };
+                Vec3f start = { -1000.0f, 1500.0f, -2950.0f };
+                Vec3f camPos, camFocus;
+                vec3f_copy(camPos, gLakituState.pos);
+                vec3f_copy(camFocus, gLakituState.focus);
+                portal_view_set(1);   /* show the relay window for the loop */
+                ptc_mpw_begin(aPos, bPos, aOrig, bOrig, start, 0x8000, 0);
+                {
+                    extern int gfx_stereo_fov_pct;
+                    extern void custom_camera_portal_snap(const Vec3f pos,
+                                                          const Vec3f focus);
+                    gfx_stereo_fov_pct = 150;
+                    /* Keep the star2 framing and spring from there instead of
+                     * cutting to the chase pose. */
+                    custom_camera_portal_snap(camPos, camFocus);
+                }
+                s_chainTeleBase = portal_teleport_count();
+                s_chainFlags |= CH_FLAG_PORTAL;
+            }
+            if (s_mpwPasses >= 4) {
+                ptc_mario_portal_walk_loop_stop();
+                portal_view_set(0);
+                ptc_chain_advance(CH_GOOMBA_SETUP);
+            } else if (!s_mpw && s_chainTimer > 30) {
+                ptc_chain_advance(CH_GOOMBA_SETUP);   /* stalled: do not hang */
+            } else if (s_chainTimer > 420) {
+                ptc_mario_portal_walk_loop_stop();
+                portal_view_set(0);
                 ptc_chain_advance(CH_GOOMBA_SETUP);
             }
             break;
@@ -3102,6 +3399,9 @@ static void ptc_chain_update(void) {
                 }
                 /* Hold the completed 360 orbit (do not cut back to the
                  * default camera): the recording ends on the splat showcase. */
+            }
+            if (s_chainLoop && s_chainTimer > 300) {
+                ptc_chain_loop_restart();
             }
             break;
 
@@ -3409,6 +3709,10 @@ static void ptc_apply_command(const char *action) {
     } else if (strcmp(action, "reload") == 0) {
         ptc_knob_reload();
     } else if (strcmp(action, "chain") == 0) {
+        s_chainLoop = 0;
+        ptc_chain_setup();
+    } else if (strcmp(action, "chainloop") == 0) {
+        s_chainLoop = 1;
         ptc_chain_setup();
     } else if (strcmp(action, "splatfinale") == 0) {
         s_chainMode = CH_FINALE;
@@ -3682,6 +3986,10 @@ void ptc_format_status(char *buf, int len) {
     Vec3f pa = { 0, 0, 0 }, na = { 0, 0, 0 };
     Vec3f pb = { 0, 0, 0 }, nb = { 0, 0, 0 };
     struct MarioState *m = gMarioState;
+    float pcamD = 0.0f, pcamA = 0.0f;
+    extern void portal_last_camera_jump(float *dist, float *angleDeg);
+
+    portal_last_camera_jump(&pcamD, &pcamA);
     extern int camera_portal_remap_count(void);
     extern void custom_camera_debug(int out[8]);
     int cdbg[8] = { 0 };
@@ -3700,14 +4008,14 @@ void ptc_format_status(char *buf, int len) {
              "mom_enter=%.1f mom_exit=%.1f mom_apex=%.1f momy=%.1f momv=%.1f,%.1f,%.1f "
              "mom_hold=%.1f mom_hcos=%.3f mom_ratio=%.3f mom_turn=%.3f walltest=0x%X "
              "p0=%.1f,%.1f,%.1f n0=%.3f,%.3f,%.3f p1=%.1f,%.1f,%.1f n1=%.3f,%.3f,%.3f "
-             "tele=%d src=%d dst=%d onplat=%d "
+             "tele=%d src=%d dst=%d onplat=%d pcam=%.0f,%.1f mres=%.1f "
              "mario=%.2f,%.2f,%.2f vel=%.2f,%.2f,%.2f fv=%.1f iy=%d in=0x%04X im=%.1f hook=%d action=0x%08X floor=%.2f "
              "cam=%.1f,%.1f,%.1f focus=%.1f,%.1f,%.1f "
              "wall=%d ceil=%d ledge=%d "
              "coins=%d stars=%d save=%d before=%d/%d "
              "cal=%.1f,%.1f,%.1f ledge_reach=%.1f goomba=%d,%.1f,%.1f gmodel=%d "
              "gobj=%d,0x%x,%d,%d annex=%d,%d,%d gun=%d,%d,%d tool=%d "
-             "chain=%d,%d,0x%x,%d,%d cmode=%d "
+             "chain=%d,%d,0x%x,%d,%d cmode=%d loop=%d "
              "face=%.1f,%.1f,%.1f anim=%d mh=%.1f remap=%d cdbg=%d,%d,%d,%d,%d walk=%d,%d,%d "
              "mpw=%d,%d,%d,%d,%d,%d,%d fc=%d,%d,%d,%d cg=%d,%.0f,%.0f,%.0f,0x%x",
              gCurrLevelNum, gCurrAreaIndex, s_phase, s_testMode, s_testActive, s_failed, s_failReason,
@@ -3721,6 +4029,7 @@ void ptc_format_status(char *buf, int len) {
              hasB ? pb[0] : 0.0f, hasB ? pb[1] : 0.0f, hasB ? pb[2] : 0.0f,
              hasB ? nb[0] : 0.0f, hasB ? nb[1] : 0.0f, hasB ? nb[2] : 0.0f,
              portal_teleport_count(), portal_last_src(), portal_last_dst(), s_onPlatform,
+             pcamD, pcamA, portal_last_mario_residual(),
              m ? m->pos[0] : 0.0f, m ? m->pos[1] : 0.0f, m ? m->pos[2] : 0.0f,
              m ? m->vel[0] : 0.0f, m ? m->vel[1] : 0.0f, m ? m->vel[2] : 0.0f,
              m ? m->forwardVel : 0.0f, m ? (int) m->intendedYaw : 0,
@@ -3746,7 +4055,7 @@ void ptc_format_status(char *buf, int len) {
              s_chainMode, s_chainTimer, s_chainFlags,
              s_chainGoombaCross,
              boxphys_test_boxes_near(CH_BOX_X, 120.0f, CH_BOX_B_Z, 300.0f),
-             gfx_cam_mode,
+             gfx_cam_mode, s_chainLoop,
              m ? m->faceAngle[0] : 0.0f, m ? m->faceAngle[1] : 0.0f,
              m ? m->faceAngle[2] : 0.0f,
              (m != NULL && m->marioObj != NULL)

@@ -110,6 +110,36 @@ device_sleep() {
     fi
 }
 
+# Device housekeeping: the tablet must be silent for every adb session.  The
+# caller gates this with AGENT_TABLET_MUTE=1 (the project rule); we mute every
+# stream and verify, then print the result.  `media` is absent on this tablet,
+# so use `cmd media_session`.  Alarm has a minimum index of 1 on this device.
+device_mute() {
+    local adb_bin="${ADB:-adb}"
+    export LD_LIBRARY_PATH="/home/ubuntu/.local/lib/android-tools${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    command -v "$adb_bin" >/dev/null 2>&1 || return 0
+    if [[ "${AGENT_TABLET_MUTE:-0}" != "1" ]]; then
+        echo "agent-lock: WARNING: AGENT_TABLET_MUTE is not 1; tablet audio not verified muted" >&2
+        return 0
+    fi
+    "$adb_bin" get-state >/dev/null 2>&1 || return 0
+    for st in 0 1 2 3 5 6 7 8 9 10 11; do
+        "$adb_bin" shell cmd media_session volume --stream "$st" --set 0 >/dev/null 2>&1 || true
+    done
+    "$adb_bin" shell cmd media_session volume --stream 4 --set 1 >/dev/null 2>&1 || true
+    "$adb_bin" shell settings put system volume_alarm 0 >/dev/null 2>&1 || true
+    local music ring alarm
+    music=$("$adb_bin" shell cmd media_session volume --stream 3 --get 2>/dev/null | tr -d '\r' | sed -n 's/.*volume is \([0-9][0-9]*\).*/\1/p' | tail -1)
+    ring=$("$adb_bin" shell cmd media_session volume --stream 2 --get 2>/dev/null | tr -d '\r' | sed -n 's/.*volume is \([0-9][0-9]*\).*/\1/p' | tail -1)
+    alarm=$("$adb_bin" shell cmd media_session volume --stream 4 --get 2>/dev/null | tr -d '\r' | sed -n 's/.*volume is \([0-9][0-9]*\).*/\1/p' | tail -1)
+    echo "agent-lock: mute music=$music ring=$ring alarm=$alarm" >&2
+    if [[ "$music" != "0" || "$ring" != "0" ]]; then
+        echo "agent-lock: ERROR: tablet is not muted (music=$music ring=$ring)" >&2
+        return 1
+    fi
+    return 0
+}
+
 lock_file_for() {
     case "$1" in
         build)  printf '%s' "$BUILD_LOCK" ;;
@@ -368,6 +398,10 @@ log_event acquire "$kind" "$lock_file" "${reason:-unspecified}" \
     "$timeout" "$waited_ms" 0 null
 
 if [[ "$kind" == "device" ]]; then
+    if ! device_mute; then
+        echo "agent-lock: refusing to run with tablet audio unmuted" >&2
+        exit 3
+    fi
     device_app_busy 1
 fi
 
