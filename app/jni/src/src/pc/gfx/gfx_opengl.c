@@ -746,6 +746,32 @@ static int s_fx_ssrtx_thickness = 80;   // depth window for a hit (world units)
 static int s_fx_ssrtx_roughness = 0;    // percent cone spread (needs rays > 1)
 static int s_fx_ssrtx_fade = 100;       // screen-edge fade percent
 
+/* Vector motion blur + dynamic lights + probe debug. */
+static int s_fx_mb_on = 0;
+static int s_fx_mb_strength = 60;    // percent of the velocity vector
+static int s_fx_mb_samples = 8;
+static int s_light_count = 0;
+static int s_light_shadows = 0;
+static int s_light_intensity = 120;  // percent
+static int s_light_shadow_steps = 6;
+static float s_light_pos[4][3] = {
+    { 0.0f, 2200.0f, -2800.0f }, { 1400.0f, 1800.0f, -2800.0f },
+    { -1200.0f, 1600.0f, -2400.0f }, { 0.0f, 900.0f, -2000.0f } };
+static float s_light_color[4][3] = {
+    { 1.0f, 0.55f, 0.25f }, { 0.30f, 0.60f, 1.0f },
+    { 0.90f, 0.25f, 0.80f }, { 1.0f, 1.0f, 1.0f } };
+static float s_light_radius[4] = { 3200.0f, 2800.0f, 2400.0f, 2000.0f };
+static int s_probe_vis = 0;
+static float s_probe_center[3] = { 0.0f, 700.0f, -2800.0f };
+static int s_probe_spacing = 700;
+static int s_probe_dim = 3;
+static int s_probe_radius = 55;
+static int s_probe_res = 16;
+static float s_fx_cur_vp[4][4];
+static float s_fx_prev_vp[4][4];
+static int s_fx_have_prev = 0;
+static uint32_t s_fx_vp_frame = 0xFFFFFFFFu;
+
 static int s_fx_debug = 0;            // 0 off, 1 AO, 2 CoC, 3 GI
 static int s_fx_normal_flip = 0;
 
@@ -764,6 +790,7 @@ extern int gfx_shadow_pitch_deg;
 extern int gfx_shadow_debug;
 extern float gfx_shadow_light_vp[4][4];
 extern float gfx_cam_inv_mtx[4][4];
+extern float gfx_last_persp_proj[4][4];
 extern float gfx_shadow_light_dir[3];
 extern int gfx_shadow_matrices_ready;
 extern float gfx_eye_shear[2];
@@ -842,6 +869,25 @@ static const char *s_fx_fs =
     "uniform float uSSRTXThick;\n"
     "uniform float uSSRTXRough;\n"
     "uniform float uSSRTXFade;\n"
+    "uniform mat4 uCurVP;\n"
+    "uniform mat4 uPrevVP;\n"
+    "uniform float uMBOn;\n"
+    "uniform float uMBStrength;\n"
+    "uniform float uMBSamples;\n"
+    "uniform float uLightCount;\n"
+    "uniform vec3 uLightPos[4];\n"
+    "uniform vec3 uLightPosView[4];\n"
+    "uniform vec3 uLightColor[4];\n"
+    "uniform float uLightRadius[4];\n"
+    "uniform float uLightIntensity;\n"
+    "uniform float uLightShadows;\n"
+    "uniform float uLightShadowSteps;\n"
+    "uniform float uProbeVis;\n"
+    "uniform vec3 uProbeCenter;\n"
+    "uniform float uProbeSpacing;\n"
+    "uniform float uProbeDim;\n"
+    "uniform float uProbeRadiusW;\n"
+    "uniform float uProbeRes;\n"
     "float unpackDepth(vec4 rgba) {\n"
     "  return dot(rgba, vec4(1.0, 1.0/255.0, 1.0/65025.0, 1.0/16581375.0));\n"
     "}\n"
@@ -910,6 +956,34 @@ static const char *s_fx_fs =
     "  if (uFlipY > 0.5) ndc.y = -ndc.y;\n"
     "  return ndc * 0.5 + 0.5;\n"
     "}\n"
+    "vec3 worldToView(vec3 pw) {\n"
+    "  vec3 d = pw - uCamInv[3].xyz;\n"
+    "  mat3 R = mat3(uCamInv);\n"
+    "  return vec3(dot(R[0], d), dot(R[1], d), dot(R[2], d));\n"
+    "}\n"
+    "float lightVis(vec3 Pv, vec3 Lv) {\n"
+    "  float dist = length(Lv);\n"
+    "  if (dist < 1.0 || uLightShadowSteps < 0.5) return 1.0;\n"
+    "  vec3 dir = Lv / dist;\n"
+    "  for (int s = 1; s <= 8; s++) {\n"
+    "    if (float(s) > uLightShadowSteps) break;\n"
+    "    float t = (float(s) / 8.0) * dist;\n"
+    "    vec3 Ps = Pv + dir * t;\n"
+    "    float rz = -Ps.z;\n"
+    "    if (rz <= uNear) break;\n"
+    "    vec2 cuv = viewToCanvas(Ps);\n"
+    "    if (cuv.x < 0.0 || cuv.x > 1.0 || cuv.y < 0.0 || cuv.y > 1.0) break;\n"
+    "    float sd = linZ(texture2D(uDepth, eyeUVfromCanvas(cuv)).r);\n"
+    "    if (rz > sd + 3.0) return 0.0;\n"
+    "  }\n"
+    "  return 1.0;\n"
+    "}\n"
+    "vec3 probeEnv(vec3 dir, vec3 state) {\n"
+    "  float up = dir.y * 0.5 + 0.5;\n"
+    "  vec3 sky = mix(vec3(0.03, 0.04, 0.07), vec3(0.30, 0.42, 0.60), up);\n"
+    "  vec3 ground = vec3(0.16, 0.13, 0.10) * (1.0 - up);\n"
+    "  return (sky + ground) * (0.25 + state * 1.6);\n"
+    "}\n"
     // Screen-space ray-traced reflection: march the reflected view ray through
     // the depth buffer and grab the colour of the first surface it penetrates.
     "vec3 ssrtxReflect(vec3 P, vec3 N, vec2 cuv) {\n"
@@ -954,10 +1028,10 @@ static const char *s_fx_fs =
     "  return (acc / hits) * fres * fade * (uSSRTXIntensity / 100.0);\n"
     "}\n"
     "void main() {\n"
-    "  vec3 color = texture2D(uColor, vUV).rgb;\n"
+    "  vec3 baseColor = texture2D(uColor, vUV).rgb;\n"
     "  vec2 cuv = canvasUV(vUV);\n"
     "  if (uDebug < 0.5 && (cuv.x < 0.0 || cuv.x > 1.0 || cuv.y < 0.0 || cuv.y > 1.0)) {\n"
-    "    gl_FragColor = vec4(color, 1.0);\n"
+    "    gl_FragColor = vec4(baseColor, 1.0);\n"
     "    return;\n"
     "  }\n"
     "  float depth = texture2D(uDepth, vUV).r;\n"
@@ -973,6 +1047,28 @@ static const char *s_fx_fs =
     "  if (uNormalFlip > 0.5) N = -N;\n"
     "  vec3 Pw = (uCamInv * vec4(P, 1.0)).xyz;\n"
     "  vec3 Nw = normalize((uCamInv * vec4(N, 0.0)).xyz);\n"
+    "  vec3 color = baseColor;\n"
+    "  if (uMBOn > 0.5) {\n"
+    "    vec4 c0 = uCurVP * vec4(Pw, 1.0);\n"
+    "    vec4 p0 = uPrevVP * vec4(Pw, 1.0);\n"
+    "    if (c0.w > 0.001 && p0.w > 0.001) {\n"
+    "      vec2 v = (c0.xy / c0.w - p0.xy / p0.w) * 0.5;\n"
+    "      float px = length(v * uRes);\n"
+    "      if (px > 0.4) {\n"
+    "        vec3 acc = baseColor;\n"
+    "        float ws = 1.0;\n"
+    "        float ns = max(uMBSamples, 1.0);\n"
+    "        for (int i = 0; i < 16; i++) {\n"
+    "          if (float(i) >= ns) break;\n"
+    "          float t = ns > 1.5 ? (float(i) / (ns - 1.0) - 0.5) : 0.0;\n"
+    "          vec2 suv = vUV + v * t * (uMBStrength / 100.0);\n"
+    "          acc += texture2D(uColor, suv).rgb;\n"
+    "          ws += 1.0;\n"
+    "        }\n"
+    "        color = acc / ws;\n"
+    "      }\n"
+    "    }\n"
+    "  }\n"
     "  float shadow = 1.0;\n"
     "  if (uShadowOn > 0.5) shadow = shadowLookup(Pw, Nw);\n"
     "  vec3 refl = vec3(0.0);\n"
@@ -1005,6 +1101,24 @@ static const char *s_fx_fs =
     "    }\n"
     "    float amount = clamp(occ / max(wsum, 1.0) * (uAOIntensity / 100.0) * 3.0, 0.0, 1.0);\n"
     "    ao = pow(1.0 - amount, max(uAOPower, 1.0) / 100.0);\n"
+    "  }\n"
+    "  vec3 lightAcc = vec3(0.0);\n"
+    "  vec3 specAcc = vec3(0.0);\n"
+    "  vec3 camPos = uCamInv[3].xyz;\n"
+    "  for (int i = 0; i < 4; i++) {\n"
+    "    if (float(i) >= uLightCount) break;\n"
+    "    vec3 Lw = uLightPos[i] - Pw;\n"
+    "    float dl = length(Lw);\n"
+    "    if (dl < 0.001 || dl > uLightRadius[i]) continue;\n"
+    "    vec3 L = Lw / dl;\n"
+    "    float att = 1.0 - dl / max(uLightRadius[i], 1.0);\n"
+    "    att *= att;\n"
+    "    float vis = uLightShadows > 0.5 ? lightVis(P, uLightPosView[i] - P) : 1.0;\n"
+    "    float ndl = max(dot(Nw, L), 0.0);\n"
+    "    lightAcc += uLightColor[i] * ndl * att * vis;\n"
+    "    vec3 Vd = normalize(camPos - Pw);\n"
+    "    vec3 H = normalize(L + Vd);\n"
+    "    specAcc += uLightColor[i] * pow(max(dot(Nw, H), 0.0), 32.0) * att * vis;\n"
     "  }\n"
     "  vec3 dofColor = color;\n"
     "  float cocPx = 0.0;\n"
@@ -1064,6 +1178,11 @@ static const char *s_fx_fs =
     "  }\n"
     "  if (uShadowDebug > 1.5) gl_FragColor = vec4(vec3(unpackDepth(texture2D(uShadowMap, clamp(cuv, 0.0, 1.0)))), 1.0);\n"
     "  else if (uShadowDebug > 0.5) gl_FragColor = vec4(vec3(shadow), 1.0);\n"
+    "  else if (uDebug > 8.5) { vec4 c0 = uCurVP * vec4(Pw,1.0); vec4 p0 = uPrevVP * vec4(Pw,1.0); vec2 vv = (c0.xy/c0.w - p0.xy/p0.w) * 0.5; gl_FragColor = vec4(vec3(clamp(length(vv * uRes) / 60.0, 0.0, 1.0)), 1.0); }\n"
+    "  else if (uDebug > 7.5) gl_FragColor = vec4(vec3(clamp(length(uLightPos[0] - Pw) / 3000.0, 0.0, 1.0)), 1.0);\n"
+    "  else if (uDebug > 6.5) gl_FragColor = vec4(vec3(uProbeVis), 1.0);\n"
+    "  else if (uDebug > 5.5) gl_FragColor = vec4(lightAcc, 1.0);\n"
+    "  else if (uDebug > 4.5) gl_FragColor = vec4(vec3(uLightCount / 4.0), 1.0);\n"
     "  else if (uDebug > 3.5) gl_FragColor = vec4(refl * 3.0, 1.0);\n"
     "  else if (uDebug > 2.5) gl_FragColor = vec4(gi * 3.0 * (uGIIntensity / 100.0), 1.0);\n"
     "  else if (uDebug > 1.5) gl_FragColor = vec4(vec3(clamp(cocPx / max(uMaxBlur, 1.0), 0.0, 1.0)), 1.0);\n"
@@ -1071,6 +1190,49 @@ static const char *s_fx_fs =
     "  else {\n"
     "    vec3 outc = dofColor * ao * shadow + gi * (uGIIntensity / 100.0) * 0.6\n"
     "              + refl * mix(0.35, 1.0, ao);\n"
+    "    outc += (lightAcc + specAcc * 0.6) * (uLightIntensity / 100.0);\n"
+    "    if (uProbeVis > 0.5) {\n"
+    "      vec3 Vp = worldToView(Pw);\n"
+    "      int dim = int(uProbeDim + 0.5);\n"
+    "      if (dim < 1) dim = 1;\n"
+    "      if (dim > 4) dim = 4;\n"
+    "      float worldR = max(uProbeRadiusW, 1.0);\n"
+    "      for (int ix = 0; ix < 4; ix++) {\n"
+    "        if (ix >= dim) break;\n"
+    "        for (int iy = 0; iy < 4; iy++) {\n"
+    "          if (iy >= dim) break;\n"
+    "          for (int iz = 0; iz < 4; iz++) {\n"
+    "            if (iz >= dim) break;\n"
+    "            vec3 pp = uProbeCenter + vec3(float(ix - dim / 2), float(iy), float(iz - dim / 2)) * uProbeSpacing;\n"
+    "            vec3 pv = worldToView(pp);\n"
+    "            if (pv.z > -1.0) continue;\n"
+    "            vec2 pcuv = viewToCanvas(pv);\n"
+    "            vec2 puv = eyeUVfromCanvas(pcuv);\n"
+    "            vec2 dpx = (puv - vUV) * uRes;\n"
+    "            float rpx = worldR * (uRes.y * 0.5 / uTanHalf) / max(-pv.z, 1.0);\n"
+    "            if (rpx < 2.0) continue;\n"
+    "            float r2 = dot(dpx, dpx) / (rpx * rpx);\n"
+    "            if (r2 > 1.0) continue;\n"
+    "            vec3 n = normalize(vec3(dpx / rpx, sqrt(max(1.0 - r2, 0.0))));\n"
+    "            vec3 viewDir = normalize(Pw - pp);\n"
+    "            vec3 reflDir = reflect(viewDir, n);\n"
+    "            vec3 state = vec3(0.02);\n"
+    "            for (int li = 0; li < 4; li++) {\n"
+    "              if (float(li) >= uLightCount) break;\n"
+    "              vec3 Ld = uLightPos[li] - pp;\n"
+    "              float dd = length(Ld);\n"
+    "              if (dd > uLightRadius[li]) continue;\n"
+    "              float aa = 1.0 - dd / max(uLightRadius[li], 1.0);\n"
+    "              state += uLightColor[li] * aa * aa;\n"
+    "            }\n"
+    "            vec3 env = probeEnv(reflDir, state);\n"
+    "            float fres = 0.15 + 0.85 * pow(1.0 - clamp(dot(-viewDir, n), 0.0, 1.0), 3.0);\n"
+    "            float spec = pow(max(dot(reflect(-viewDir, n), normalize(vec3(0.4, 0.8, 0.3))), 0.0), 8.0 + max(uProbeRes, 1.0) * 3.0);\n"
+    "            outc = mix(outc, env * fres + spec * 1.5 + state * 0.2, 0.92);\n"
+    "          }\n"
+    "        }\n"
+    "      }\n"
+    "    }\n"
     "    gl_FragColor = vec4(outc, 1.0);\n"
     "  }\n"
     "}\n";
@@ -1087,6 +1249,10 @@ static struct {
     GLint shadow_softness, shadow_taps, shadow_debug;
     GLint ssrtx_on, ssrtx_intensity, ssrtx_dist, ssrtx_steps;
     GLint ssrtx_rays, ssrtx_thick, ssrtx_rough, ssrtx_fade;
+    GLint mb_on, mb_strength, mb_samples, cur_vp, prev_vp;
+    GLint light_count, light_pos, light_pos_view, light_color, light_radius;
+    GLint light_intensity, light_shadows, light_shadow_steps;
+    GLint probe_vis, probe_center, probe_spacing, probe_dim, probe_radius, probe_res;
 } s_fx_u;
 
 static GLuint s_fx_prog = 0;
@@ -1098,7 +1264,7 @@ static int    s_pp_w = 0, s_pp_h = 0;
 static int stereo_fx_any(void) {
     return s_fx_ao_on || s_fx_dof_on || s_fx_gi_on || s_fx_debug != 0
         || (gfx_shadow_enabled && s_shadow_map_valid)
-        || s_fx_ssrtx_on;
+        || s_fx_ssrtx_on || s_fx_mb_on || s_light_count > 0 || s_probe_vis;
 }
 
 // Row-vector matrix (translation in row 3). GLSL matrices are column-major,
@@ -1127,7 +1293,7 @@ void gfx_opengl_ssfx_set(int which, int value) {
         case 23: s_fx_gi_radius = value < 1 ? 1 : value; break;
         case 24: s_fx_gi_steps = value < 1 ? 1 : (value > 12 ? 12 : value); break;
         case 25: s_fx_gi_rays = value < 1 ? 1 : (value > 8 ? 8 : value); break;
-        case 31: s_fx_debug = value < 0 ? 0 : (value > 4 ? 4 : value); break;
+        case 31: s_fx_debug = value < 0 ? 0 : (value > 9 ? 9 : value); break;
         case 32: s_fx_normal_flip = value ? 1 : 0; break;
         /* SSRTX screen-space ray-traced reflections. */
         case 70: s_fx_ssrtx_on = value ? 1 : 0; break;
@@ -1151,6 +1317,36 @@ void gfx_opengl_ssfx_set(int which, int value) {
         case 59: gfx_shadow_yaw_deg = value < 0 ? 0 : (value > 359 ? 359 : value); break;
         case 60: gfx_shadow_pitch_deg = value < 5 ? 5 : (value > 89 ? 89 : value); break;
         case 61: gfx_shadow_debug = value < 0 ? 0 : (value > 2 ? 2 : value); break;
+        /* Vector motion blur. */
+        case 100: s_fx_mb_on = value ? 1 : 0; break;
+        case 101: s_fx_mb_strength = value < 0 ? 0 : (value > 200 ? 200 : value); break;
+        case 102: s_fx_mb_samples = value < 1 ? 1 : (value > 16 ? 16 : value); break;
+        /* Deferred dynamic lights. */
+        case 103: s_light_count = value < 0 ? 0 : (value > 4 ? 4 : value); break;
+        case 104: s_light_shadows = value ? 1 : 0; break;
+        case 105: s_light_intensity = value < 0 ? 0 : (value > 300 ? 300 : value); break;
+        case 106: s_light_shadow_steps = value < 0 ? 0 : (value > 8 ? 8 : value); break;
+        /* Probe grid debug. */
+        case 110: s_probe_vis = value ? 1 : 0; break;
+        case 111: s_probe_spacing = value < 100 ? 100 : (value > 2000 ? 2000 : value); break;
+        case 112: s_probe_dim = value < 1 ? 1 : (value > 4 ? 4 : value); break;
+        case 113: s_probe_radius = value < 5 ? 5 : (value > 400 ? 400 : value); break;
+        case 114: s_probe_res = value < 2 ? 2 : (value > 64 ? 64 : value); break;
+        /* Per-light colour + radius: 120 + i*4 (R,G,B,radius). */
+        case 120: case 121: case 122: case 123:
+        case 124: case 125: case 126: case 127:
+        case 128: case 129: case 130: case 131:
+        case 132: case 133: case 134: case 135: {
+            int li = (which - 120) / 4;
+            int comp = (which - 120) % 4;
+            float v = value < 0 ? 0.0f : (value > 255 ? 255.0f : (float)value) / 255.0f;
+            if (comp < 3) {
+                s_light_color[li][comp] = v;
+            } else {
+                s_light_radius[li] = value < 100 ? 100.0f : (float)value;
+            }
+            break;
+        }
         default: return;
     }
     __android_log_print(ANDROID_LOG_INFO, "SM64FX",
@@ -1202,6 +1398,18 @@ int gfx_opengl_ssfx_get(int which) {
         case 59: return gfx_shadow_yaw_deg;
         case 60: return gfx_shadow_pitch_deg;
         case 61: return gfx_shadow_debug;
+        case 100: return s_fx_mb_on;
+        case 101: return s_fx_mb_strength;
+        case 102: return s_fx_mb_samples;
+        case 103: return s_light_count;
+        case 104: return s_light_shadows;
+        case 105: return s_light_intensity;
+        case 106: return s_light_shadow_steps;
+        case 110: return s_probe_vis;
+        case 111: return s_probe_spacing;
+        case 112: return s_probe_dim;
+        case 113: return s_probe_radius;
+        case 114: return s_probe_res;
     }
     return -1;
 }
@@ -1306,8 +1514,92 @@ static void stereo_fx_init(void) {
     s_fx_u.ssrtx_thick = glGetUniformLocation(s_fx_prog, "uSSRTXThick");
     s_fx_u.ssrtx_rough = glGetUniformLocation(s_fx_prog, "uSSRTXRough");
     s_fx_u.ssrtx_fade = glGetUniformLocation(s_fx_prog, "uSSRTXFade");
+    s_fx_u.mb_on = glGetUniformLocation(s_fx_prog, "uMBOn");
+    s_fx_u.mb_strength = glGetUniformLocation(s_fx_prog, "uMBStrength");
+    s_fx_u.mb_samples = glGetUniformLocation(s_fx_prog, "uMBSamples");
+    s_fx_u.cur_vp = glGetUniformLocation(s_fx_prog, "uCurVP");
+    s_fx_u.prev_vp = glGetUniformLocation(s_fx_prog, "uPrevVP");
+    s_fx_u.light_count = glGetUniformLocation(s_fx_prog, "uLightCount");
+    s_fx_u.light_pos = glGetUniformLocation(s_fx_prog, "uLightPos[0]");
+    s_fx_u.light_pos_view = glGetUniformLocation(s_fx_prog, "uLightPosView[0]");
+    s_fx_u.light_color = glGetUniformLocation(s_fx_prog, "uLightColor[0]");
+    s_fx_u.light_radius = glGetUniformLocation(s_fx_prog, "uLightRadius[0]");
+    s_fx_u.light_intensity = glGetUniformLocation(s_fx_prog, "uLightIntensity");
+    s_fx_u.light_shadows = glGetUniformLocation(s_fx_prog, "uLightShadows");
+    s_fx_u.light_shadow_steps = glGetUniformLocation(s_fx_prog, "uLightShadowSteps");
+    s_fx_u.probe_vis = glGetUniformLocation(s_fx_prog, "uProbeVis");
+    s_fx_u.probe_center = glGetUniformLocation(s_fx_prog, "uProbeCenter");
+    s_fx_u.probe_spacing = glGetUniformLocation(s_fx_prog, "uProbeSpacing");
+    s_fx_u.probe_dim = glGetUniformLocation(s_fx_prog, "uProbeDim");
+    s_fx_u.probe_radius = glGetUniformLocation(s_fx_prog, "uProbeRadiusW");
+    s_fx_u.probe_res = glGetUniformLocation(s_fx_prog, "uProbeRes");
+    __android_log_print(ANDROID_LOG_INFO, "SM64FX",
+        "new uniforms: mb=%d lc=%d pv=%d psp=%d",
+        s_fx_u.mb_on, s_fx_u.light_count, s_fx_u.probe_vis, s_fx_u.probe_spacing);
     s_fx_prog_state = 1;
     __android_log_print(ANDROID_LOG_INFO, "SM64FX", "FX program ready (%u)", s_fx_prog);
+}
+
+/* Programmatic control for the PTC smoke test / debug UI. */
+void gfx_opengl_light_set(int index, float x, float y, float z,
+                          float r, float g, float b, float radius) {
+    if (index < 0 || index > 3) return;
+    s_light_pos[index][0] = x;
+    s_light_pos[index][1] = y;
+    s_light_pos[index][2] = z;
+    s_light_color[index][0] = r;
+    s_light_color[index][1] = g;
+    s_light_color[index][2] = b;
+    s_light_radius[index] = radius < 100.0f ? 100.0f : radius;
+}
+
+void gfx_opengl_light_color(int index, float r, float g, float b) {
+    if (index < 0 || index > 3) return;
+    s_light_color[index][0] = r;
+    s_light_color[index][1] = g;
+    s_light_color[index][2] = b;
+}
+
+void gfx_opengl_light_pos(int index, float x, float y, float z) {
+    if (index < 0 || index > 3) return;
+    s_light_pos[index][0] = x;
+    s_light_pos[index][1] = y;
+    s_light_pos[index][2] = z;
+}
+
+void gfx_opengl_light_count(int count) {
+    s_light_count = count < 0 ? 0 : (count > 4 ? 4 : count);
+}
+
+void gfx_opengl_light_shadows(int on) {
+    s_light_shadows = on ? 1 : 0;
+}
+
+void gfx_opengl_probe_config(float x, float y, float z, int spacing, int dim,
+                             int radius, int resolution, int vis) {
+    s_probe_center[0] = x;
+    s_probe_center[1] = y;
+    s_probe_center[2] = z;
+    s_probe_spacing = spacing < 100 ? 100 : (spacing > 2000 ? 2000 : spacing);
+    s_probe_dim = dim < 1 ? 1 : (dim > 4 ? 4 : dim);
+    s_probe_radius = radius < 5 ? 5 : (radius > 400 ? 400 : radius);
+    s_probe_res = resolution < 2 ? 2 : (resolution > 64 ? 64 : resolution);
+    s_probe_vis = vis ? 1 : 0;
+}
+
+int gfx_opengl_light_state(int which) {
+    switch (which) {
+        case 0: return s_light_count;
+        case 1: return s_light_shadows;
+        case 2: return s_fx_mb_on;
+        case 3: return s_probe_vis;
+        case 4: return s_probe_dim;
+        case 5: return s_probe_spacing;
+        case 6: return s_probe_radius;
+        case 7: return s_probe_res;
+        case 8: return s_light_intensity;
+    }
+    return -1;
 }
 
 /* ---------------- Realtime shadow map pass ----------------
@@ -1462,6 +1754,37 @@ static void stereo_ensure_pp(int w, int h) {
     s_pp_h = h;
 }
 
+static void fx_mat4_mul(float r[4][4], const float a[4][4], const float b[4][4]) {
+    float t[4][4];
+    for (int i = 0; i < 4; i++) {
+        for (int j = 0; j < 4; j++) {
+            t[i][j] = a[i][0] * b[0][j] + a[i][1] * b[1][j]
+                    + a[i][2] * b[2][j] + a[i][3] * b[3][j];
+        }
+    }
+    memcpy(r, t, sizeof(t));
+}
+
+/* world -> clip, row-vector convention (p' = p * VP).  Built from the
+ * camera-to-world matrix the shadow pass already publishes. */
+static void fx_build_vp(float out[4][4]) {
+    const float (*M)[4] = gfx_cam_inv_mtx;
+    float V[4][4];
+    float cp[3] = { M[3][0], M[3][1], M[3][2] };
+
+    memset(V, 0, sizeof(V));
+    for (int i = 0; i < 3; i++) {
+        for (int j = 0; j < 3; j++) {
+            V[i][j] = M[j][i];
+        }
+    }
+    for (int j = 0; j < 3; j++) {
+        V[3][j] = -(cp[0] * V[0][j] + cp[1] * V[1][j] + cp[2] * V[2][j]);
+    }
+    V[3][3] = 1.0f;
+    fx_mat4_mul(out, V, gfx_last_persp_proj);
+}
+
 /* Runs the post pass for both eyes. Returns 1 if s_pp_tex is valid to composite. */
 static int stereo_fx_pass(void) {
     if (!stereo_fx_any()) return 0;
@@ -1507,6 +1830,54 @@ static int stereo_fx_pass(void) {
                 gfx_shadow_light_dir[2]);
     upload_mat4_rowvec(s_fx_u.shadow_vp, gfx_shadow_light_vp);
     upload_mat4_rowvec(s_fx_u.shadow_caminv, gfx_cam_inv_mtx);
+    {
+        float vp[4][4];
+        float pvpos[4][3];
+        float camPos[3] = { gfx_cam_inv_mtx[3][0], gfx_cam_inv_mtx[3][1],
+                            gfx_cam_inv_mtx[3][2] };
+        fx_build_vp(vp);
+        if (s_fx_vp_frame != frame_count) {
+            if (s_fx_have_prev) {
+                memcpy(s_fx_prev_vp, s_fx_cur_vp, sizeof(vp));
+            } else {
+                memcpy(s_fx_prev_vp, vp, sizeof(vp));
+                s_fx_have_prev = 1;
+            }
+            memcpy(s_fx_cur_vp, vp, sizeof(vp));
+            s_fx_vp_frame = frame_count;
+        }
+        upload_mat4_rowvec(s_fx_u.cur_vp, s_fx_cur_vp);
+        upload_mat4_rowvec(s_fx_u.prev_vp, s_fx_prev_vp);
+        (void) camPos;
+
+        /* world-space lights -> view space for the screen-space shadow march */
+        for (int i = 0; i < 4; i++) {
+            float p[3] = { s_light_pos[i][0], s_light_pos[i][1], s_light_pos[i][2] };
+            for (int j = 0; j < 3; j++) {
+                pvpos[i][j] = (p[0] - camPos[0]) * gfx_cam_inv_mtx[j][0]
+                            + (p[1] - camPos[1]) * gfx_cam_inv_mtx[j][1]
+                            + (p[2] - camPos[2]) * gfx_cam_inv_mtx[j][2];
+            }
+        }
+        glUniform1f(s_fx_u.mb_on, s_fx_mb_on ? 1.0f : 0.0f);
+        glUniform1f(s_fx_u.mb_strength, (float)s_fx_mb_strength);
+        glUniform1f(s_fx_u.mb_samples, (float)s_fx_mb_samples);
+        glUniform1f(s_fx_u.light_count, (float)s_light_count);
+        glUniform3fv(s_fx_u.light_pos, 4, &s_light_pos[0][0]);
+        glUniform3fv(s_fx_u.light_pos_view, 4, &pvpos[0][0]);
+        glUniform3fv(s_fx_u.light_color, 4, &s_light_color[0][0]);
+        glUniform1fv(s_fx_u.light_radius, 4, s_light_radius);
+        glUniform1f(s_fx_u.light_intensity, (float)s_light_intensity);
+        glUniform1f(s_fx_u.light_shadows, s_light_shadows ? 1.0f : 0.0f);
+        glUniform1f(s_fx_u.light_shadow_steps, (float)s_light_shadow_steps);
+        glUniform1f(s_fx_u.probe_vis, s_probe_vis ? 1.0f : 0.0f);
+        glUniform3f(s_fx_u.probe_center, s_probe_center[0], s_probe_center[1],
+                    s_probe_center[2]);
+        glUniform1f(s_fx_u.probe_spacing, (float)s_probe_spacing);
+        glUniform1f(s_fx_u.probe_dim, (float)s_probe_dim);
+        glUniform1f(s_fx_u.probe_radius, (float)s_probe_radius);
+        glUniform1f(s_fx_u.probe_res, (float)s_probe_res);
+    }
     glUniform1f(s_fx_u.ssrtx_on, s_fx_ssrtx_on ? 1.0f : 0.0f);
     glUniform1f(s_fx_u.ssrtx_intensity, (float)s_fx_ssrtx_intensity);
     glUniform1f(s_fx_u.ssrtx_dist, (float)s_fx_ssrtx_distance);

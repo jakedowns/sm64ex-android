@@ -813,6 +813,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addTabButton(tabBar, "EFFECTS", -1);
         addTabButton(tabBar, "CAMERA", 6);
         addTabButton(tabBar, "ENH", 7);
+        addTabButton(tabBar, "LIGHT", 13);
         addTabButton(tabBar, "CHANGELOG", 10);
         addTabButton(tabBar, "EXPORT", 11);
         addTabButton(tabBar, "ABOUT", 12);
@@ -1622,6 +1623,46 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                 + "\n\nFull Android, device, Lume firmware, Leia service and CNSDK"
                 + " details are written to the debug log on the EXPORT tab.");
         controls.addView(aboutEnv);
+
+        // --- Dynamic light + motion blur + probe debug ---
+        beginTab();
+        TextView lh = new TextView(this);
+        lh.setText("DYNAMIC LIGHT / VECTOR BLUR / PROBES");
+        lh.setTextSize(13);
+        lh.setTextColor(0xFFAACCFF);
+        lh.setPadding(dp(4), dp(4), dp(4), dp(6));
+        controls.addView(lh);
+
+        TextView ltest = new TextView(this);
+        ltest.setText("RUN PTC LIGHT TEST");
+        ltest.setTextSize(15);
+        ltest.setTextColor(0xFFFFFFFF);
+        ltest.setPadding(dp(8), dp(8), dp(8), dp(8));
+        ltest.setBackgroundColor(0xCC224422);
+        ltest.setOnClickListener(v -> debugPtc("lighttest"));
+        controls.addView(ltest);
+
+        addFxToggle("MOTION BLUR", 100, false);
+        addIntSlider("Blur strength", 0, 200, 40, v -> debugFx(101, v));
+        addIntSlider("Blur samples", 1, 16, 8, v -> debugFx(102, v));
+
+        addIntSlider("Light count", 0, 4, 0, v -> debugFx(103, v));
+        addFxToggle("LIGHT SHADOWS", 104, false);
+        addIntSlider("Light intensity", 0, 300, 120, v -> debugFx(105, v));
+        addIntSlider("Shadow steps", 0, 8, 6, v -> debugFx(106, v));
+
+        addFxToggle("SHOW PROBES", 110, false);
+        addIntSlider("Probe spacing", 100, 2000, 450, v -> debugFx(111, v));
+        addIntSlider("Probe dim", 1, 4, 3, v -> debugFx(112, v));
+        addIntSlider("Probe radius", 5, 120, 18, v -> debugFx(113, v));
+        addIntSlider("Probe res", 2, 64, 16, v -> debugFx(114, v));
+
+        addIntSlider("Light 0 R", 0, 255, 255, v -> debugFx(120, v));
+        addIntSlider("Light 0 G", 0, 255, 140, v -> debugFx(121, v));
+        addIntSlider("Light 0 B", 0, 255, 64, v -> debugFx(122, v));
+        addIntSlider("Light 1 R", 0, 255, 64, v -> debugFx(124, v));
+        addIntSlider("Light 1 G", 0, 255, 140, v -> debugFx(125, v));
+        addIntSlider("Light 1 B", 0, 255, 255, v -> debugFx(126, v));
     }
 
     private String buildBranch() {

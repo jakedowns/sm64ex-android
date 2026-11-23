@@ -601,8 +601,11 @@ static void geo_process_camera(struct GraphNodeCamera *node) {
     }
 
     mtxf_lookat(cameraTransform, node->pos, node->focus, node->roll);
+    /* The post pass needs camera->world for world reconstruction (dynamic
+     * lights, probes, motion blur) even when the shadow map is off, so keep
+     * this unconditional; only the light matrices are shadow-specific. */
+    shadow_make_camera_inv(gfx_cam_inv_mtx, cameraTransform, node->pos);
     if (gfx_shadow_enabled) {
-        shadow_make_camera_inv(gfx_cam_inv_mtx, cameraTransform, node->pos);
         shadow_update_light_matrices(node->pos);
         gfx_shadow_matrices_ready = 1;
     }

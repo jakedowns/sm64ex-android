@@ -3671,6 +3671,38 @@ static void ptc_apply_command(const char *action) {
         ptc_calibrate_start();
     } else if (strcmp(action, "momentum") == 0 || strcmp(action, "launch") == 0) {
         ptc_momentum_start();
+    } else if (strcmp(action, "lighttest") == 0) {
+        /* Smoke test: two coloured lights around Mario, shadows on, motion
+         * blur on, and a 3x3x3 probe grid with the reflective-sphere debug. */
+        extern void gfx_opengl_light_set(int index, float x, float y, float z,
+                                         float r, float g, float b, float radius);
+        extern void gfx_opengl_light_count(int count);
+        extern void gfx_opengl_light_shadows(int on);
+        extern void gfx_opengl_probe_config(float x, float y, float z, int spacing,
+                                            int dim, int radius, int resolution,
+                                            int vis);
+        extern void gfx_opengl_ssfx_set(int which, int value);
+        extern int gfx_opengl_light_state(int which);
+        struct MarioState *lm = gMarioState;
+        float mx = lm ? lm->pos[0] : 0.0f;
+        float my = lm ? lm->pos[1] : 0.0f;
+        float mz = lm ? lm->pos[2] : 0.0f;
+
+        gfx_opengl_light_set(0, mx + 500.0f, my + 1200.0f, mz - 250.0f,
+                             1.0f, 0.55f, 0.25f, 2600.0f);
+        gfx_opengl_light_set(1, mx - 600.0f, my + 800.0f, mz + 350.0f,
+                             0.25f, 0.55f, 1.0f, 2200.0f);
+        gfx_opengl_light_count(2);
+        gfx_opengl_light_shadows(1);
+        gfx_opengl_ssfx_set(105, 90);    /* intensity */
+        gfx_opengl_ssfx_set(100, 1);     /* motion blur on */
+        gfx_opengl_ssfx_set(101, 40);
+        gfx_opengl_ssfx_set(102, 8);
+        gfx_opengl_probe_config(mx, my + 250.0f, mz, 450, 3, 18, 16, 1);
+        gfx_set_debug_note("LIGHT TEST: 2 lights + shadows + blur + 3x3x3 probes");
+        printf("PTC lighttest lights=%d shadows=%d probes=%d\n",
+               gfx_opengl_light_state(0), gfx_opengl_light_state(1),
+               gfx_opengl_light_state(3));
     } else if (strcmp(action, "toolswap") == 0) {
         movekit_tool_toggle();
     } else if (strcmp(action, "toolgun") == 0) {
@@ -3995,6 +4027,7 @@ void ptc_format_status(char *buf, int len) {
     struct MarioState *m = gMarioState;
     float pcamD = 0.0f, pcamA = 0.0f;
     extern void portal_last_camera_jump(float *dist, float *angleDeg);
+    extern int gfx_opengl_light_state(int which);
 
     portal_last_camera_jump(&pcamD, &pcamA);
     extern int camera_portal_remap_count(void);
@@ -4021,7 +4054,7 @@ void ptc_format_status(char *buf, int len) {
              "wall=%d ceil=%d ledge=%d "
              "coins=%d stars=%d save=%d before=%d/%d "
              "cal=%.1f,%.1f,%.1f ledge_reach=%.1f goomba=%d,%.1f,%.1f gmodel=%d "
-             "gobj=%d,0x%x,%d,%d annex=%d,%d,%d gun=%d,%d,%d tool=%d "
+             "gobj=%d,0x%x,%d,%d annex=%d,%d,%d gun=%d,%d,%d tool=%d lgt=%d,%d,%d,%d,%d,%d,%d,%d "
              "chain=%d,%d,0x%x,%d,%d cmode=%d loop=%d "
              "face=%.1f,%.1f,%.1f anim=%d mh=%.1f remap=%d cdbg=%d,%d,%d,%d,%d walk=%d,%d,%d "
              "mpw=%d,%d,%d,%d,%d,%d,%d fc=%d,%d,%d,%d cg=%d,%.0f,%.0f,%.0f,0x%x",
@@ -4059,6 +4092,10 @@ void ptc_format_status(char *buf, int len) {
              s_annexMode, s_annexSeen, s_annexTimer,
              portal_gun_has(), portal_gun_aim_error_deg10(),
              portal_gun_yaw_offset_deg10(), movekit_tool(),
+             gfx_opengl_light_state(0), gfx_opengl_light_state(1),
+             gfx_opengl_light_state(2), gfx_opengl_light_state(3),
+             gfx_opengl_light_state(4), gfx_opengl_light_state(5),
+             gfx_opengl_light_state(6), gfx_opengl_light_state(7),
              s_chainMode, s_chainTimer, s_chainFlags,
              s_chainGoombaCross,
              boxphys_test_boxes_near(CH_BOX_X, 120.0f, CH_BOX_B_Z, 300.0f),
