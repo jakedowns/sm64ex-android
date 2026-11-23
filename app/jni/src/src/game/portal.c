@@ -66,6 +66,8 @@ static int s_lastPlaced = 1;
 // Last placement result, for headless debugging: 0 none, 1 placed, 2 bad
 // surface, 3 could not fit the ellipse, 4 no gun.
 int g_portal_debug = 0;
+/* Depth limit for the screen-space relay recursion (0 = off). */
+int g_ptc_portal_recursion = 2;
 int g_portal_debug_align = 0;   /* magenta source fan behind the relay decal */
 int g_portal_debug_color = 0;   /* solid relay colour: isolate geometry/UVs */
 PortalViewState g_portal_view;

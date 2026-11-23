@@ -2428,6 +2428,41 @@ void gfx_opengl_portal_overlay(int eye, int index) {
     glEnableVertexAttribArray(s_portal_apos);
     glEnableVertexAttribArray(s_portal_auv);
     glDrawArrays(GL_TRIANGLE_FAN, 0, PORTAL_VIEW_SEGS + 2);
+
+    /* Depth-limited screen-space recursion: draw the relay image again,
+     * inset towards the portal centre, alternating with the other portal's
+     * image so the window shows a window.  Cheap (no extra scene passes) and
+     * bounded by relay.recursion. */
+    {
+        extern int g_ptc_portal_recursion;
+        int levels = g_ptc_portal_recursion;
+        if (levels > 4) levels = 4;
+        if (levels > 0 && s_portal_tex[1 - index][eye & 1] != 0) {
+            const float cnx = buf[0], cny = buf[1];
+            const float cu = buf[3], cv = buf[4];
+            float tmp[((PORTAL_VIEW_SEGS + 2) * 5)];
+            for (int lvl = 1; lvl <= levels; lvl++) {
+                float sc = 1.0f;
+                for (int q = 0; q < lvl; q++) sc *= 0.78f;
+                for (int k = 0; k < PORTAL_VIEW_SEGS + 2; k++) {
+                    float *d = &tmp[k * 5];
+                    const float *v = &buf[k * 5];
+                    d[0] = cnx + (v[0] - cnx) * sc;
+                    d[1] = cny + (v[1] - cny) * sc;
+                    d[2] = v[2];
+                    d[3] = cu + (v[3] - cu) * sc;
+                    d[4] = cv + (v[4] - cv) * sc;
+                }
+                glBindTexture(GL_TEXTURE_2D,
+                              s_portal_tex[(lvl & 1) ? (1 - index) : index][eye & 1]);
+                glVertexAttribPointer(s_portal_apos, 3, GL_FLOAT, GL_FALSE,
+                                      5 * sizeof(float), tmp);
+                glVertexAttribPointer(s_portal_auv, 2, GL_FLOAT, GL_FALSE,
+                                      5 * sizeof(float), tmp + 3);
+                glDrawArrays(GL_TRIANGLE_FAN, 0, PORTAL_VIEW_SEGS + 2);
+            }
+        }
+    }
     glDisableVertexAttribArray(s_portal_apos);
     glDisableVertexAttribArray(s_portal_auv);
     glDisable(GL_POLYGON_OFFSET_FILL);
