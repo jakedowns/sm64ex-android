@@ -538,14 +538,29 @@ Tabs:
     PROBE VIS, L-DIST, MOTION VECTORS) plus a small reorderable layer stack
     (ZBUF, WIRE) with per-layer on/off.
   - CAMERA opens a third strip: STEREO / SETTINGS.
-- **DEBUG** — MOVE / PORTAL / BALL / SYS / LOGS. SYS ends with a HUD section:
-  GAME HUD, DEBUG CAPTIONS and TOUCH CONTROLS toggles.
+- **DEBUG** — MOVE / PORTAL / BALL / SYS / LOGS. SYS ends with two sections:
+  HUD (GAME HUD, DEBUG CAPTIONS, TOUCH CONTROLS) and PERFORMANCE
+  (PERF MONITOR, FRAME GRAPH, FPS COUNTER — all on by default).
 - **ABOUT** — GENERAL / CHANGELOG.
 
 Every tab and sub-tab carries a small dot: green when that page has a feature
 enabled, grey otherwise. The selected tab is underlined and white. Toggle and
 button rows are sized to their labels instead of stretching across the panel,
-so they are not one huge touch target.
+so they are not one huge touch target. The collapsed drawer is just the header
+row plus the status line; opening it animates the black panel between heights
+with an ease-in-out curve.
+
+Performance monitor:
+- a rolling 120-frame frame-time graph sits under the FPS counter, with a
+  reference line at the current target period (green bars under budget, red
+  over);
+- every FX page has a **MEASURE** button that A/B samples the effect (off for
+  ~0.5 s, on for ~0.5 s) and reports the delta, e.g.
+  `MXAO: +14.30 ms (off 8.4 / on 22.7)`;
+- VIEWS keeps a PERF table of all measurements with REFRESH/CLEAR.
+
+The FPS label shows `∞` in uncapped mode. Camera modes BETTER and PUPPY are
+temporarily hidden from both the mode pills and the header CAM switcher.
 
 ---
 

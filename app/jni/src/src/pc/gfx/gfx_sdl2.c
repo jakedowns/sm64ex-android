@@ -129,6 +129,7 @@ extern int gfx_opengl_ssfx_get(int which);
 
 /* Defined below; the debug-key switch appears earlier in this file. */
 extern int gfx_rate_enabled;
+int gfx_rate_state(int which);
 extern int gfx_rate_target_fps;
 extern int gfx_rate_adaptive;
 extern int gfx_rate_effective_fps;
@@ -440,6 +441,19 @@ Java_com_vdavid003_sm64port_sm64portActivity_nativeGetPortalGun(JNIEnv *env, jcl
     (void) env; (void) clazz;
     extern int portal_gun_has(void);
     return portal_gun_has();
+}
+
+JNIEXPORT jint JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeGetRateState(JNIEnv *env, jclass clazz,
+                                                                jint which) {
+    (void) env; (void) clazz;
+    return (jint) gfx_rate_state(which);
+}
+
+JNIEXPORT jint JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeFrameTimeUs(JNIEnv *env, jclass clazz) {
+    (void) env; (void) clazz;
+    return (jint) gfx_rate_state(6);
 }
 
 JNIEXPORT void JNICALL
@@ -833,6 +847,7 @@ static double s_rate_next = 0.0;
 static double s_rate_last = 0.0;
 static double s_rate_ema_dt = 0.0;
 static double s_rate_ema_jitter = 0.0;
+static int s_rate_last_frame_us = 0;
 static int s_rate_slow_frames = 0;
 static int s_rate_fast_frames = 0;
 
@@ -852,6 +867,7 @@ static void gfx_rate_note_frame(double now) {
     if (s_rate_last > 0.0) {
         double dt = now - s_rate_last;
         if (dt > 0.0 && dt < 0.5) {
+            s_rate_last_frame_us = (int) (dt * 1000000.0);
             s_rate_ema_dt = s_rate_ema_dt > 0.0 ? s_rate_ema_dt * 0.92 + dt * 0.08 : dt;
             s_rate_ema_jitter = s_rate_ema_jitter * 0.92 + fabs(dt - s_rate_ema_dt) * 0.08;
             if (target > 0.0) {
@@ -927,6 +943,7 @@ int gfx_rate_state(int which) {
         case 3: return (int) (s_rate_ema_dt * 1000000.0);
         case 4: return (int) (s_rate_ema_jitter * 1000000.0);
         case 5: return gfx_rate_effective_fps;
+        case 6: return s_rate_last_frame_us;   /* raw last frame, microseconds */
     }
     return -1;
 }

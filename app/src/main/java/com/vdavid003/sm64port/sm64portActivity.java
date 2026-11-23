@@ -98,6 +98,16 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     /* Mirrors of the toggles used for the tab indicator dots. */
     private boolean mbOn, lightCountOn, probeOn;
     private boolean gameHudOn = true, debugCapsOn = true, touchCtlOn = true;
+    /* Performance monitor: on by default, like the FPS counter and graph. */
+    private boolean perfMonitorOn = true, frameGraphOn = true, fpsCounterOn = true;
+    private FrameGraphView frameGraph;
+    private final float[] frameSamples = new float[120];
+    private int frameSampleCount, frameSamplePos;
+    private final android.os.Handler perfHandler =
+            new android.os.Handler(android.os.Looper.getMainLooper());
+    private final java.util.Map<String, Float> perfResults = new java.util.LinkedHashMap<>();
+    private final java.util.Map<String, Long> perfTimes = new java.util.LinkedHashMap<>();
+    private TextView perfTable;
     private int enhSelected;
     private LinearLayout layerList;
     private final java.util.List<String> layerOrder = new java.util.ArrayList<>();
@@ -131,11 +141,11 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
      * indices: 0 stereo, 1 views, 2 MXAO, 3 C.DOF, 4 SSGI, 5 SSRTX,
      * 6 camera settings, 7 debug, 8 shadow, 9 splat, 10 changelog,
      * 11 logs, 12 about general, 13 light. */
-    private static final int[] FX_PAGES = {2, 3, 4, 5, 8, 9, 13, 1, 0, 6};
+    private static final int[] FX_PAGES = {0, 2, 3, 4, 5, 8, 9, 13, 1, 6};
     private static final String[] FX_LABELS =
-            {"MXAO", "C.DOF", "SSGI", "SSRTX", "SHADOW", "SPLAT", "LIGHT", "VIEWS", "CAMERA"};
-    private static final int[] CAMERA_PAGES = {0, 6};
-    private static final String[] CAMERA_LABELS = {"STEREO", "SETTINGS"};
+            {"CAMERA", "MXAO", "C.DOF", "SSGI", "SSRTX", "SHADOW", "SPLAT", "LIGHT", "VIEWS"};
+    private static final int[] CAMERA_PAGES = {6, 0};
+    private static final String[] CAMERA_LABELS = {"SETTINGS", "STEREO"};
     private static final int[] ABOUT_PAGES = {12, 10};
     private static final String[] ABOUT_LABELS = {"GENERAL", "CHANGELOG"};
     private static final String[] TOP_LABELS = {"FX", "DEBUG", "ABOUT"};
@@ -196,6 +206,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     private boolean interpOn = true;
     // Debug panel: slider drag mode, tab styling, changelog.
     private LinearLayout tuningPanelView;
+    private LinearLayout topTabBar;
     private final java.util.List<View> sliderRows = new java.util.ArrayList<>();
     private TextView hideButton;
     private int selectedTab = 0;
@@ -256,12 +267,16 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
           + "  stay in level, level select, cheats, log export, about/credits.";
 
     /** Cycle render rate: 30 -> 60 -> 120 -> uncapped, and match panel refresh. */
+    private String fpsLabel() {
+        return fpsMode == 0 ? "30" : fpsMode == 1 ? "60"
+                : fpsMode == 2 ? "120" : "\u221E";
+    }
+
     private void cycleFpsMode() {
         fpsMode = (fpsMode + 1) % 4;
         try {
             nativeSetFpsMode(fpsMode);
-            String label = fpsMode == 0 ? "30" : fpsMode == 1 ? "60"
-                    : fpsMode == 2 ? "120" : "uncapped";
+            String label = fpsLabel();
             Log.i(TAG, "FPS_MODE " + label);
             if (fpsButton != null) fpsButton.setText("FPS " + label);
             int hz = fpsMode == 0 ? 30 : fpsMode == 1 ? 60 : fpsMode == 2 ? 120 : 120;
@@ -609,6 +624,55 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     /** Collapse the tuning panel (used by the hide button, gestures, taps outside). */
     private boolean panelAnimating = false;
 
+    /** Height of the panel with the drawer content in the given state. */
+    private int measurePanel(boolean withContent) {
+        int vis = withContent ? View.VISIBLE : View.GONE;
+        tabContent.setVisibility(vis);
+        if (topTabBar != null) topTabBar.setVisibility(vis);
+        android.view.ViewGroup.LayoutParams lp = tuningPanelView.getLayoutParams();
+        int old = lp.height;
+        lp.height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT;
+        int w = tuningPanelView.getWidth();
+        if (w <= 0) w = getResources().getDisplayMetrics().widthPixels;
+        tuningPanelView.measure(
+                View.MeasureSpec.makeMeasureSpec(w, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
+        int h = tuningPanelView.getMeasuredHeight();
+        lp.height = old;
+        return h;
+    }
+
+    /** Animate the black panel background between two heights (ease-in-out). */
+    private void animatePanelHeight(final int from, final int to, final boolean opening) {
+        final android.view.ViewGroup.LayoutParams lp = tuningPanelView.getLayoutParams();
+        lp.height = from;
+        tuningPanelView.requestLayout();
+        android.animation.ValueAnimator va =
+                android.animation.ValueAnimator.ofInt(from, to);
+        va.setDuration(240);
+        va.setInterpolator(new android.view.animation.AccelerateDecelerateInterpolator());
+        va.addUpdateListener(a -> {
+            lp.height = (Integer) a.getAnimatedValue();
+            tuningPanelView.requestLayout();
+        });
+        va.addListener(new android.animation.AnimatorListenerAdapter() {
+            @Override
+            public void onAnimationEnd(android.animation.Animator animation) {
+                lp.height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT;
+                if (!opening) {
+                    tabContent.setVisibility(View.GONE);
+                    if (topTabBar != null) topTabBar.setVisibility(View.GONE);
+                } else {
+                    tabContent.setAlpha(1f);
+                }
+                tuningPanelView.requestLayout();
+                updateStereoPictogramVisibility();
+                panelAnimating = false;
+            }
+        });
+        va.start();
+    }
+
     void expandDebugPanel() {
         if (tabContent == null || debugPanelOpen() || panelAnimating) {
             return;
@@ -617,15 +681,20 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             hideButton.setText("\u25B4");
         }
         panelAnimating = true;
-        tabContent.setVisibility(View.VISIBLE);
-        final float off = Math.max(tabContent.getHeight(), dp(120));
-        tabContent.setTranslationY(off);
+        int collapsed = tuningPanelView.getHeight() > 0
+                ? tuningPanelView.getHeight() : measurePanel(false);
+        // Freeze the current height, then measure the opened layout without
+        // letting it jump before the animation starts.
+        tuningPanelView.getLayoutParams().height = collapsed;
         tabContent.setAlpha(0f);
-        tabContent.animate().translationY(0f).alpha(1f).setDuration(180)
-                .withEndAction(() -> {
-                    panelAnimating = false;
-                    updateStereoPictogramVisibility();
-                }).start();
+        int expanded = measurePanel(true);
+        android.view.ViewGroup.LayoutParams lp = tuningPanelView.getLayoutParams();
+        lp.height = collapsed;
+        tuningPanelView.requestLayout();
+        tabContent.animate().alpha(1f).setDuration(240)
+                .setInterpolator(new android.view.animation.AccelerateDecelerateInterpolator())
+                .start();
+        animatePanelHeight(collapsed, expanded, true);
     }
 
     void collapseDebugPanelIfOpen() {
@@ -636,15 +705,16 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             hideButton.setText("\u25BE");
         }
         panelAnimating = true;
-        final float off = Math.max(tabContent.getHeight(), dp(120));
-        tabContent.animate().translationY(off).alpha(0f).setDuration(160)
-                .withEndAction(() -> {
-                    tabContent.setVisibility(View.GONE);
-                    tabContent.setTranslationY(0f);
-                    tabContent.setAlpha(1f);
-                    updateStereoPictogramVisibility();
-                    panelAnimating = false;
-                }).start();
+        int expanded = tuningPanelView.getHeight() > 0
+                ? tuningPanelView.getHeight() : measurePanel(true);
+        int collapsed = measurePanel(false);
+        // Keep the content visible while the panel shrinks.
+        tabContent.setVisibility(View.VISIBLE);
+        if (topTabBar != null) topTabBar.setVisibility(View.VISIBLE);
+        tabContent.animate().alpha(0f).setDuration(240)
+                .setInterpolator(new android.view.animation.AccelerateDecelerateInterpolator())
+                .start();
+        animatePanelHeight(expanded, collapsed, false);
     }
 
     /**
@@ -728,6 +798,175 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         return super.dispatchTouchEvent(ev);
     }
 
+    /** Rolling frame-time strip: one bar per frame, target-period line. */
+    private class FrameGraphView extends View {
+        private final android.graphics.Paint p = new android.graphics.Paint(
+                android.graphics.Paint.ANTI_ALIAS_FLAG);
+
+        FrameGraphView() {
+            super(sm64portActivity.this);
+            setWillNotDraw(false);
+            setClickable(false);
+            setFocusable(false);
+        }
+
+        @Override
+        protected void onDraw(android.graphics.Canvas c) {
+            if (!frameGraphOn || frameSampleCount == 0) return;
+            float w = getWidth(), h = getHeight();
+            p.setStyle(android.graphics.Paint.Style.FILL);
+            p.setColor(0x66000000);
+            c.drawRect(0, 0, w, h, p);
+
+            float peak = 33.4f;
+            for (int i = 0; i < frameSampleCount; i++) {
+                if (frameSamples[i] > peak) peak = frameSamples[i];
+            }
+            peak = Math.min(50f, Math.max(33.4f, peak * 1.1f));
+            float targetMs = currentTargetMs();
+
+            // reference line at the current target period
+            if (targetMs > 0) {
+                p.setColor(0x66FFCC66);
+                p.setStrokeWidth(1f);
+                p.setStyle(android.graphics.Paint.Style.STROKE);
+                float y = h - (targetMs / peak) * h;
+                c.drawLine(0, y, w, y, p);
+            }
+
+            p.setStyle(android.graphics.Paint.Style.FILL);
+            float bw = w / 120f;
+            for (int i = 0; i < frameSampleCount; i++) {
+                int idx = (frameSamplePos - frameSampleCount + i + 120) % 120;
+                float ms = frameSamples[idx];
+                float bh = Math.min(h, (ms / peak) * h);
+                p.setColor(ms <= targetMs * 1.2f ? 0xFF44FF66 : 0xFFFF6644);
+                c.drawRect(i * bw, h - bh, (i + 1) * bw - 0.5f, h, p);
+            }
+        }
+    }
+
+    private float currentTargetMs() {
+        int fps = gfxRateTargetFps();
+        if (fps <= 0) {
+            fps = fpsMode == 0 ? 30 : fpsMode == 1 ? 60 : fpsMode == 2 ? 120 : 0;
+        }
+        return fps > 0 ? 1000f / fps : 1000f / 60f;
+    }
+
+    private int gfxRateTargetFps() {
+        try {
+            return nativeGetRateState(1);
+        } catch (Throwable t) {
+            return 0;
+        }
+    }
+
+    private void startFrameSampling() {
+        perfHandler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    int us = nativeFrameTimeUs();
+                    if (perfMonitorOn && us > 0) {
+                        frameSamples[frameSamplePos] = us / 1000f;
+                        frameSamplePos = (frameSamplePos + 1) % 120;
+                        if (frameSampleCount < 120) frameSampleCount++;
+                        if (frameGraph != null) frameGraph.invalidate();
+                    }
+                } catch (Throwable ignored) {
+                }
+                perfHandler.postDelayed(this, 33);
+            }
+        }, 500);
+    }
+
+    /** Average frame time (ms) over a short window, sampled from the renderer. */
+    private void sampleAverageMs(long settleMs, long windowMs,
+                                 java.util.function.Consumer<Float> done) {
+        final int n = Math.max(4, (int) (windowMs / 60));
+        perfHandler.postDelayed(() -> {
+            final long[] sum = {0};
+            final int[] count = {0};
+            for (int i = 0; i < n; i++) {
+                perfHandler.postDelayed(() -> {
+                    int us = nativeFrameTimeUs();
+                    if (us > 0) {
+                        sum[0] += us;
+                        count[0]++;
+                    }
+                }, i * 60L);
+            }
+            perfHandler.postDelayed(() -> done.accept(
+                    count[0] > 0 ? (sum[0] / (float) count[0]) / 1000f : 0f),
+                    n * 60L + 40);
+        }, settleMs);
+    }
+
+    private void addPerfRow(String name, final Runnable off, final Runnable on,
+                            final java.util.function.BooleanSupplier isOn) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        final TextView label = new TextView(this);
+        label.setText(name + ": press MEASURE");
+        label.setTextSize(12);
+        label.setTextColor(0xFFAACCFF);
+        label.setPadding(dp(4), dp(2), dp(8), dp(2));
+        row.addView(label, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        TextView btn = new TextView(this);
+        btn.setText("MEASURE");
+        btn.setTextSize(12);
+        btn.setTextColor(0xFFFFCC66);
+        btn.setPadding(dp(10), dp(6), dp(10), dp(6));
+        btn.setBackgroundColor(0x22FFFFFF);
+        btn.setOnClickListener(v -> measureEffect(name, label, off, on, isOn));
+        row.addView(btn);
+        controls.addView(row, 0);
+    }
+
+    private void measureEffect(final String name, final TextView label,
+                               final Runnable off, final Runnable on,
+                               final java.util.function.BooleanSupplier isOn) {
+        if (!perfMonitorOn) {
+            label.setText(name + ": perf monitor is off");
+            return;
+        }
+        final boolean wasOn = isOn.getAsBoolean();
+        label.setText(name + ": measuring...");
+        // A/B: measure with the effect off, then on, then restore the state.
+        off.run();
+        sampleAverageMs(500, 700, offAvg -> {
+            on.run();
+            sampleAverageMs(500, 700, onAvg -> {
+                float delta = onAvg - offAvg;
+                perfResults.put(name, delta);
+                perfTimes.put(name, android.os.SystemClock.elapsedRealtime());
+                label.setText(String.format(java.util.Locale.US,
+                        "%s: %+.2f ms  (off %.1f / on %.1f)", name, delta, offAvg, onAvg));
+                if (!wasOn) off.run();
+                refreshPerfTable();
+            });
+        });
+    }
+
+    private void refreshPerfTable() {
+        if (perfTable == null) return;
+        if (perfResults.isEmpty()) {
+            perfTable.setText("no measurements yet");
+            return;
+        }
+        StringBuilder b = new StringBuilder();
+        for (java.util.Map.Entry<String, Float> e : perfResults.entrySet()) {
+            long ago = (android.os.SystemClock.elapsedRealtime()
+                    - perfTimes.getOrDefault(e.getKey(), 0L)) / 1000L;
+            b.append(String.format(java.util.Locale.US, "%-12s %+.2f ms  (%ds ago)\n",
+                    e.getKey(), e.getValue(), ago));
+        }
+        perfTable.setText(b.toString().trim());
+    }
+
     private LinearLayout buildTuningPanel() {
         LinearLayout panel = new LinearLayout(this);
         panel.setOrientation(LinearLayout.VERTICAL);
@@ -771,7 +1010,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
 
         TextView fpsBtn = new TextView(this);
         fpsButton = fpsBtn;
-        fpsBtn.setText("FPS 120");
+        fpsBtn.setText("FPS " + fpsLabel());
         fpsBtn.setTextColor(0xFFCCCCCC);
         fpsBtn.setTextSize(16);
         fpsBtn.setPadding(pad, pad / 2, pad, pad / 2);
@@ -817,6 +1056,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         reset.setPadding(dp(10), dp(6), dp(10), dp(6));
         reset.setOnClickListener(v -> debugReset());
         tabBar.addView(reset);
+        topTabBar = tabBar;
         panel.addView(tabBar);
 
         tabContent = new LinearLayout(this);
@@ -844,6 +1084,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         // and swallowed taps meant for the overlay's START button. HIDE/SHOW
         // toggles all tab pages at once (see the hide listener below).
         tabContent.setVisibility(android.view.View.GONE);
+        if (topTabBar != null) topTabBar.setVisibility(android.view.View.GONE);
 
         grid = new android.widget.GridLayout(this);
         grid.setColumnCount(2);
@@ -873,6 +1114,13 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         mLayout.addView(fpsView, new RelativeLayout.LayoutParams(
                 android.widget.RelativeLayout.LayoutParams.WRAP_CONTENT,
                 android.widget.RelativeLayout.LayoutParams.WRAP_CONTENT));
+
+        frameGraph = new FrameGraphView();
+        android.widget.RelativeLayout.LayoutParams graphParams =
+                new android.widget.RelativeLayout.LayoutParams(dp(220), dp(78));
+        graphParams.topMargin = dp(30);
+        mLayout.addView(frameGraph, graphParams);
+        startFrameSampling();
 
         android.widget.AbsoluteLayout toggles = new android.widget.AbsoluteLayout(this);
         String[][] tgl = {{"SWAP", "4"}, {"SAME", "6"},
@@ -1051,7 +1299,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         fxStrip = new LinearLayout(this);
         fxStrip.setOrientation(LinearLayout.HORIZONTAL);
         for (int i = 0; i < FX_LABELS.length; i++) {
-            final int page = FX_PAGES[i];
+            final int page = "CAMERA".equals(FX_LABELS[i]) ? 6 : FX_PAGES[i];
             addSubTab(fxStrip, FX_LABELS[i], () -> selectPage(page));
         }
         col.addView(fxStrip);
@@ -1294,9 +1542,34 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             layerOrder.add("WIRE");
         }
         rebuildLayerList();
+        {
+            TextView h = new TextView(this);
+            h.setText("PERF (A/B average)");
+            h.setTextSize(13);
+            h.setTextColor(0xFF66CCFF);
+            h.setPadding(dp(4), dp(10), dp(4), dp(2));
+            controls.addView(h);
+        }
+        perfTable = new TextView(this);
+        perfTable.setTextSize(12);
+        perfTable.setTextColor(0xFFAACCFF);
+        perfTable.setTypeface(android.graphics.Typeface.MONOSPACE);
+        perfTable.setPadding(dp(4), dp(2), dp(4), dp(4));
+        controls.addView(perfTable);
+        refreshPerfTable();
+        {
+            LinearLayout r = addRow();
+            addActionCell(r, "REFRESH PERF", this::refreshPerfTable);
+            addActionCell(r, "CLEAR PERF", () -> {
+                perfResults.clear();
+                perfTimes.clear();
+                refreshPerfTable();
+            });
+        }
 
         // --- MXAO-style ambient occlusion ---
         beginTab();
+        addPerfRow("MXAO", () -> nativeSetSSFX(1, 0), () -> nativeSetSSFX(1, 1), () -> aoOn);
         aoToggle = addFxToggle("MXAO ENABLE", 1, aoOn);
         addFxDebugButton("SHOW AO", 1);
         addFxSlider("Intensity", 0, 300, 100, " %", 2);
@@ -1307,6 +1580,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
 
         // --- Cinematic DOF ---
         beginTab();
+        addPerfRow("C.DOF", () -> nativeSetSSFX(11, 0), () -> nativeSetSSFX(11, 1), () -> dofOn);
         dofToggle = addFxToggle("CINEMATIC DOF", 11, dofOn);
         addFxToggle("AUTO FOCUS", 16, true);   // tracks Mario by default
         addFxDebugButton("SHOW CoC", 2);
@@ -1317,6 +1591,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
 
         // --- Screen-space GI (SSGI/RTGI-style) ---
         beginTab();
+        addPerfRow("SSGI", () -> nativeSetSSFX(21, 0), () -> nativeSetSSFX(21, 1), () -> giOn);
         giToggle = addFxToggle("SSGI ENABLE", 21, giOn);
         addFxDebugButton("SHOW GI", 3);
         addFxSlider("Intensity", 0, 300, 100, " %", 22);
@@ -1326,6 +1601,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
 
         // --- SSRTX: screen-space ray-traced reflections ---
         beginTab();
+        addPerfRow("SSRTX", () -> nativeSetSSFX(70, 0), () -> nativeSetSSFX(70, 1), () -> ssrtxOn);
         ssrtxToggle = addFxToggle("SSRTX ENABLE", 70, ssrtxOn);
         addFxDebugButton("SHOW SSRTX", 4);
         addFxSlider("Intensity", 0, 300, 100, " %", 71);
@@ -1628,10 +1904,58 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             });
             enhParent().addView(oc);
         }
+        enhColumnTarget = enhPageColumns[3][2];
+        addEnhSection("PERFORMANCE");
+        {
+            final TextView pm = new TextView(this);
+            pm.setText("PERF MONITOR: ON");
+            pm.setTextSize(16);
+            pm.setTextColor(0xFF66FF99);
+            pm.setPadding(dp(4), dp(8), dp(4), dp(8));
+            pm.setOnClickListener(v -> {
+                boolean on = pm.getCurrentTextColor() != 0xFF66FF99;
+                perfMonitorOn = on;
+                pm.setText("PERF MONITOR: " + (on ? "ON" : "OFF"));
+                pm.setTextColor(on ? 0xFF66FF99 : 0xFF888888);
+            });
+            addCompact(enhParent(), pm);
+
+            final TextView fg = new TextView(this);
+            fg.setText("FRAME GRAPH: ON");
+            fg.setTextSize(16);
+            fg.setTextColor(0xFF66FF99);
+            fg.setPadding(dp(4), dp(8), dp(4), dp(8));
+            fg.setOnClickListener(v -> {
+                boolean on = fg.getCurrentTextColor() != 0xFF66FF99;
+                frameGraphOn = on;
+                if (frameGraph != null) {
+                    frameGraph.setVisibility(on ? View.VISIBLE : View.GONE);
+                    frameGraph.invalidate();
+                }
+                fg.setText("FRAME GRAPH: " + (on ? "ON" : "OFF"));
+                fg.setTextColor(on ? 0xFF66FF99 : 0xFF888888);
+            });
+            addCompact(enhParent(), fg);
+
+            final TextView fc = new TextView(this);
+            fc.setText("FPS COUNTER: ON");
+            fc.setTextSize(16);
+            fc.setTextColor(0xFF66FF99);
+            fc.setPadding(dp(4), dp(8), dp(4), dp(8));
+            fc.setOnClickListener(v -> {
+                boolean on = fc.getCurrentTextColor() != 0xFF66FF99;
+                fpsCounterOn = on;
+                if (fpsView != null) fpsView.setVisibility(on ? View.VISIBLE : View.GONE);
+                fc.setText("FPS COUNTER: " + (on ? "ON" : "OFF"));
+                fc.setTextColor(on ? 0xFF66FF99 : 0xFF888888);
+            });
+            addCompact(enhParent(), fc);
+        }
         enhColumnTarget = null;
 
         // --- Realtime dynamic shadows (quality / performance) ---
         beginTab();
+        addPerfRow("SHADOW", () -> nativeSetShadow(0, 0), () -> nativeSetShadow(0, 1), () -> shadowOn);
         shadowEnableToggle = addShadowToggle("SHADOW ENABLE", 0, false);
         shadowResButton = addShadowButton("RES 1024", () -> {
             shadowRes = shadowRes <= 512 ? 1024 : (shadowRes <= 1024 ? 2048 : 512);
@@ -1662,6 +1986,8 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
 
         // --- Splat rendering (first slice, plan-cool-additions §5.6) ---
         beginTab();
+        addPerfRow("SPLAT", () -> nativeSetStereoInt(60, 0), () -> nativeSetStereoInt(60, 1),
+                () -> splatMode != 0);
         splatTargetButton = new TextView(this);
         splatTargetButton.setText(splatTargetLabel());
         splatTargetButton.setTextSize(16);
@@ -2095,6 +2421,19 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     private static final String[] CAM_MODE_SHORT = {
             "VANILLA", "BETTER", "PUPPY", "CUSTOM", "FIRST", "FREE"
     };
+    /* BETTER and PUPPY are temporarily disabled (hidden, not removed). */
+    private static final boolean[] CAM_MODE_ENABLED = {
+            true, false, false, true, true, true
+    };
+
+    private static int nextCamMode(int from, int dir) {
+        int n = CAM_MODE_SHORT.length;
+        for (int i = 1; i <= n; i++) {
+            int m = ((from + dir * i) % n + n) % n;
+            if (CAM_MODE_ENABLED[m]) return m;
+        }
+        return from;
+    }
 
     private void addCamModePills(LinearLayout parent) {
         TextView label = new TextView(this);
@@ -2127,6 +2466,10 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             pill.setOnClickListener(v -> setCamMode2(mode));
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                     0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+            if (!CAM_MODE_ENABLED[i]) {
+                pill.setVisibility(View.GONE);
+                lp.weight = 0f;
+            }
             track.addView(pill, lp);
             camModePills[i] = pill;
         }
@@ -2160,7 +2503,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
 
     /** Redundant cycler in the persistent debug header, next to FPS. */
     private void cycleCamMode() {
-        setCamMode2((camMode2 + 1) % CAM_MODE_SHORT.length);
+        setCamMode2(nextCamMode(camMode2, 1));
     }
 
     private static String camModeLetter(int mode) {
@@ -3483,6 +3826,8 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     static native void nativeShootPortal(int which);
     static native void nativeJetpack(int on);
     static native void nativeSetGameHudHidden(int on);
+    static native int nativeFrameTimeUs();
+    static native int nativeGetRateState(int which);
     static native int nativeGetPortalGun();
     static native void nativeToolToggle();
     static native int nativeGetTool();
