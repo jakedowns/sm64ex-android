@@ -26,6 +26,19 @@ say() { printf '[mb] %s\n' "$*"; }
 kv() { sed -n "s/.*[[:space:]]$2=\([^[:space:]]*\).*/\1/p" <<<"$1" | head -1; }
 shot() { adb exec-out screencap -p >"$OUT/$1.png"; }
 setfx() { adb shell $B --es cmd fx --ei k "$1" --ei v "$2" >/dev/null; }
+stereo() { adb shell $B --es cmd stereo --ei v "$1" >/dev/null 2>&1 || true; }
+
+# Keep Mario in the light-loop's orbit while animating him: jumps in place
+# (the loop also lays him out with a backflip at its midpoint).
+animate_char() {
+    while true; do
+        adb shell $B --es cmd pad --ei buttons 32768 --ei ms 170 >/dev/null 2>&1
+        sleep 1.1
+        adb shell $B --es cmd pad --ei buttons 16384 --ei ms 120 >/dev/null 2>&1
+        sleep 1.4
+    done
+}
+
 dump_state() {
     adb logcat -c >/dev/null 2>&1 || true
     adb shell $B --es cmd dump >/dev/null 2>&1 || true
@@ -71,6 +84,10 @@ done
 sleep 10
 adb shell $B --es cmd level --ei n 38 >/dev/null || true
 sleep 9
+# Capture in 2D: a stereo SBS frame doubles the image in the recording.
+stereo 0
+sleep 1
+# Light loop: scripted orbit + counter-rotating camera (the strongest vectors).
 adb shell $B --es cmd ptc --es action lightshow >/dev/null || true
 sleep 2
 
@@ -83,6 +100,9 @@ sleep 0.5
 adb shell rm -f /sdcard/mb.mp4
 adb shell screenrecord --time-limit 55 --size 1600x1000 --bit-rate 16000000 /sdcard/mb.mp4 &
 SR=$!
+animate_char &
+ANIM=$!
+trap 'kill $ANIM 2>/dev/null || true; kill $SR 2>/dev/null || true' EXIT
 sleep 1
 
 segment 01_off            100=0 31=0
@@ -96,11 +116,14 @@ segment 08_heatmap        100=0 31=9
 segment 09_off_again      31=0 100=0 140=1
 
 wait $SR || true
+kill $ANIM 2>/dev/null || true
+trap - EXIT
 adb pull /sdcard/mb.mp4 "$OUT/motionblur.mp4" >/dev/null 2>&1 || true
 adb shell rm -f /sdcard/mb.mp4
 # Leave the game in a clean state for normal use.
 setfx 100 0; setfx 31 0; setfx 140 1
 adb shell $B --es cmd ptc --es action lightshowstop >/dev/null 2>&1 || true
+stereo 1
 
 say "video  $OUT/motionblur.mp4"
 say "table  $OUT/results.txt"

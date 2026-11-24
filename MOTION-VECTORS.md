@@ -96,23 +96,28 @@ table:
 | 08_off_again | back to off |
 
 Each segment saves a still and a dump; `results.txt` records EMA frame ms and
-fps. Measured on the Lume Pad 2 (PTC light loop, counter-rotating camera):
+fps. The script records in **2D** (`cmd stereo 0`) so the capture is a single
+image, and animates the character with in-place jumps/ground pounds while the
+light loop orbits the camera. Measured on the Lume Pad 2:
 
 | profile | frame | fps |
 | --- | --- | --- |
-| 01_off | 32.7 ms | 31 |
-| 02_cheap (1 tap, 1/8, stride 2) | 37.2 ms | 27 |
-| 03_medium (2 taps, 1/8) | 66.0 ms | 15 |
-| 04_balanced (4 taps, 1/4) | 96.2 ms | 10 |
-| 05_quality (8 taps, 1/2, shutter 320) | 113.1 ms | 9 |
-| 06_camera_vectors (balanced, fx 140 0) | 36.6 ms | 27 |
-| 07_vertex_vectors (balanced) | 91.4 ms | 11 |
-| 08_heatmap (view 9) | 23.6 ms | 42 |
-| 09_off_again | 33.2 ms | 30 |
+| 01_off | 15.5 ms | 65 |
+| 02_cheap (1 tap, 1/8, stride 2) | 16.1 ms | 62 |
+| 03_medium (2 taps, 1/8) | 17.2 ms | 58 |
+| 04_balanced (4 taps, 1/4) | 17.4 ms | 57 |
+| 05_quality (8 taps, 1/2, shutter 320) | 19.1 ms | 52 |
+| 06_camera_vectors (balanced, fx 140 0) | 15.9 ms | 63 |
+| 07_vertex_vectors (balanced) | 17.8 ms | 56 |
+| 08_heatmap (view 9) | 12.4 ms | 81 |
+| 09_off_again | 15.9 ms | 63 |
 
-Reading: one tap is nearly free, the first tap's cost is the velocity buffer +
-tile-max reads (~30 ms), and each extra tap adds ~6-8 ms. The camera-only
-fallback at the same tap count is 2.6x cheaper than the per-vertex path,
+The same matrix in 3D costs roughly twice as much (off 32.7 ms, balanced
+96.2 ms, quality 113.1 ms) because the post pass runs per eye.
+
+Reading: one tap is nearly free, and 2D keeps even the quality profile above
+50 fps. In 3D the first tap's fixed cost (velocity + tile-max reads) dominates;
+the camera-only path at the same tap count was 2.6x cheaper than per-vertex,
 which points at the tile-max (9 samples/px) and velocity fetches as the next
 optimization targets. The on-screen caption line (second caption, quarter size) shows
 `PATH/DN/rate | MB s<strength> x<sub-steps> r<velocity divisor>` and appends

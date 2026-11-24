@@ -2611,6 +2611,11 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         return camMode2;
     }
 
+    /** Explicit 3D/2D switch for scripts (0 = 2D, 1 = 3D). */
+    void debugSetStereo(int on) {
+        runOnUiThread(() -> setStereoMode(on != 0));
+    }
+
     void debugSetCamMode2(int mode) {
         runOnUiThread(() -> setCamMode2(mode));
     }

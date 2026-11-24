@@ -59,6 +59,12 @@ public class DebugReceiver extends BroadcastReceiver {
                 Log.i(TAG, "CMD pad sx=" + sx + " sy=" + sy + " btn=" + buttons + " ms=" + ms);
                 break;
             }
+            case "stereo": {
+                int v = intent.getIntExtra("v", 1);
+                a.debugSetStereo(v);
+                Log.i(TAG, "CMD stereo v=" + v);
+                break;
+            }
             case "kill":
                 a.debugKill();
                 Log.i(TAG, "CMD kill");
