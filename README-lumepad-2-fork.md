@@ -547,8 +547,11 @@ Tabs:
   head-tracking service, and the file cap rises to 16 MB) and **RESTART APP**.
   The exported report starts with app/Android/device/firmware versions, a live
   app-state block (FPS mode, rate-limiter frame times, FX/HUD flags, stereo
-  values, full PTC status line with lights/denoiser/rate/knobs) and the Leia
-  weaver boot markers, then the captured log and logcat snapshots.
+  values, full PTC status line with lights/denoiser/rate/knobs), the previous
+  session's exit status (clean vs unclean/crash/force-stop) and the Leia
+  weaver boot markers, then the captured log and logcat snapshots. The last
+  three reports are kept in `cache/debug-logs`; SHARE LAST REPORT re-sends the
+  newest one without rebuilding it.
 - **ABOUT** — GENERAL / CHANGELOG.
 
 Every tab and sub-tab carries a small dot: green when that page has a feature

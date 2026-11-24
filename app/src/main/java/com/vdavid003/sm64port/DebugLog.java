@@ -41,6 +41,9 @@ public final class DebugLog {
     private static final String LOG_DIR = "debug-logs";
     private static final String LOG_NAME = "sm64-debug.log";
     private static final String OLD_LOG_NAME = "sm64-debug.1.log";
+    private static final String EXIT_NAME = "last-exit.txt";
+    private static final int KEEP_REPORTS = 3;
+    private static String lastExitStatus = "unknown";
     private static final long MAX_LOG_BYTES = 4L * 1024L * 1024L;
     private static final long MAX_LOG_BYTES_VERBOSE = 16L * 1024L * 1024L;
     /** SharedPreferences key: capture verbose Leia logs and all logcat tags. */
@@ -100,11 +103,85 @@ public final class DebugLog {
             }
 
             openWriterLocked();
+
+            // Last-crash marker: the previous session writes "clean" on a normal
+            // shutdown; a missing/leftover "running" marker means it crashed,
+            // was force-stopped or the process was killed.
+            File exitFile = new File(dir, EXIT_NAME);
+            lastExitStatus = readExitFile(exitFile);
+            writeExitFile(exitFile, "running " + nowStamp()
+                    + " pid=" + android.os.Process.myPid());
+            note("previous session exit: " + lastExitSummary());
+
             writeEnvironmentLocked("BOOT");
         }
         startCapture();
         installCrashHandler();
         Log.i(TAG, "debug log capture installed: " + logFile);
+    }
+
+    private static String nowStamp() {
+        return new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(new Date());
+    }
+
+    private static String readExitFile(File f) {
+        try (BufferedReader r = new BufferedReader(new InputStreamReader(
+                new FileInputStream(f), StandardCharsets.UTF_8))) {
+            String line = r.readLine();
+            if (line != null && !line.trim().isEmpty()) return line.trim();
+        } catch (Throwable ignored) {
+        }
+        return "none (first run or log dir cleared)";
+    }
+
+    private static void writeExitFile(File f, String text) {
+        try (FileOutputStream out = new FileOutputStream(f, false)) {
+            out.write((text + "\n").getBytes(StandardCharsets.UTF_8));
+            out.getFD().sync();
+        } catch (Throwable t) {
+            Log.w(TAG, "exit marker write failed", t);
+        }
+    }
+
+    /** Called when the activity is finishing normally. */
+    public static void markCleanExit() {
+        try {
+            File f = new File(appContext.getFilesDir(), LOG_DIR + "/" + EXIT_NAME);
+            writeExitFile(f, "clean " + nowStamp());
+            note("session exit: clean");
+        } catch (Throwable t) {
+            Log.w(TAG, "clean-exit marker failed", t);
+        }
+    }
+
+    /** Human-readable interpretation of the previous session's exit marker. */
+    public static String lastExitSummary() {
+        String s = lastExitStatus;
+        if (s == null) return "unknown";
+        if (s.startsWith("running")) {
+            return "UNCLEAN - previous session did not finish cleanly"
+                    + " (crash, force-stop or kill)";
+        }
+        if (s.startsWith("clean")) return "clean - previous session exited normally";
+        return s;
+    }
+
+    /** Newest exported report in cacheDir, or null. */
+    public static File lastReport(Context context) {
+        File dir = new File(context.getApplicationContext().getCacheDir(), LOG_DIR);
+        File[] files = dir.listFiles((d, n) -> n.startsWith("sm64-debug-") && n.endsWith(".txt"));
+        if (files == null || files.length == 0) return null;
+        java.util.Arrays.sort(files, (a, b) -> Long.compare(b.lastModified(), a.lastModified()));
+        return files[0];
+    }
+
+    private static void pruneReports(File dir) {
+        File[] files = dir.listFiles((d, n) -> n.startsWith("sm64-debug-") && n.endsWith(".txt"));
+        if (files == null || files.length <= KEEP_REPORTS) return;
+        java.util.Arrays.sort(files, (a, b) -> Long.compare(b.lastModified(), a.lastModified()));
+        for (int i = KEEP_REPORTS; i < files.length; i++) {
+            if (!files[i].delete()) Log.w(TAG, "could not prune " + files[i]);
+        }
     }
 
     /** Make sure a fatal Java crash is in the file even if logcat is unavailable. */
@@ -224,6 +301,7 @@ public final class DebugLog {
             copyLogcatInto(w, new String[]{"-d", "-b", "crash", "-v", "threadtime",
                     "--pid=" + android.os.Process.myPid()});
         }
+        pruneReports(dir);
         Log.i(TAG, "export report written: " + out + " (" + out.length() + " bytes)");
         return out;
     }
@@ -264,6 +342,7 @@ public final class DebugLog {
         sb.append("leiaCNSDK: ").append(cnsdkVersion(app)).append('\n');
         sb.append("gitBranch: ").append(BuildConfig.GIT_BRANCH).append('\n');
         sb.append("verboseLeiaLog: ").append(isVerbose(app)).append('\n');
+        sb.append("lastExit: ").append(lastExitSummary()).append('\n');
 
         if (extraInfo != null) {
             try {

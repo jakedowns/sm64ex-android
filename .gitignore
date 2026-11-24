@@ -13,3 +13,6 @@ local.properties
 # Local test output (screenshots, logs and the demonstration video)
 test-artifacts/
 __pycache__/
+
+# local-only agent config (audio reply prefs etc.)
+.dev/

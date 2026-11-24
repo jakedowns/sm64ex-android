@@ -2089,6 +2089,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             vb.setOnClickListener(v -> toggleVerboseAndRestart());
             controls.addView(vb);
         }
+        addEnhButton("SHARE LAST REPORT", this::shareLastReport);
         addEnhButton("RESTART APP (CAPTURE LAUNCH)", this::restartApp);
         debugLogInfoView = new TextView(this);
         debugLogInfoView.setTextSize(11);
@@ -2404,12 +2405,14 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         } else {
             sb.append("size: (not written yet)\n");
         }
+        sb.append("\nLAST EXIT\n").append(DebugLog.lastExitSummary()).append('\n');
         sb.append("\nThis report includes:\n");
         sb.append("- app/build/Android/device details\n");
         sb.append("- Lume build + Leia service versions\n");
         sb.append("- Leia CNSDK version\n");
         sb.append("- display modes and refresh rates\n");
         sb.append("- Leia weaver/CNSDK boot stage markers\n");
+        sb.append("- last session exit status (clean / unclean)\n");
         sb.append("- recent logcat (main + crash buffers)");
         debugLogInfoView.setText(sb.toString());
     }
@@ -2430,6 +2433,30 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             Toast.makeText(this, "Save picker unavailable: " + t, Toast.LENGTH_LONG).show();
             shareDebugLog();
         }
+    }
+
+    /** Share the newest already-built report, or build one if none exists. */
+    private void shareLastReport() {
+        new Thread(() -> {
+            try {
+                File report = DebugLog.lastReport(this);
+                if (report == null || !report.isFile()) {
+                    report = DebugLog.buildExportFile(this);
+                }
+                final File f = report;
+                runOnUiThread(() -> {
+                    try {
+                        startActivity(DebugLog.buildShareIntent(this, f));
+                    } catch (Throwable t) {
+                        Log.e(TAG, "share last report failed", t);
+                        android.widget.Toast.makeText(this,
+                                "Share failed: " + t, android.widget.Toast.LENGTH_LONG).show();
+                    }
+                });
+            } catch (Throwable t) {
+                Log.e(TAG, "build last report failed", t);
+            }
+        }, "sm64-share-last-report").start();
     }
 
     private void shareDebugLog() {
@@ -4395,6 +4422,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
 
     @Override
     protected void onDestroy() {
+        DebugLog.markCleanExit();
         DebugLog.flush();
         if (instance == this) instance = null;
         // asset lifecycle handled by the SDK (no close() in this AAR)
