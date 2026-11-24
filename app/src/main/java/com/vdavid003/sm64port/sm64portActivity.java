@@ -437,25 +437,19 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                 }
                 // The producer buffer size must match what the interlacer is
                 // told the source is, otherwise it samples a magnified crop.
+                leiaTexture = texture;
                 texture.setDefaultBufferSize(SBS_W, SBS_H);
                 weaverLog("SurfaceTexture default buffer set to " + SBS_W + "x" + SBS_H);
-                // The first woven frame sometimes comes up black until the view
-                // is reconfigured; nudge it once the surface exists.
-                // The first woven frame comes up black until the view is
-                // re-attached; mimic the FLAT toggle the user found works.
+                // Do NOT hide/show the view here: on newer Lume firmware that
+                // detaches the SurfaceView's surface and leaves the display
+                // permanently black (controls and debug UI still draw). Just
+                // re-apply the source size once the bind has settled.
                 leiaView.postDelayed(new Runnable() {
                     @Override public void run() {
-                        weaverLog("reattach nudge: hiding leiaView");
-                        leiaView.setVisibility(View.GONE);
-                        leiaView.postDelayed(new Runnable() {
-                            @Override public void run() {
-                                leiaView.setVisibility(View.VISIBLE);
-                                reapplySourceSize();
-                                weaverLog("reattach nudge: visible + reapplySourceSize done");
-                            }
-                        }, 400);
+                        reapplySourceSize();
+                        weaverLog("initial bind settled; source size re-applied (no view nudge)");
                     }
-                }, 1500);
+                }, 600);
                 try {
                     SDLActivity.setOverrideSurface(new Surface(texture));
                     weaverLog("SDL override surface set from Leia SurfaceTexture");
@@ -1824,8 +1818,6 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
 
         enhColumnTarget = enhPageColumns[2][0];
         addEnhSection("BALL / CUBES");
-        addEnhButton("RESET TO LOGO", this::resetToLogo);
-        addEnhButton("REINIT LEIA SURFACE", this::debugReinit);
         addEnhButton("BALL BLASTER (TOGGLE)", () -> {
             ballBlasterOn = !ballBlasterOn;
             nativePtcCommand("ballequip");
@@ -1852,6 +1844,9 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             pauseLoopToggle.setTextColor(hardPaused ? 0xFF66FF99 : 0xFF888888);
         });
         enhParent().addView(pauseLoopToggle);
+        addEnhSection("DISPLAY");
+        addEnhButton("RESET TO LOGO", this::resetToLogo);
+        addEnhButton("REINIT LEIA SURFACE", this::debugReinit);
         addEnhButton("STEP ONE TICK", () -> {
             nativeSetHardPause(1);
             hardPaused = true;
@@ -3742,21 +3737,26 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             weaverLog("resize skipped w=" + w + " h=" + h + " asset=" + (asset != null));
             return;
         }
+        // SDL always produces the fixed SBS frame; sizing the interlacer from
+        // the view makes the source mismatch and renders black.
+        final int sw = SBS_W;
+        final int sh = SBS_H;
         if (!surfaceValid) {
-            weaverLog("CreateEmptySurfaceForVideo " + w + "x" + h + " (surfaceValid=false)");
+            weaverLog("CreateEmptySurfaceForVideo " + sw + "x" + sh + " (surfaceValid=false)");
             try {
                 // Video asset = the binding that CONSUMES a SurfaceTexture (the
                 // picture asset samples its own texture id instead, which needs
                 // rendering inside Leia's GL context).
-                asset.CreateEmptySurfaceForVideo(w, h, new SurfaceTextureReadyCallback() {
+                asset.CreateEmptySurfaceForVideo(sw, sh, new SurfaceTextureReadyCallback() {
                     @Override
                     public void onSurfaceTextureReady(SurfaceTexture texture) {
-                        weaverLog("resize surface ready " + w + "x" + h + " texture=" + texture);
+                        weaverLog("resize surface ready " + sw + "x" + sh + " texture=" + texture);
                         if (texture == null) {
                             weaverLog("resize surface ready got NULL texture");
                             return;
                         }
-                        texture.setDefaultBufferSize(w, h);
+                        texture.setDefaultBufferSize(sw, sh);
+                        leiaTexture = texture;
                         SDLActivity.setOverrideSurface(new Surface(texture));
                         // mpv's Enable3D(): backlight and tracking together,
                         // once the video surface exists.
@@ -3776,8 +3776,8 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                 weaverError("CreateEmptySurfaceForVideo (resize) failed", t);
             }
         } else if (leiaTexture != null) {
-            leiaTexture.setDefaultBufferSize(w, h);
-            weaverLog("resize surface buffer " + w + "x" + h + " (existing texture)");
+            leiaTexture.setDefaultBufferSize(sw, sh);
+            weaverLog("resize surface buffer " + sw + "x" + sh + " (existing texture)");
         }
     }
 
@@ -4343,10 +4343,27 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
 
     void debugReinit() {
         runOnUiThread(() -> {
-            surfaceValid = false;
-            leiaTexture = null;
             Log.i(TAG, "REINIT requested");
-            resizeLeiaSurface(leiaView.getWidth(), leiaView.getHeight());
+            if (surfaceValid && leiaTexture != null) {
+                // Re-bind the existing producer surface and refresh the backlight.
+                // Never hide/show the view: that detaches the surface on newer
+                // firmware and blacks the display for good.
+                final SurfaceTexture tex = leiaTexture;
+                weaverLog("REINIT: rebinding existing surface (no view nudge)");
+                try {
+                    SDLActivity.setOverrideSurface(new Surface(tex));
+                    reapplySourceSize();
+                    sdk.enableBacklight(true);
+                    weaverLog("REINIT: rebind done, backlight=" + sdk.getBacklight());
+                } catch (Throwable t) {
+                    weaverError("REINIT rebind failed", t);
+                }
+            } else {
+                // No usable texture: request a fresh one at the SBS size.
+                surfaceValid = false;
+                weaverLog("REINIT: requesting a fresh SBS surface");
+                resizeLeiaSurface(SBS_W, SBS_H);
+            }
         });
     }
 
