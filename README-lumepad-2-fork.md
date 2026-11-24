@@ -540,7 +540,15 @@ Tabs:
   - CAMERA opens a third strip: STEREO / SETTINGS.
 - **DEBUG** — MOVE / PORTAL / BALL / SYS / LOGS. SYS ends with two sections:
   HUD (GAME HUD, DEBUG CAPTIONS, TOUCH CONTROLS) and PERFORMANCE
-  (PERF MONITOR, FRAME GRAPH, FPS COUNTER — all on by default).
+  (PERF MONITOR, FRAME GRAPH, FPS COUNTER — all on by default). LOGS is the
+  bug-report page: EXPORT/SHARE the debug report, REFRESH INFO, **LEIA
+  VERBOSE** (switches the SDK to Trace logging and restarts so the whole
+  launch is captured; the capture then covers every process, including the
+  head-tracking service, and the file cap rises to 16 MB) and **RESTART APP**.
+  The exported report starts with app/Android/device/firmware versions, a live
+  app-state block (FPS mode, rate-limiter frame times, FX/HUD flags, stereo
+  values, full PTC status line with lights/denoiser/rate/knobs) and the Leia
+  weaver boot markers, then the captured log and logcat snapshots.
 - **ABOUT** — GENERAL / CHANGELOG.
 
 Every tab and sub-tab carries a small dot: green when that page has a feature

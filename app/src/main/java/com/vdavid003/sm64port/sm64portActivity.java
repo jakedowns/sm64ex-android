@@ -357,6 +357,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         instance = this;
         // Idempotent: normally installed by Sm64Application before this runs.
         DebugLog.install(getApplicationContext());
+        DebugLog.extraInfo = this::runtimeStateReport;
         leiaT0 = SystemClock.uptimeMillis();
         weaverLog("onCreate after SDLActivity; " + DebugLog.oneLineSummary(this));
 
@@ -391,12 +392,18 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         args.platform.context = getApplicationContext();
         args.enableFaceTracking = true;
         args.requiresFaceTrackingPermissionCheck = false;
-        // Leia's default logging floods logcat and rotates out our markers.
+        // Leia's default logging floods logcat and rotates out our markers, so
+        // it is Error by default; the LOGS tab can switch it to Trace and
+        // restart the app to capture a full verbose launch.
+        final boolean verboseLeia = DebugLog.isVerbose(this);
         try {
-            args.faceTrackingServerLogLevel = com.leia.core.LogLevel.Error;
+            args.faceTrackingServerLogLevel = verboseLeia
+                    ? com.leia.core.LogLevel.Trace
+                    : com.leia.core.LogLevel.Error;
         } catch (Throwable ignored) {
         }
-        weaverLog("InitArgs ready: enableFaceTracking=true permissionCheck=false logLevel=Error");
+        weaverLog("InitArgs ready: enableFaceTracking=true permissionCheck=false logLevel="
+                + (verboseLeia ? "Trace" : "Error"));
 
         weaverLog("LeiaSDK.createSDK() begin");
         sdk = LeiaSDK.createSDK(args);
@@ -2061,13 +2068,28 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         exportHint.setTextColor(0xFFCCEECC);
         exportHint.setPadding(dp(4), dp(4), dp(4), dp(8));
         exportHint.setText("Capture starts with the app process: Android/device info,"
-                + " Leia CNSDK + firmware versions, and the Leia weaver boot stages.\n\n"
+                + " Leia CNSDK + firmware versions, the Leia weaver boot stages, the"
+                + " current app state (FPS/rate/FX/camera/PTC status) and recent logs.\n\n"
+                + "LEIA VERBOSE switches the SDK to Trace logging and restarts so the"
+                + " full launch is captured (log file grows up to 16 MB and covers all"
+                + " processes, including the head-tracking service).\n\n"
                 + "EXPORT opens the system save-file picker, then shows the share sheet"
                 + " so the log can be sent straight back.");
         controls.addView(exportHint);
         addEnhButton("EXPORT LOG (SAVE + SHARE)", this::exportLogToPicker);
         addEnhButton("SHARE LOG", this::shareDebugLog);
         addEnhButton("REFRESH INFO", this::refreshDebugLogInfo);
+        {
+            final TextView vb = new TextView(this);
+            vb.setText("LEIA VERBOSE: " + (DebugLog.isVerbose(this) ? "ON" : "OFF")
+                    + "  (tap to switch + restart)");
+            vb.setTextSize(16);
+            vb.setTextColor(0xFF66CCFF);
+            vb.setPadding(dp(4), dp(8), dp(4), dp(8));
+            vb.setOnClickListener(v -> toggleVerboseAndRestart());
+            controls.addView(vb);
+        }
+        addEnhButton("RESTART APP (CAPTURE LAUNCH)", this::restartApp);
         debugLogInfoView = new TextView(this);
         debugLogInfoView.setTextSize(11);
         debugLogInfoView.setTextColor(0xFFAACCFF);
@@ -2300,6 +2322,75 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                 + "Everything else (Lume display path, stereo/HFR, screen-space FX,"
                 + " shadows, portal chamber and debug tooling) is original work in this"
                 + " fork.";
+    }
+
+    /** Compact runtime state written into the export header. */
+    private String runtimeStateReport() {
+        StringBuilder b = new StringBuilder();
+        b.append("fpsMode: ").append(fpsMode).append(" (").append(fpsLabel()).append(")\n");
+        try {
+            b.append("rate: enabled=").append(nativeGetRateState(0))
+             .append(" target=").append(nativeGetRateState(1))
+             .append(" adaptive=").append(nativeGetRateState(2))
+             .append(" effective=").append(nativeGetRateState(5))
+             .append(" lastFrameUs=").append(nativeGetRateState(6))
+             .append(" emaUs=").append(nativeGetRateState(3)).append('\n');
+        } catch (Throwable t) {
+            b.append("rate: unavailable (").append(t).append(")\n");
+        }
+        b.append("fx: ao=").append(aoOn).append(" dof=").append(dofOn)
+         .append(" gi=").append(giOn).append(" ssrtx=").append(ssrtxOn)
+         .append(" shadow=").append(shadowOn).append(" splat=").append(splatMode)
+         .append(" mb=").append(mbOn).append(" lights=").append(lightCountOn)
+         .append(" probes=").append(probeOn).append(" debugView=").append(fxDebug).append('\n');
+        b.append("cameraMode: ").append(camModeLabel())
+         .append(" hdt=").append(hdtOn).append(" gyro=").append(gyroOn)
+         .append(" stereo3d=").append(stereoOn).append('\n');
+        b.append("gameHud=").append(gameHudOn).append(" captions=").append(debugCapsOn)
+         .append(" touch=").append(touchCtlOn).append('\n');
+        if (!stereoValues.isEmpty()) {
+            b.append("stereo:");
+            for (java.util.Map.Entry<Integer, Integer> e : stereoValues.entrySet()) {
+                b.append(' ').append(e.getKey()).append('=').append(e.getValue());
+            }
+            b.append('\n');
+        }
+        try {
+            String st = nativePtcStatus();
+            if (st != null) {
+                st = st.replace('\n', ' ').trim();
+                if (st.length() > 1400) st = st.substring(0, 1400) + "...";
+                b.append("status: ").append(st).append('\n');
+            }
+        } catch (Throwable t) {
+            b.append("status: unavailable (").append(t).append(")\n");
+        }
+        return b.toString();
+    }
+
+    private void toggleVerboseAndRestart() {
+        boolean now = !DebugLog.isVerbose(this);
+        // Synchronous commit: the process is killed right after this, and an
+        // async apply() can be lost before the new process reads the pref.
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                .putBoolean(DebugLog.PREF_VERBOSE, now).commit();
+        android.widget.Toast.makeText(this,
+                now ? "Verbose Leia logging ON - restarting" : "Verbose logging OFF - restarting",
+                android.widget.Toast.LENGTH_SHORT).show();
+        restartApp();
+    }
+
+    /** Restart the process so boot logs (Leia init) are captured from frame 0. */
+    private void restartApp() {
+        try {
+            Intent i = new Intent(this, sm64portActivity.class);
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+            startActivity(i);
+        } catch (Throwable t) {
+            Log.e(TAG, "restart failed", t);
+        }
+        finish();
+        android.os.Process.killProcess(android.os.Process.myPid());
     }
 
     private void refreshDebugLogInfo() {

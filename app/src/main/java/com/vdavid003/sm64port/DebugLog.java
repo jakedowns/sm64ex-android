@@ -42,6 +42,11 @@ public final class DebugLog {
     private static final String LOG_NAME = "sm64-debug.log";
     private static final String OLD_LOG_NAME = "sm64-debug.1.log";
     private static final long MAX_LOG_BYTES = 4L * 1024L * 1024L;
+    private static final long MAX_LOG_BYTES_VERBOSE = 16L * 1024L * 1024L;
+    /** SharedPreferences key: capture verbose Leia logs and all logcat tags. */
+    public static final String PREF_VERBOSE = "leia_verbose_log";
+    /** Extra "app state" block supplied by the activity at export time. */
+    public static volatile java.util.function.Supplier<String> extraInfo;
     private static final long MAX_SNAPSHOT_BYTES = 2L * 1024L * 1024L;
     /** Fallback if the AAR asset is unavailable. Update with the bundled AAR. */
     private static final String CNSDK_FALLBACK_VERSION = "0.6.147";
@@ -52,9 +57,21 @@ public final class DebugLog {
     private static BufferedWriter writer;
     private static long bytesWritten;
     private static boolean installed;
+    private static long maxLogBytes = MAX_LOG_BYTES;
     private static Thread captureThread;
 
     private DebugLog() {}
+
+    /** True when the user enabled verbose Leia logging (needs a restart). */
+    public static boolean isVerbose(Context context) {
+        if (context == null) return false;
+        try {
+            return context.getSharedPreferences("sm64port", Context.MODE_PRIVATE)
+                    .getBoolean(PREF_VERBOSE, false);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
 
     /** Install once, from Application.onCreate, before the game starts. */
     public static void install(Context context) {
@@ -63,6 +80,7 @@ public final class DebugLog {
             if (installed) return;
             installed = true;
             appContext = context.getApplicationContext();
+            maxLogBytes = isVerbose(appContext) ? MAX_LOG_BYTES_VERBOSE : MAX_LOG_BYTES;
             File dir = new File(appContext.getFilesDir(), LOG_DIR);
             if (!dir.exists() && !dir.mkdirs()) {
                 Log.e(TAG, "cannot create debug log dir: " + dir);
@@ -73,7 +91,7 @@ public final class DebugLog {
             // Keep the previous session if the current one grew too large.
             File old = new File(dir, OLD_LOG_NAME);
             try {
-                if (logFile.length() > MAX_LOG_BYTES) {
+                if (logFile.length() > maxLogBytes) {
                     if (old.exists()) old.delete();
                     logFile.renameTo(old);
                 }
@@ -122,7 +140,7 @@ public final class DebugLog {
         Log.i(TAG, message);
         synchronized (LOCK) {
             if (writer == null) return;
-            if (bytesWritten > MAX_LOG_BYTES) rotateLocked();
+            if (bytesWritten > maxLogBytes) rotateLocked();
             try {
                 String stamp = new SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US)
                         .format(new Date());
@@ -194,8 +212,14 @@ public final class DebugLog {
                 copyInto(logFile, w);
             }
             w.write("\n\n========== LOGCAT SNAPSHOT (main buffer) ==========\n");
-            copyLogcatInto(w, new String[]{"-d", "-b", "main", "-v", "threadtime",
-                    "--pid=" + android.os.Process.myPid()});
+            {
+                if (isVerbose(app)) {
+                    copyLogcatInto(w, new String[]{"-d", "-b", "main", "-v", "threadtime"});
+                } else {
+                    copyLogcatInto(w, new String[]{"-d", "-b", "main", "-v", "threadtime",
+                            "--pid=" + android.os.Process.myPid()});
+                }
+            }
             w.write("\n\n========== LOGCAT SNAPSHOT (crash buffer) ==========\n");
             copyLogcatInto(w, new String[]{"-d", "-b", "crash", "-v", "threadtime",
                     "--pid=" + android.os.Process.myPid()});
@@ -238,6 +262,16 @@ public final class DebugLog {
             sb.append("app info error: ").append(t).append('\n');
         }
         sb.append("leiaCNSDK: ").append(cnsdkVersion(app)).append('\n');
+        sb.append("gitBranch: ").append(BuildConfig.GIT_BRANCH).append('\n');
+        sb.append("verboseLeiaLog: ").append(isVerbose(app)).append('\n');
+
+        if (extraInfo != null) {
+            try {
+                sb.append("\n--- app state ---\n").append(extraInfo.get()).append('\n');
+            } catch (Throwable t) {
+                sb.append("app state error: ").append(t).append('\n');
+            }
+        }
 
         sb.append("\n--- android ---\n");
         sb.append("release: ").append(Build.VERSION.RELEASE).append('\n');
@@ -332,10 +366,14 @@ public final class DebugLog {
             public void run() {
                 Process process = null;
                 try {
-                    process = new ProcessBuilder("/system/bin/logcat",
-                            "-v", "threadtime", "--pid=" + android.os.Process.myPid())
-                            .redirectErrorStream(true)
-                            .start();
+                    java.util.List<String> cmd = new java.util.ArrayList<>();
+                    cmd.add("/system/bin/logcat");
+                    cmd.add("-v");
+                    cmd.add("threadtime");
+                    if (!isVerbose(appContext)) {
+                        cmd.add("--pid=" + android.os.Process.myPid());
+                    }
+                    process = new ProcessBuilder(cmd).redirectErrorStream(true).start();
                     BufferedReader reader = new BufferedReader(
                             new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8));
                     String line;
