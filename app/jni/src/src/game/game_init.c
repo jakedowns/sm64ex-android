@@ -650,6 +650,17 @@ void game_loop_one_iteration(void) {
              * reticle check). */
             clear_area_graph_nodes();
             clear_areas();
+            /* Fresh-boot semantics: drop the debug level-select state so the
+             * intro's START leads to the save-file screen, not back into the
+             * level list the user visited earlier. */
+            {
+                extern s8 gDebugLevelSelect;
+                extern volatile s16 gLevelSelectOpenRequest;
+                extern s16 gLevelSelectAutoLevel;
+                gDebugLevelSelect = 0;
+                gLevelSelectOpenRequest = 0;
+                gLevelSelectAutoLevel = -1;
+            }
             levelCommandAddr = segmented_to_virtual(level_script_entry);
         }
         // if the reset timer is active, run the process to reset the game.
