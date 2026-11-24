@@ -77,3 +77,26 @@ blur is on or the heatmap view is selected.
   kernel.
 - The velocity target is RGBA8 packed; RG16F would be simpler if
   `EXT_color_buffer_half_float` is confirmed on the driver.
+
+## Smoke test
+
+`scripts/motionblur-perf-test.sh` drives the PTC light loop (counter-rotating
+camera = fast vectors) through profiles and records a video plus a frame-time
+table:
+
+| segment | profile |
+| --- | --- |
+| 01_off | motion blur off (baseline) |
+| 02_cheap | 1 sub-step, strength 60, velocity 1/8, update every 2 frames, no jitter |
+| 03_balanced | 4 sub-steps, strength 110, velocity 1/4, every frame, jitter 100 |
+| 04_quality | 8 sub-steps, strength 160, velocity 1/2, shutter 320, max 48 px |
+| 05_camera_vectors | balanced with the camera-only fallback (fx 140 0) |
+| 06_vertex_vectors | balanced with per-vertex vectors (fx 140 1) |
+| 07_heatmap | motion-vector heatmap (view 9, direction style) |
+| 08_off_again | back to off |
+
+Each segment saves a still and a dump; `results.txt` records EMA frame ms and
+fps. The on-screen caption line (second caption, quarter size) shows
+`PATH/DN/rate | MB s<strength> x<sub-steps> r<velocity divisor>` and appends
+`VIEW VECTORS` in the heatmap segment, so every recorded segment is
+self-labelling even while the LIGHT LOOP label is on screen.

@@ -2642,7 +2642,8 @@ void ptc_chain_hud_text(void) {
         char line[128];
         int path = gfx_opengl_denoise_state(0);
         int don = gfx_opengl_denoise_state(1);
-        extern void print_caption_small(s32 x, s32 y, const char *str);
+        extern void print_caption2_small(s32 x, s32 y, const char *str);
+        extern int gfx_opengl_ssfx_get(int which);
         if (gfx_rate_state(1) > 0) {
             snprintf(line, sizeof(line), "PATH %s | DN %s | I%d P%d F%d B%d | %dFPS%s",
                      path ? "ALT" : "MAIN", don ? "ON" : "OFF",
@@ -2656,7 +2657,17 @@ void ptc_chain_hud_text(void) {
                      gfx_opengl_denoise_state(5), gfx_opengl_denoise_state(6),
                      gfx_rate_state(2) ? " ADAPT" : "");
         }
-        print_caption_small(SCREEN_WIDTH / 2, 34, line);
+        if (gfx_opengl_ssfx_get(100)) {
+            char mb[64];
+            snprintf(mb, sizeof(mb), " | MB s%d x%d r%d",
+                     gfx_opengl_ssfx_get(101), gfx_opengl_ssfx_get(142),
+                     gfx_opengl_ssfx_get(144));
+            strncat(line, mb, sizeof(line) - strlen(line) - 1);
+        }
+        if (gfx_opengl_ssfx_get(31) == 9) {
+            strncat(line, " | VIEW VECTORS", sizeof(line) - strlen(line) - 1);
+        }
+        print_caption2_small(SCREEN_WIDTH / 2, 34, line);
     }
     /* Momentum demo: label the drop and the launch even though it is not part
      * of the cinematic chain (this is the playable proof that portals preserve

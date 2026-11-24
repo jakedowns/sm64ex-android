@@ -52,6 +52,26 @@ void print_caption(s32 x, s32 y, const char *str) {
 }
 
 /* Quarter-size HUD text for dense test annotations. */
+/* A second, independent caption line so a running feature label (e.g. the
+ * light loop) and a test-settings line can be on screen at once. */
+static char sCaptionText2[64];
+static s32 sCaptionX2 = 160, sCaptionY2 = 160;
+static s32 sCaptionLen2 = 0;
+static f32 sCaptionScale2 = 0.25f;
+
+void print_caption2_small(s32 x, s32 y, const char *str) {
+    s32 n = 0;
+    while (str[n] != 0 && n < 63) {
+        sCaptionText2[n] = str[n];
+        n++;
+    }
+    sCaptionText2[n] = 0;
+    sCaptionLen2 = n;
+    sCaptionX2 = x;
+    sCaptionY2 = y;
+    sCaptionScale2 = 0.25f;
+}
+
 void print_caption_small(s32 x, s32 y, const char *str) {
     s32 n = 0;
     while (str[n] != 0 && n < 63) {
@@ -431,6 +451,29 @@ void render_textrect(s32 x, s32 y, s32 pos) {
  * Renders the text in sTextLabels on screen at the proper locations by iterating
  * a for loop.
  */
+static void draw_caption_text(const char *text, s32 len, s32 x, s32 y, f32 sc) {
+    s32 j;
+    s8 glyphIndex;
+    if (len <= 0) {
+        return;
+    }
+    s32 stepS = (s32) (4.0f / sc) << 10;
+    s32 stepT = (s32) (1.0f / sc) << 10;
+    s32 startX = x - (s32) (len * 12 * sc / 2.0f);
+    s32 cy = 224 - y;
+    for (j = 0; j < len; j++) {
+        glyphIndex = char_to_glyph_index(text[j]);
+        if (glyphIndex != GLYPH_SPACE) {
+            s32 rx = startX + (s32) (j * 12 * sc);
+            add_glyph_texture(glyphIndex);
+            gSPTextureRectangle(gDisplayListHead++, rx << 2, cy << 2,
+                                (rx + (s32) (16 * sc)) << 2,
+                                (cy + (s32) (16 * sc)) << 2,
+                                G_TX_RENDERTILE, 0, 0, stepS, stepT);
+        }
+    }
+}
+
 void render_text_labels(void) {
     s32 i;
     s32 j;
@@ -453,28 +496,10 @@ void render_text_labels(void) {
     gSPMatrix(gDisplayListHead++, VIRTUAL_TO_PHYSICAL(mtx), G_MTX_PROJECTION | G_MTX_LOAD | G_MTX_NOPUSH);
     gSPDisplayList(gDisplayListHead++, dl_hud_img_begin);
 
-    if (sCaptionLen > 0) {
-        const f32 sc = sCaptionScale;
-        s32 stepS = (s32) (4.0f / sc) << 10;
-        s32 stepT = (s32) (1.0f / sc) << 10;
-        s32 startX = sCaptionX - (s32) (sCaptionLen * 12 * sc / 2.0f);
-        s32 cy = 224 - sCaptionY;
-        for (j = 0; j < sCaptionLen; j++) {
-            glyphIndex = char_to_glyph_index(sCaptionText[j]);
-            if (glyphIndex != GLYPH_SPACE) {
-                s32 rx = startX + (s32) (j * 12 * sc);
-                add_glyph_texture(glyphIndex);
-                /* Half-size rect: double the per-pixel texture step so the
-                 * whole 16x16 glyph is still covered (a smaller step samples
-                 * only part of the texture and crops the letters). */
-                gSPTextureRectangle(gDisplayListHead++, rx << 2, cy << 2,
-                                    (rx + (s32) (16 * sc)) << 2,
-                                    (cy + (s32) (16 * sc)) << 2,
-                                    G_TX_RENDERTILE, 0, 0, stepS, stepT);
-            }
-        }
-        sCaptionLen = 0;
-    }
+    draw_caption_text(sCaptionText, sCaptionLen, sCaptionX, sCaptionY, sCaptionScale);
+    sCaptionLen = 0;
+    draw_caption_text(sCaptionText2, sCaptionLen2, sCaptionX2, sCaptionY2, sCaptionScale2);
+    sCaptionLen2 = 0;
 
     for (i = 0; i < sTextLabelsCount; i++) {
         for (j = 0; j < sTextLabels[i]->length; j++) {
