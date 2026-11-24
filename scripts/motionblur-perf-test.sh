@@ -61,11 +61,17 @@ segment() {
 
 say "artifacts: $OUT"
 adb shell am force-stop "$PKG" >/dev/null 2>&1 || true
-adb shell am start -n "$ACT" >/dev/null 2>&1
+sleep 1
+# `am start` returns non-zero on this tablet even when the activity starts.
+adb shell am start -n "$ACT" >/dev/null 2>&1 || true
+for _ in $(seq 1 25); do
+    [ -n "$(adb shell pidof "$PKG" 2>/dev/null | tr -d '\r')" ] && break
+    sleep 1
+done
 sleep 10
-adb shell $B --es cmd level --ei n 38 >/dev/null
+adb shell $B --es cmd level --ei n 38 >/dev/null || true
 sleep 9
-adb shell $B --es cmd ptc --es action lightshow >/dev/null
+adb shell $B --es cmd ptc --es action lightshow >/dev/null || true
 sleep 2
 
 # Captions carry PATH/DN/rate + MB strength/x/res and a VIEW VECTORS marker.
@@ -75,18 +81,19 @@ setfx 149 1
 sleep 0.5
 
 adb shell rm -f /sdcard/mb.mp4
-adb shell screenrecord --time-limit 45 --size 1600x1000 --bit-rate 16000000 /sdcard/mb.mp4 &
+adb shell screenrecord --time-limit 55 --size 1600x1000 --bit-rate 16000000 /sdcard/mb.mp4 &
 SR=$!
 sleep 1
 
 segment 01_off            100=0 31=0
-segment 02_cheap          100=1 101=60  142=1 144=8 145=2 146=0   143=12
-segment 03_balanced       100=1 101=110 142=4 144=4 145=1 146=100 143=24
-segment 04_quality        100=1 101=160 142=8 144=2 145=1 146=100 143=48 141=320
-segment 05_camera_vectors 140=0
-segment 06_vertex_vectors 140=1
-segment 07_heatmap        100=0 31=9
-segment 08_off_again      31=0 100=0
+segment 02_cheap          100=1 101=60  142=1 144=8 145=2 146=0   143=12 141=180
+segment 03_medium         100=1 101=90  142=2 144=8 145=1 146=50  143=18 141=180
+segment 04_balanced       100=1 101=110 142=4 144=4 145=1 146=100 143=24 141=180
+segment 05_quality        100=1 101=160 142=8 144=2 145=1 146=100 143=48 141=320
+segment 06_camera_vectors 101=110 142=4 144=4 145=1 146=100 143=24 141=180 140=0
+segment 07_vertex_vectors 140=1
+segment 08_heatmap        100=0 31=9
+segment 09_off_again      31=0 100=0 140=1
 
 wait $SR || true
 adb pull /sdcard/mb.mp4 "$OUT/motionblur.mp4" >/dev/null 2>&1 || true

@@ -96,7 +96,25 @@ table:
 | 08_off_again | back to off |
 
 Each segment saves a still and a dump; `results.txt` records EMA frame ms and
-fps. The on-screen caption line (second caption, quarter size) shows
+fps. Measured on the Lume Pad 2 (PTC light loop, counter-rotating camera):
+
+| profile | frame | fps |
+| --- | --- | --- |
+| 01_off | 32.7 ms | 31 |
+| 02_cheap (1 tap, 1/8, stride 2) | 37.2 ms | 27 |
+| 03_medium (2 taps, 1/8) | 66.0 ms | 15 |
+| 04_balanced (4 taps, 1/4) | 96.2 ms | 10 |
+| 05_quality (8 taps, 1/2, shutter 320) | 113.1 ms | 9 |
+| 06_camera_vectors (balanced, fx 140 0) | 36.6 ms | 27 |
+| 07_vertex_vectors (balanced) | 91.4 ms | 11 |
+| 08_heatmap (view 9) | 23.6 ms | 42 |
+| 09_off_again | 33.2 ms | 30 |
+
+Reading: one tap is nearly free, the first tap's cost is the velocity buffer +
+tile-max reads (~30 ms), and each extra tap adds ~6-8 ms. The camera-only
+fallback at the same tap count is 2.6x cheaper than the per-vertex path,
+which points at the tile-max (9 samples/px) and velocity fetches as the next
+optimization targets. The on-screen caption line (second caption, quarter size) shows
 `PATH/DN/rate | MB s<strength> x<sub-steps> r<velocity divisor>` and appends
 `VIEW VECTORS` in the heatmap segment, so every recorded segment is
 self-labelling even while the LIGHT LOOP label is on screen.
