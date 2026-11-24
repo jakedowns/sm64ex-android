@@ -644,6 +644,12 @@ void game_loop_one_iteration(void) {
         if (s_pendingIntroReset) {
             s_pendingIntroReset = 0;
             g_hard_paused = 0;
+            /* Tear the current area down the way a level transition does.
+             * Only rewinding the script address left stale area data behind
+             * and render_hud dereferenced freed memory (SIGSEGV at the cannon
+             * reticle check). */
+            clear_area_graph_nodes();
+            clear_areas();
             levelCommandAddr = segmented_to_virtual(level_script_entry);
         }
         // if the reset timer is active, run the process to reset the game.

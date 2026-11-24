@@ -456,9 +456,19 @@ void render_hud(void) {
         create_dl_ortho_matrix();
 #endif
 
-        if (gCurrentArea != NULL && gCurrentArea->camera != NULL
-            && gCurrentArea->camera->mode == CAMERA_MODE_INSIDE_CANNON) {
-            render_hud_cannon_reticle();
+        if (gCurrentArea != NULL) {
+            /* Returning to the logo can leave a stale camera pointer in the
+             * area struct (the intro has no area). Dereferencing it crashed at
+             * the cannon-reticle check, so only follow camera pointers that
+             * look like user-space addresses. */
+            struct Camera *cam = gCurrentArea->camera;
+            u64 cp = (u64) (uintptr_t) cam;
+            if (cp < 0x10000ULL || cp > (1ULL << 47)) {
+                cam = NULL;
+            }
+            if (cam != NULL && cam->mode == CAMERA_MODE_INSIDE_CANNON) {
+                render_hud_cannon_reticle();
+            }
         }
 
         if (hudDisplayFlags & HUD_DISPLAY_FLAG_LIVES && configHUD) {
