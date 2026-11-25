@@ -85,6 +85,26 @@ void print_caption_small(s32 x, s32 y, const char *str) {
     sCaptionScale = 0.25f;
 }
 
+/* Small corner marker for QUICK DEV screenshots. Kept in its own slot so the
+ * PTC feature labels cannot overwrite it. Rebuilt every frame by
+ * ptc_chain_hud_text(); an empty string clears it. */
+static char sQuickDevText[24];
+static s32 sQuickDevLen = 0;
+
+void print_quick_dev_marker(const char *str) {
+    s32 n = 0;
+    if (str == NULL) {
+        sQuickDevLen = 0;
+        return;
+    }
+    while (str[n] != 0 && n < 23) {
+        sQuickDevText[n] = str[n];
+        n++;
+    }
+    sQuickDevText[n] = 0;
+    sQuickDevLen = n;
+}
+
 /**
  * Returns n to the exponent power, only for non-negative powers.
  */
@@ -480,7 +500,7 @@ void render_text_labels(void) {
     s8 glyphIndex;
     Mtx *mtx;
 
-    if (sTextLabelsCount == 0) {
+    if (sTextLabelsCount == 0 && sQuickDevLen == 0) {
         return;
     }
 
@@ -500,6 +520,16 @@ void render_text_labels(void) {
     sCaptionLen = 0;
     draw_caption_text(sCaptionText2, sCaptionLen2, sCaptionX2, sCaptionY2, sCaptionScale2);
     sCaptionLen2 = 0;
+    /* Quick-dev marker: bottom-left, quarter size, self-documenting shots.
+     * Hidden with the rest of the HUD so trailer captures stay clean. */
+    {
+        extern int gHudForceHidden;
+        if (!gHudForceHidden) {
+            /* y=52 clears both the collapsed Java panel and the PTC caption
+             * line (y=34), so the marker is readable in every screenshot. */
+            draw_caption_text(sQuickDevText, sQuickDevLen, 84, 52, 0.25f);
+        }
+    }
 
     for (i = 0; i < sTextLabelsCount; i++) {
         for (j = 0; j < sTextLabels[i]->length; j++) {

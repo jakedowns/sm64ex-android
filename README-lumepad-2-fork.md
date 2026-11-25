@@ -597,9 +597,19 @@ Tabs:
     PROBE VIS, L-DIST, MOTION VECTORS) plus a small reorderable layer stack
     (ZBUF, WIRE) with per-layer on/off.
   - CAMERA opens a third strip: STEREO / SETTINGS.
-- **DEBUG** — MOVE / PORTAL / BALL / SYS / LOGS. SYS ends with two sections:
-  HUD (GAME HUD, DEBUG CAPTIONS, TOUCH CONTROLS) and PERFORMANCE
-  (PERF MONITOR, FRAME GRAPH, FPS COUNTER — all on by default). LOGS is the
+- **DEBUG** — MOVE / PORTAL / BALL / SYS / LOGS. SYS has SESSION, **QUICK
+  DEV**, SYSTEM, DISPLAY, HUD and PERFORMANCE sections. QUICK DEV is the cheap
+  device-loop boot (off by default): QUICK DEV, QD LEVEL (default L38, the
+  Portal Test Chamber; `cmd level` updates it) and QD MUTE AUDIO (off; audio
+  matters for some bugs). When on, the next launch skips the logo, attract
+  demo and press-start wait (the title entry advances by itself) and boots the
+  configured level through the normal level-select path, with boot presentation
+  sleeps capped at 2 frames until the level is live. A small `QUICK DEV L<n>`
+  marker is drawn bottom-left and the PTC status line gains
+  `qd=<on>,<level>,<mute>`.
+  A normal launch is unchanged when it is off. HUD (GAME HUD, DEBUG CAPTIONS,
+  TOUCH CONTROLS) and PERFORMANCE
+  (PERF MONITOR, FRAME GRAPH, FPS COUNTER — all on by default) follow. LOGS is the
   bug-report page: EXPORT/SHARE the debug report, REFRESH INFO, **LEIA
   VERBOSE** (switches the SDK to Trace logging and restarts so the whole
   launch is captured; the capture then covers every process, including the

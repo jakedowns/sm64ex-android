@@ -57,7 +57,9 @@ Use it for every adb interaction, even a one-line `dumpsys`.
   an error. Wake and unlock first (`/media/share/lp2-test/scripts/unlock.sh`),
   then capture; a black screenshot is almost always power state, not a
   rendering bug. Check with `dumpsys power | grep mWakefulness` before blaming
-  the app.
+  the app. The panel's `screen_off_timeout` is **30 s**, and a sleeping surface
+  also freezes the level script mid-load; `scripts/quick-dev.sh` raises it for
+  the hold and restores it on exit.
 - **adb is over Wi-Fi (`192.168.1.207:5555`), so sleeping the tablet drops the
   connection.** During a multi-agent session pass `AGENT_NO_SLEEP=1` on
   intermediate device calls and only let the final call sleep it. If `adb
@@ -118,14 +120,17 @@ on without opening anything else:
 AGENT_TABLET_MUTE=1 scripts/agent-lock.sh device --reason "quick dev" -- \
     scripts/quick-dev.sh --level 38 --ptc annex --fx "100=1 101=200"
 
-# read-only capture of the current screen/state (shared lock, never queues)
+# read-only capture of the current screen/state (shared lock, never queues;
+# only on an awake tablet — it does not wake the screen, so a dozing panel
+# gives a black PNG)
 scripts/agent-lock.sh device-quick --reason "quick capture" -- \
     scripts/quick-dev.sh --capture-only
 ```
 
 It installs only when the APK stamp (mtime+size) or the installed package's
-`lastUpdateTime` changed, waits for `PTC level=<n>` instead of sleeping, and
-writes `status.txt`, `shot.png`, filtered `logcat.txt` and `meta.txt` under
+`lastUpdateTime` changed, waits for `PTC level=<n>` with `lvl>=1` (the level
+script has finished `init_level()`) and `surfaceValid=true` instead of sleeping,
+and writes `status.txt`, `shot.png`, filtered `logcat.txt` and `meta.txt` under
 `/media/share/tmp/artifacts/sm64/quickdev/<stamp>/`. The summary is level/area/
 phase, `fps=`, `slowmo=`, `rays=` (plus `glow=`/`occl=` when present), any
 `FATAL`/`ANR` lines, artifact paths and the measured wall time.
@@ -134,12 +139,21 @@ phase, `fps=`, `slowmo=`, `rays=` (plus `glow=`/`occl=` when present), any
 - Changing **behaviour**: rebuild once; then `--fx`/`--ptc`/`--level` for every
   data point after that.
 - `--dry-run` prints the plan without touching the tablet; `--help` lists every
-  flag. A full cycle under ~15 s means the app was already at the level;
-  installs are the only slow step.
+  flag. Measured here: ~3 s when the app is already at the level, ~7 s for a
+  restart into the level with QUICK DEV on (~12 s with it off), plus ~10 s when
+  the APK changed and has to be installed.
+
+The script also wakes the panel and raises its 30 s screen timeout for the hold
+(a sleeping tablet renders black and freezes the level script), restoring it on
+exit.
 
 The in-app **DEBUG → SYS → QUICK DEV** toggle (off by default) makes launches
-themselves cheap: it boots the configured level directly (default L38) without
-the logo/title/attract sequence and adds `qd=<on>,<level>,<mute>` to `cmd dump`.
+themselves cheap: it boots the configured level directly (default L38) by
+starting at the title-screen entry with the debug level-select request already
+armed, skipping the logo, attract demo and press-start wait (the title entry
+advances by itself, no input), and caps the boot presentation sleeps at 2
+frames until `init_level()` clears the cap. It adds `qd=<on>,<level>,<mute>` to
+`cmd dump`.
 `quick-dev.sh --quickdev 1 --level 38 --restart` sets it from the shell. Leave it
 off when reproducing a normal launch.
 

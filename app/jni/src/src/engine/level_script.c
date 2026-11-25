@@ -123,10 +123,18 @@ static void level_cmd_exit(void) {
 }
 
 static void level_cmd_sleep(void) {
+    /* QUICK DEV boot: shorten the logo/title/level-select presentation sleeps.
+     * g_level_sleep_cap is 0 for every normal launch (and after init_level). */
+    extern int g_level_sleep_cap;
+    s32 frames = CMD_GET(s16, 2);
+    if (g_level_sleep_cap > 0 && frames > g_level_sleep_cap) {
+        frames = g_level_sleep_cap;
+    }
+
     sScriptStatus = SCRIPT_PAUSED;
 
     if (sDelayFrames == 0) {
-        sDelayFrames = CMD_GET(s16, 2);
+        sDelayFrames = frames;
     } else if (--sDelayFrames == 0) {
         sCurrentCmd = CMD_NEXT;
         sScriptStatus = SCRIPT_RUNNING;
@@ -134,10 +142,16 @@ static void level_cmd_sleep(void) {
 }
 
 static void level_cmd_sleep2(void) {
+    extern int g_level_sleep_cap;
+    s32 frames = CMD_GET(s16, 2);
+    if (g_level_sleep_cap > 0 && frames > g_level_sleep_cap) {
+        frames = g_level_sleep_cap;
+    }
+
     sScriptStatus = SCRIPT_PAUSED2;
 
     if (sDelayFrames2 == 0) {
-        sDelayFrames2 = CMD_GET(s16, 2);
+        sDelayFrames2 = frames;
     } else if (--sDelayFrames2 == 0) {
         sCurrentCmd = CMD_NEXT;
         sScriptStatus = SCRIPT_RUNNING;

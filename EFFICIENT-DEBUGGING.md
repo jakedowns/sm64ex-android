@@ -26,10 +26,15 @@ Read this before starting a tuning session.
 | incremental `assembleDebug` (warm, no daemon) | 20–50 s |
 | `adb install -r` | 20–60 s |
 | app start + PTC level load | ~20 s |
+| `scripts/quick-dev.sh` capture on a live session (no install) | ~3 s |
+| `scripts/quick-dev.sh` restart into PTC (QUICK DEV on / off) | ~7 s / ~12 s |
 | device-lock default hold limit | 300 s |
 
 So a rebuild-install-look cycle is **2–4 minutes**, while a dial change is
-**0.1 s** — a factor of a thousand. Ten data points by rebuild costs 30 minutes;
+**0.1 s** — a factor of a thousand. `scripts/quick-dev.sh` is the one-command
+version of the look step: it installs only when the APK changed, waits for the
+level instead of sleeping, captures state + screenshot + log, and prints the
+measured wall time. Ten data points by rebuild costs 30 minutes;
 the same ten in one sweep costs 30 seconds.
 
 ## Required shape of a new feature

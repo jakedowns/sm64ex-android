@@ -2742,9 +2742,23 @@ static const char *ptc_chain_caption(int ph) {
  * colourful HUD lettering so captions read as an in-game UI element. */
 void ptc_chain_hud_text(void) {
     extern void print_caption(s32 x, s32 y, const char *str);
+    extern void print_quick_dev_marker(const char *str);
     extern int gfx_opengl_denoise_state(int which);
     extern int gfx_rate_state(int which);
+    extern int gfx_quick_dev_enabled(void);
+    extern int gfx_quick_dev_level(void);
     const char *cap;
+
+    /* QUICK DEV marker: bottom-left, so a screenshot states how it was taken. */
+    {
+        char qd[24];
+        if (gfx_quick_dev_enabled()) {
+            snprintf(qd, sizeof(qd), "QUICK DEV L%d", gfx_quick_dev_level());
+            print_quick_dev_marker(qd);
+        } else {
+            print_quick_dev_marker(NULL);
+        }
+    }
     /* Denoiser/rate-limit comparison captions: read live state every frame so
      * the labels always match the settings being shown. */
     if (gfx_opengl_denoise_state(7)) {
@@ -4339,6 +4353,10 @@ void ptc_format_status(char *buf, int len) {
     extern int g_sim_slow_div;
     extern int g_sim_interp;
     extern int g_sim_present_t1;
+    extern int gfx_quick_dev_enabled(void);
+    extern int gfx_quick_dev_level(void);
+    extern int gfx_quick_dev_mute(void);
+    extern int g_levelInitCount;
 
     portal_last_camera_jump(&pcamD, &pcamA);
     extern int camera_portal_remap_count(void);
@@ -4369,7 +4387,7 @@ void ptc_format_status(char *buf, int len) {
              "chain=%d,%d,0x%x,%d,%d cmode=%d loop=%d "
              "face=%.1f,%.1f,%.1f anim=%d mh=%.1f remap=%d cdbg=%d,%d,%d,%d,%d walk=%d,%d,%d "
              "mpw=%d,%d,%d,%d,%d,%d,%d fc=%d,%d,%d,%d cg=%d,%.0f,%.0f,%.0f,0x%x "
-             "slowmo=%d,%d,%d rays=%d,%d,%d",
+             "slowmo=%d,%d,%d rays=%d,%d,%d qd=%d,%d,%d lvl=%d",
              gCurrLevelNum, gCurrAreaIndex, s_phase, s_testMode, s_testActive, s_failed, s_failReason,
              s_starCollected[0], s_starCollected[1], ptc_star_visible(), portal_count(), s_shotA, s_shotB, g_portal_debug,
              g_portal_view.active, g_portal_view.source, portal_view_enabled(),
@@ -4438,7 +4456,9 @@ void ptc_format_status(char *buf, int len) {
              s_chainGoomba[0] ? (unsigned) s_chainGoomba[0]->header.gfx.node.flags : 0u,
              g_sim_slow_div, g_sim_interp, g_sim_present_t1,
              gfx_opengl_ssfx_get(250), gfx_opengl_ssfx_get(251),
-             gfx_opengl_ssfx_get(255));
+             gfx_opengl_ssfx_get(255),
+             gfx_quick_dev_enabled(), gfx_quick_dev_level(), gfx_quick_dev_mute(),
+             g_levelInitCount);
 
     {
         size_t used = strlen(buf);

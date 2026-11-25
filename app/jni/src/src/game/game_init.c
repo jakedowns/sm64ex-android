@@ -17,7 +17,14 @@
 #include "sound_init.h"
 #include "print.h"
 #include "segment2.h"
+#include "menu/level_select_menu.h"
 #include "main_entry.h"
+
+/* levels/entry.h also declares the old `u8 level_script_entry[]` shape, which
+ * engine/level_script.h declares differently; only the QUICK DEV entry is
+ * needed here, so keep the declaration local. */
+extern const LevelScript level_script_quickdev[];
+extern void level_select_request_open(s16 autoLevel);
 #include "thread6.h"
 #include <prevent_bss_reordering.h>
 #ifdef BETTERCAMERA
@@ -647,8 +654,37 @@ void thread5_game_loop(UNUSED void *arg) {
     // point levelCommandAddr to the entry point into the level script data.
     levelCommandAddr = segmented_to_virtual(level_script_entry);
 
+    /* QUICK DEV (debug toggle, off by default): boot straight into a configured
+     * level instead of the logo/title/attract sequence. The level select
+     * consumes gLevelSelectAutoLevel and gDebugLevelSelect exactly as the
+     * `cmd level` / L+R+START path does; only the script entry differs, so a
+     * normal launch is untouched when the toggle is off. */
+    {
+        extern int gfx_quick_dev_enabled(void);
+        extern int gfx_quick_dev_level(void);
+        extern int gfx_quick_dev_mute(void);
+
+        if (gfx_quick_dev_enabled()) {
+            /* Arms both the auto level and the open request; intro_default
+             * consumes the request on its first frame (no START needed). */
+            extern int g_level_sleep_cap;
+            level_select_request_open((s16) gfx_quick_dev_level());
+            gDebugLevelSelect = 1;
+            g_level_sleep_cap = 2;
+            levelCommandAddr = segmented_to_virtual(level_script_quickdev);
+        }
+    }
+
     play_music(SEQ_PLAYER_SFX, SEQUENCE_ARGS(0, SEQ_SOUND_PLAYER), 0);
     set_sound_mode(save_file_get_sound_mode());
+
+    {   /* QUICK DEV mute: optional, off by default (audio matters for bugs). */
+        extern int gfx_quick_dev_enabled(void);
+        extern int gfx_quick_dev_mute(void);
+        if (gfx_quick_dev_enabled() && gfx_quick_dev_mute()) {
+            set_sound_disabled(1);
+        }
+    }
 
     gGlobalTimer++;
 }

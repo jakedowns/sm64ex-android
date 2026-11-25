@@ -39,6 +39,7 @@
 
 #include "game/ptc.h"
 #include "game/ptc_trace.h"
+#include "level_table.h"
 
 // TODO: figure out if this shit even works
 #ifdef VERSION_EU
@@ -337,6 +338,52 @@ Java_com_vdavid003_sm64port_sm64portActivity_nativeGetUncappedTest(JNIEnv *env, 
     (void) env; (void) clazz;
     extern int gfx_get_test_uncapped(void);
     return gfx_get_test_uncapped();
+}
+
+/* QUICK DEV: debug boot shortcut. The Java activity persists the toggle in
+ * SharedPreferences and pushes it here from onCreate, which runs before the SDL
+ * thread starts native main(), so thread5_game_loop sees the final values. */
+static int s_quickDevOn;
+static int s_quickDevLevel = LEVEL_PTC; /* Portal Test Chamber */
+static int s_quickDevMute;
+
+void gfx_set_quick_dev(int on, int level) {
+    s_quickDevOn = on ? 1 : 0;
+    if (level >= LEVEL_MIN && level <= LEVEL_MAX) {
+        s_quickDevLevel = level;
+    }
+}
+
+void gfx_set_quick_dev_mute(int on) {
+    extern void set_sound_disabled(u8 disabled);
+    s_quickDevMute = on ? 1 : 0;
+    set_sound_disabled(s_quickDevMute);
+}
+
+int gfx_quick_dev_enabled(void) {
+    return s_quickDevOn;
+}
+
+int gfx_quick_dev_level(void) {
+    return s_quickDevLevel;
+}
+
+int gfx_quick_dev_mute(void) {
+    return s_quickDevMute;
+}
+
+JNIEXPORT void JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeSetQuickDev(JNIEnv *env, jclass clazz,
+                                                               jint on, jint level) {
+    (void) env; (void) clazz;
+    gfx_set_quick_dev(on, level);
+}
+
+JNIEXPORT void JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeSetQuickDevMute(JNIEnv *env, jclass clazz,
+                                                                   jint on) {
+    (void) env; (void) clazz;
+    gfx_set_quick_dev_mute(on);
 }
 
 JNIEXPORT void JNICALL

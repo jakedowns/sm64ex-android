@@ -105,6 +105,14 @@ public class DebugReceiver extends BroadcastReceiver {
                 Log.i(TAG, "CMD uncapped " + v);
                 break;
             }
+            case "quickdev": {
+                int v = intent.getIntExtra("v", -1);
+                int level = intent.getIntExtra("level", -1);
+                int mute = intent.getIntExtra("mute", -1);
+                a.debugQuickDev(v, level, mute);
+                Log.i(TAG, "CMD quickdev v=" + v + " level=" + level + " mute=" + mute);
+                break;
+            }
             case "runticks": {
                 int n = intent.getIntExtra("n", 300);
                 a.debugRunTicks(n);

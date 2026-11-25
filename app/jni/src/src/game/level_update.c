@@ -254,6 +254,17 @@ void fade_into_special_warp(u32 arg, u32 color) {
 
 volatile s16 gLevelSelectOpenRequest = 0;
 
+/* Counts completed level initialisations. `gCurrLevelNum` changes before the
+ * level script has finished building the area, so device scripts use this as
+ * "the level is actually live" (it is 0 on the intro/title screens). */
+int g_levelInitCount = 0;
+
+/* QUICK DEV boot: cap level-script SLEEP frames until the first level is live.
+ * 0 = off (normal launches are untouched). Set by thread5_game_loop when the
+ * debug toggle is on, cleared by init_level(). Only the logo/title/level-select
+ * presentation sleeps are affected; gameplay sleeps run with the cap at 0. */
+int g_level_sleep_cap = 0;
+
 static int level_select_combo_pressed(void) {
     return (gPlayer1Controller->buttonDown & (L_TRIG | R_TRIG)) == (L_TRIG | R_TRIG)
         && (gPlayer1Controller->buttonPressed & START_BUTTON);
@@ -1244,6 +1255,10 @@ s32 update_level(void) {
 
 s32 init_level(void) {
     s32 val4 = 0;
+
+    g_levelInitCount++;
+    /* The boot shortcut has done its job once a real level initialises. */
+    g_level_sleep_cap = 0;
 
     set_play_mode(PLAY_MODE_NORMAL);
 

@@ -63,6 +63,12 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     private static final String BUILD_NAME = "v1.0-alpha3";
     private static final String PREFS_NAME = "sm64port";
     private static final String PREF_OVERLAY_OPACITY = "overlay_opacity";
+    /* QUICK DEV: cheap boot for the device loop (DEBUG -> SYS, off by default). */
+    private static final String PREF_QUICK_DEV = "quick_dev";
+    private static final String PREF_QUICK_DEV_LEVEL = "quick_dev_level";
+    private static final String PREF_QUICK_DEV_MUTE = "quick_dev_mute";
+    private static final int QUICK_DEV_DEFAULT_LEVEL = 38; // Portal Test Chamber
+    private static final int LEVEL_MAX_PORT = 38;
     private static final int REQ_EXPORT_LOG = 0x5A64;
     public static volatile sm64portActivity instance;
     private long leiaT0;
@@ -184,6 +190,10 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     private TextView splatShapeButton;
     private boolean stayOn = true, uiParallaxOn, uiBufOn;
     private boolean toeAutoOn = true;
+    /* QUICK DEV boot shortcut (see DEBUG -> SYS). */
+    private boolean quickDevOn, quickDevMute;
+    private int quickDevLevel = QUICK_DEV_DEFAULT_LEVEL;
+    private TextView quickDevToggle, quickDevLevelButton, quickDevMuteToggle;
     // Camera tracking (Leia eye/face tracking + tablet gyro).
     private boolean hdtOn, gyroOn;
     private int hdtStrength = 100, gyroStrength = 100, gyroPivot = 12;
@@ -374,6 +384,27 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         if (overlayAlphaPct < 0) overlayAlphaPct = 0;
         if (overlayAlphaPct > 100) overlayAlphaPct = 100;
         Log.i(TAG, "overlay opacity restored: " + overlayAlphaPct + "%");
+
+        /* QUICK DEV boots before the SDL thread starts native main(), so this is
+         * the safe place to hand the persisted toggle to the engine. */
+        try {
+            android.content.SharedPreferences sp =
+                    getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+            quickDevOn = sp.getBoolean(PREF_QUICK_DEV, false);
+            quickDevLevel = sp.getInt(PREF_QUICK_DEV_LEVEL, QUICK_DEV_DEFAULT_LEVEL);
+            if (quickDevLevel < 1 || quickDevLevel > LEVEL_MAX_PORT) {
+                quickDevLevel = QUICK_DEV_DEFAULT_LEVEL;
+            }
+            quickDevMute = sp.getBoolean(PREF_QUICK_DEV_MUTE, false);
+        } catch (Throwable t) {
+            quickDevOn = false;
+            quickDevMute = false;
+            quickDevLevel = QUICK_DEV_DEFAULT_LEVEL;
+        }
+        nativeSetQuickDev(quickDevOn ? 1 : 0, quickDevLevel);
+        nativeSetQuickDevMute(quickDevMute ? 1 : 0);
+        Log.i(TAG, "QUICK_DEV restored: on=" + quickDevOn + " level=" + quickDevLevel
+                + " mute=" + quickDevMute);
 
         try {
             initLeia();
@@ -1731,6 +1762,37 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addEnhSection("SESSION");
         addEnhButton("LEVEL SELECT", this::openLevelSelect);
         addEnhButton("KILL MARIO (TEST)", this::debugKill);
+        addEnhSection("QUICK DEV");
+        quickDevToggle = new TextView(this);
+        quickDevToggle.setTextSize(16);
+        quickDevToggle.setPadding(dp(4), dp(8), dp(4), dp(8));
+        quickDevToggle.setOnClickListener(v ->
+                debugQuickDev(quickDevOn ? 0 : 1, -1, -1));
+        addCompact(enhParent(), quickDevToggle);
+        quickDevLevelButton = new TextView(this);
+        quickDevLevelButton.setTextSize(16);
+        quickDevLevelButton.setTextColor(0xFF66CCFF);
+        quickDevLevelButton.setPadding(dp(4), dp(8), dp(4), dp(8));
+        quickDevLevelButton.setOnClickListener(v -> {
+            quickDevLevel = quickDevLevel >= LEVEL_MAX_PORT ? 1 : quickDevLevel + 1;
+            debugQuickDev(-1, quickDevLevel, -1);
+        });
+        addCompact(enhParent(), quickDevLevelButton);
+        quickDevMuteToggle = new TextView(this);
+        quickDevMuteToggle.setTextSize(16);
+        quickDevMuteToggle.setPadding(dp(4), dp(8), dp(4), dp(8));
+        quickDevMuteToggle.setOnClickListener(v ->
+                debugQuickDev(-1, -1, quickDevMute ? 0 : 1));
+        addCompact(enhParent(), quickDevMuteToggle);
+        {
+            TextView note = new TextView(this);
+            note.setText("boot shortcut: next launch (no logo/title/attract)");
+            note.setTextSize(12);
+            note.setTextColor(0xFF888888);
+            note.setPadding(dp(4), dp(2), dp(4), dp(6));
+            enhParent().addView(note);
+        }
+        refreshQuickDevUi();
         enhColumnTarget = enhPageColumns[0][1];
         addEnhSection("RENDER / SIM");
         uncappedTestToggle = new TextView(this);
@@ -3117,7 +3179,57 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     /** Open level select, or warp straight to `level` when n >= 0. */
     void debugLevel(int level) {
         nativeDebugLevel(level);
+        /* QUICK DEV remembers the last level used, so the next launch boots it. */
+        if (quickDevOn && level >= 1) {
+            quickDevLevel = Math.max(1, Math.min(LEVEL_MAX_PORT, level));
+            try {
+                getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                        .putInt(PREF_QUICK_DEV_LEVEL, quickDevLevel).commit();
+            } catch (Throwable ignored) {
+            }
+            nativeSetQuickDev(1, quickDevLevel);
+            runOnUiThread(this::refreshQuickDevUi);
+        }
         Log.i(TAG, "LEVEL " + level + " requested");
+    }
+
+    /**
+     * QUICK DEV: persist the cheap-boot toggle and push it to the engine.
+     * Negative arguments leave that field alone. The boot level is read by
+     * thread5_game_loop on the next launch; mute applies immediately.
+     */
+    void debugQuickDev(int on, int level, int mute) {
+        if (on >= 0) quickDevOn = on != 0;
+        if (level >= 1) quickDevLevel = Math.max(1, Math.min(LEVEL_MAX_PORT, level));
+        if (mute >= 0) quickDevMute = mute != 0;
+        try {
+            // commit(): the shell path restarts immediately after the broadcast.
+            getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                    .putBoolean(PREF_QUICK_DEV, quickDevOn)
+                    .putInt(PREF_QUICK_DEV_LEVEL, quickDevLevel)
+                    .putBoolean(PREF_QUICK_DEV_MUTE, quickDevMute).commit();
+        } catch (Throwable t) {
+            Log.w(TAG, "QUICK_DEV prefs not saved", t);
+        }
+        nativeSetQuickDev(quickDevOn ? 1 : 0, quickDevLevel);
+        if (mute >= 0) nativeSetQuickDevMute(quickDevMute ? 1 : 0);
+        Log.i(TAG, "QUICK_DEV on=" + quickDevOn + " level=" + quickDevLevel
+                + " mute=" + quickDevMute + " (boot level applies next launch)");
+        runOnUiThread(this::refreshQuickDevUi);
+    }
+
+    private void refreshQuickDevUi() {
+        if (quickDevToggle != null) {
+            quickDevToggle.setText("QUICK DEV: " + (quickDevOn ? "ON" : "OFF"));
+            quickDevToggle.setTextColor(quickDevOn ? 0xFF66FF99 : 0xFF888888);
+        }
+        if (quickDevLevelButton != null) {
+            quickDevLevelButton.setText("QD LEVEL: L" + quickDevLevel + " (tap to change)");
+        }
+        if (quickDevMuteToggle != null) {
+            quickDevMuteToggle.setText("QD MUTE AUDIO: " + (quickDevMute ? "ON" : "OFF"));
+            quickDevMuteToggle.setTextColor(quickDevMute ? 0xFF66FF99 : 0xFF888888);
+        }
     }
 
     /** Portal Test Chamber command: run/reset/calibrate/place/stop. */
@@ -4057,6 +4169,9 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     static native String nativePtcTrace();
     static native void nativeSetUncappedTest(int on);
     static native int nativeGetUncappedTest();
+    /** QUICK DEV cheap boot: on + boot level (read by thread5_game_loop). */
+    private native void nativeSetQuickDev(int on, int level);
+    private native void nativeSetQuickDevMute(int on);
     static native void nativeOverlayStick2(int rx, int ry, int active);
     static native void nativeOverlayAnalog(int on);
     static native void nativeHideInGameControls(int hide);
