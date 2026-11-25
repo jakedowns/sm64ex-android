@@ -1213,12 +1213,12 @@ static const char *s_fx_fs =
     "    float shutter = uMBShutter / 360.0;\n"
     "    float px = length(v * uRes) * shutter * (uMBStrength / 100.0);\n"
     "    if (px > 0.4) {\n"
-    "      float ns = clamp(uMBSubSteps, 1.0, 8.0);\n"
+    "      float ns = clamp(uMBSubSteps, 1.0, 16.0);\n"
     "      float jit = (uMBJitter / 100.0) * fract(sin(dot(vUV * uRes,\n"
     "                  vec2(12.9898, 78.233))) * 43758.5453 + uFrame * 0.618);\n"
     "      vec3 acc = baseColor;\n"
     "      float ws = 1.0;\n"
-    "      for (int i = 0; i < 8; i++) {\n"
+    "      for (int i = 0; i < 16; i++) {\n"
     "        if (float(i) >= ns) break;\n"
     "        float t = ns > 1.5 ? ((float(i) + jit) / (ns - 1.0) - 0.5) : 0.0;\n"
     "        vec2 suv = vUV + v * t * shutter * (uMBStrength / 100.0);\n"
@@ -1507,7 +1507,7 @@ void gfx_opengl_ssfx_set(int which, int value) {
         case 61: gfx_shadow_debug = value < 0 ? 0 : (value > 2 ? 2 : value); break;
         /* Vector motion blur. */
         case 100: s_fx_mb_on = value ? 1 : 0; break;
-        case 101: s_fx_mb_strength = value < 0 ? 0 : (value > 200 ? 200 : value); break;
+        case 101: s_fx_mb_strength = value < 0 ? 0 : (value > 300 ? 300 : value); break;
         case 102: s_fx_mb_samples = value < 1 ? 1 : (value > 16 ? 16 : value); break;
         /* Deferred dynamic lights. */
         case 103: s_light_count = value < 0 ? 0 : (value > 4 ? 4 : value); break;
@@ -1533,7 +1533,7 @@ void gfx_opengl_ssfx_set(int which, int value) {
         case 140: s_vel_source = value ? 1 : 0; break;
         case 141: s_mb_shutter = value < 0 ? 0 : (value > 360 ? 360 : value); break;
         case 142: s_mb_substeps = value < 1 ? 1 : (value > 8 ? 8 : value); break;
-        case 143: s_mb_maxpx = value < 0 ? 0 : (value > 64 ? 64 : value); break;
+        case 143: s_mb_maxpx = value < 0 ? 0 : (value > 128 ? 128 : value); break;
         case 144: {
             extern int gfx_vel_divisor;
             s_vel_divisor_ui = value < 1 ? 1 : (value > 8 ? 8 : value);
@@ -1548,7 +1548,7 @@ void gfx_opengl_ssfx_set(int which, int value) {
         }
         case 146: s_mb_jitter = value < 0 ? 0 : (value > 100 ? 100 : value); break;
         case 147: s_mb_depth_reject = value < 0 ? 0 : (value > 100 ? 100 : value); break;
-        case 148: s_mb_clamp_px = value < 4 ? 4 : (value > 200 ? 200 : value); break;
+        case 148: s_mb_clamp_px = value < 4 ? 4 : (value > 300 ? 300 : value); break;
         case 149: s_vec_style = value < 0 ? 0 : (value > 2 ? 2 : value); break;
         /* Lens bokeh kernel. */
         case 160: s_fx_bokeh_on = value ? 1 : 0; break;

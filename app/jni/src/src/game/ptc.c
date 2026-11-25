@@ -1551,6 +1551,7 @@ static u32 s_blurLastFlip;
 static Vec3f s_blurCenter;
 
 static void ptc_blurshow_begin(void) {
+    extern void custom_camera_apply_mode(int mode);
     extern void gfx_opengl_light_count(int count);
     extern void gfx_opengl_light_shadows(int on);
     extern void gfx_opengl_ssfx_set(int which, int value);
@@ -1563,9 +1564,23 @@ static void ptc_blurshow_begin(void) {
     s_blurStart = 0;
     s_blurLastFlip = 0;
     if (m != NULL) {
-        vec3f_copy(s_blurCenter, m->pos);
+        /* Open floor in the chamber, same spot the light show uses. */
+        m->pos[0] = 0.0f;
+        m->pos[1] = 0.0f;
+        m->pos[2] = -1800.0f;
+        m->vel[0] = m->vel[1] = m->vel[2] = 0.0f;
+        m->forwardVel = 0.0f;
+        m->faceAngle[1] = 0x0000;
+        set_mario_action(m, ACT_IDLE, 0);
+        if (m->marioObj != NULL) {
+            vec3f_copy(m->marioObj->header.gfx.pos, m->pos);
+        }
+        s_blurCenter[0] = m->pos[0];
+        s_blurCenter[1] = m->pos[1] + 80.0f;
+        s_blurCenter[2] = m->pos[2];
     }
     g_sim_slow_div = 3;
+    custom_camera_apply_mode(3);   /* CUSTOM: the free-look camera module */
     gfx_opengl_light_count(0);
     gfx_opengl_light_shadows(0);
     gfx_opengl_ssfx_set(1, 0);     /* AO */
@@ -3928,6 +3943,9 @@ static void ptc_apply_command(const char *action) {
         custom_camera_set_freelook(1, (Vec3f){ 0.0f, 650.0f, -900.0f },
                                    (Vec3f){ 0.0f, 90.0f, -1800.0f });
         gfx_set_debug_note("LIGHT LOOP: 10 s orbit, counter-rotating camera, backflip @5 s");
+    } else if (strncmp(action, "note ", 5) == 0) {
+        extern void gfx_set_debug_note(const char *text);
+        gfx_set_debug_note(action + 5);
     } else if (strcmp(action, "blurshow") == 0) {
         s_chainMode = CH_OFF;
         ptc_blurshow_begin();

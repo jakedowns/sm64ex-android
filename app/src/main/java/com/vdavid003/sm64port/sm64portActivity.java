@@ -2164,13 +2164,13 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             addDebugCell(r, "VECTOR HEATMAP", 9);
         }
         moveGridLast();
-        addIntSlider("Blur strength", 0, 200, 40, v -> debugFx(101, v));
-        addIntSlider("Sub-steps", 1, 8, 4, v -> debugFx(142, v));
-        addIntSlider("Max blur px", 0, 64, 16, v -> debugFx(143, v));
+        addIntSlider("Blur strength", 0, 300, 40, v -> debugFx(101, v));
+        addIntSlider("Sub-steps", 1, 16, 4, v -> debugFx(142, v));
+        addIntSlider("Max blur px", 0, 128, 16, v -> debugFx(143, v));
         addIntSlider("Shutter deg", 0, 360, 180, v -> debugFx(141, v));
         addIntSlider("Sub-step jitter %", 0, 100, 100, v -> debugFx(146, v));
         addIntSlider("Depth reject %", 0, 100, 20, v -> debugFx(147, v));
-        addIntSlider("Velocity clamp px", 4, 200, 60, v -> debugFx(148, v));
+        addIntSlider("Velocity clamp px", 4, 300, 60, v -> debugFx(148, v));
         addIntSlider("Velocity res 1/n", 1, 8, 4, v -> debugFx(144, v));
         addIntSlider("Vector update every", 1, 4, 1, v -> debugFx(145, v));
         addIntSlider("Vector heat gain", 20, 500, 120, v -> debugFx(118, v));

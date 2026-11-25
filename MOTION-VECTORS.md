@@ -114,3 +114,22 @@ optimization targets. The on-screen caption line (second caption, quarter size) 
 `PATH/DN/rate | MB s<strength> x<sub-steps> r<velocity divisor>` and appends
 `VIEW VECTORS` in the heatmap segment, so every recorded segment is
 self-labelling even while the LIGHT LOOP label is on screen.
+
+## Parameter sweep
+
+`scripts/blur-sweep-test.sh` records the same showcase while sweeping one dial
+at a time; each segment is labelled on screen with `ptc note <text>` and the
+live `MB s… x… r…` caption. Ceilings were raised for this: strength 0-300,
+sub-steps 1-16, max blur 0-128 px, velocity clamp 4-300 px.
+
+| sweep | values | frame time |
+| --- | --- | --- |
+| strength | 40 / 100 / 160 / 220 / 300 | 8.5 / 12.4 / 10.6 / 11.1 / 11.0 ms |
+| sub-steps | 1 / 2 / 4 / 8 / 16 | 8.4 / 10.0 / 10.8 / 10.8 / 10.9 ms |
+| shutter | 90 / 180 / 270 / 360 | 10.6 / 11.9 / 10.9 / 10.9 ms |
+| max blur px | 8 / 24 / 64 / 128 | 10.8 / 11.2 / 10.0 / 10.0 ms |
+| heatmap | view 9 segments | 9.5 ms |
+
+At these settings the showcase stays above 80 fps; the 1-tap profile is
+effectively free (8.4 ms). `ptc blurshow` now uses custom camera mode 3 (the
+free-look module), so the orbit actually moves.
