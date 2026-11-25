@@ -13,6 +13,19 @@ that is finished gets deleted here, not ticked.
 
 Nothing active.
 
+### Bowser scale pulses under HFR (held/gripped objects)
+Reported 2026-11-25, investigating in worktree `bowser-scale`.
+
+On the intro sequence, Bowser's model grows/shrinks frame to frame while Mario
+spins him by the tail. Hypothesis: HFR interpolation above 30 Hz, and probably
+any time Mario grips or holds an object (`geo_process_held_object`,
+`gCurrentGraphNodeHeldObject`). Candidates to prove or dismiss with telemetry:
+element-wise lerp of matrices that carry rotation x non-uniform scale; the held
+object's previous matrix coming from a different parent chain; `hfr_prev_valid`
+gaps making `prev := cur` intermittently; a genuine double application of
+`gfx.scale`. Telemetry: `SM64HFR` per-present lines plus a windowed scale
+summary (`ptc hfrdump`), parsed by `scripts/hfr-scale-check.py`.
+
 ### Dithered punch-through for an occluded Mario
 Started 2026-11-25 in worktree `occlusion-fade` (not merged).
 
