@@ -12,7 +12,17 @@ scripts/agent-lock.sh build --reason "what you are building" -- ./gradlew assemb
 
 # Device / adb (shared by every project on this host)
 scripts/agent-lock.sh device --reason "what you are testing" -- bash -lc '...adb commands...'
+
+# Short read-only probe: dumpsys, logcat, screencap, pidof (~1 s, shared)
+scripts/agent-lock.sh device-quick --reason "status check" -- bash -lc 'adb shell ...'
 ```
+
+`device-quick` takes a **shared** lock: several probes may run at once, but none
+may run while a `device` holder has the tablet. Use it for anything read-only
+and short so a status check never queues behind a three-minute screen recording.
+It does not mute, mark BUSY or sleep the tablet, and it will not wake a sleeping
+device — use it on an awake tablet, and never run installs, recordings or
+state-changing commands under it.
 
 The lock is held for the lifetime of the command. Do **not** bypass it. If the
 lock times out (exit code `75`), wait/retry later or report the wait — never

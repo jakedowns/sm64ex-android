@@ -84,7 +84,9 @@ already exist. Two examples from this repo:
 - Trusting a stubbed clock: `osGetTime()` returns 0 in this port, so scripted
   orbits were frozen at phase 0 and looked like "the effect does nothing".
 - Taking the device lock once per command instead of once per batch, which
-  starves the other agents waiting on it.
+  starves the other agents waiting on it. Short read-only probes have their own
+  shared lock now (`device-quick`), so they neither queue behind a recording nor
+  need a full batch.
 - Running adb unlocked by accident. `fx-sweep.sh` now refuses; write other device
   scripts the same way (`AGENT_DEVICE_LOCK_HELD=1` is exported by the lock).
 - Re-deriving numbers that are already written down: check `BACKLOG.md`,

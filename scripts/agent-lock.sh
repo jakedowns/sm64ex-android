@@ -1,13 +1,20 @@
 #!/usr/bin/env bash
 # Serialize access to shared Android resources between agents.
 #
-#   scripts/agent-lock.sh build  [--timeout SECONDS] [--reason TEXT] -- <command...>
-#   scripts/agent-lock.sh device [--timeout SECONDS] [--reason TEXT] -- <command...>
+#   scripts/agent-lock.sh build        [--timeout SECONDS] [--reason TEXT] -- <command...>
+#   scripts/agent-lock.sh device       [--timeout SECONDS] [--reason TEXT] -- <command...>
+#   scripts/agent-lock.sh device-quick [--timeout SECONDS] [--reason TEXT] -- <command...>
 #   scripts/agent-lock.sh status
 #
 # Lock scope:
-#   build  - one lock for this repository, shared by ALL git worktrees/copies
-#   device - one lock per host, shared by ALL worktrees and projects using adb
+#   build        - one lock for this repository, shared by ALL git worktrees/copies
+#   device       - one lock per host, shared by ALL worktrees and projects using adb
+#   device-quick - a SHARED lock for short read-only probes (dumpsys, logcat,
+#                  screencap, pidof). It waits while a device holder has the
+#                  tablet (exclusive), but several quick probes may run at once,
+#                  so a 2 s status check never queues behind a 3 min recording.
+#                  It does not mute, mark BUSY or sleep the tablet, and it will
+#                  not wake a sleeping device: use it on an awake tablet
 #
 # Run this from the checkout/worktree you are working in. Metadata (branch,
 # commit, worktree) is taken from the current working directory, not from where
@@ -39,14 +46,16 @@ LOCK_ROOT="${AGENT_LOCK_ROOT:-${AGENT_LOCK_DIR:-${XDG_STATE_HOME:-$HOME/.local/s
 PROJECT_KEY="${AGENT_PROJECT_KEY:-android-sm64}"
 BUILD_LOCK="${AGENT_BUILD_LOCK:-$LOCK_ROOT/$PROJECT_KEY/build.lock}"
 DEVICE_LOCK="${AGENT_DEVICE_LOCK:-$LOCK_ROOT/devices/android.lock}"
+DEVICE_QUICK_LOCK="${AGENT_DEVICE_QUICK_LOCK:-$LOCK_ROOT/devices/android.quick.lock}"
 LEGACY_PROJECT_KEY="sm64ex-android"
 LEGACY_BUILD_LOCK="$LOCK_ROOT/$LEGACY_PROJECT_KEY/build.lock"
 
 usage() {
     cat <<'EOF'
 Usage:
-  scripts/agent-lock.sh build  [--timeout SECONDS] [--reason TEXT] -- <command...>
-  scripts/agent-lock.sh device [--timeout SECONDS] [--reason TEXT] -- <command...>
+  scripts/agent-lock.sh build        [--timeout SECONDS] [--reason TEXT] -- <command...>
+  scripts/agent-lock.sh device       [--timeout SECONDS] [--reason TEXT] -- <command...>
+  scripts/agent-lock.sh device-quick [--timeout SECONDS] [--reason TEXT] -- <command...>
   scripts/agent-lock.sh status
 
 The build lock is shared by all worktrees of this repository. The device lock
@@ -142,16 +151,18 @@ device_mute() {
 
 lock_file_for() {
     case "$1" in
-        build)  printf '%s' "$BUILD_LOCK" ;;
-        device) printf '%s' "$DEVICE_LOCK" ;;
-        *)      die "unknown lock kind: $1 (expected 'build' or 'device')" ;;
+        build)        printf '%s' "$BUILD_LOCK" ;;
+        device)       printf '%s' "$DEVICE_LOCK" ;;
+        device-quick) printf '%s' "$DEVICE_QUICK_LOCK" ;;
+        *)      die "unknown lock kind: $1 (expected 'build', 'device' or 'device-quick')" ;;
     esac
 }
 
 default_timeout_for() {
     case "$1" in
-        build)  printf '%s' "${AGENT_BUILD_LOCK_TIMEOUT:-3600}" ;;
-        device) printf '%s' "${AGENT_DEVICE_LOCK_TIMEOUT:-300}" ;;
+        build)        printf '%s' "${AGENT_BUILD_LOCK_TIMEOUT:-3600}" ;;
+        device)       printf '%s' "${AGENT_DEVICE_LOCK_TIMEOUT:-300}" ;;
+        device-quick) printf '%s' "${AGENT_DEVICE_QUICK_LOCK_TIMEOUT:-60}" ;;
     esac
 }
 
@@ -263,7 +274,7 @@ print_status() {
     fi
     echo "lock root: $LOCK_ROOT"
     echo "worktree:  $TARGET_ROOT ($(git_branch) @ $(git_head))"
-    for kind in build device; do
+    for kind in build device device-quick; do
         file="$(lock_file_for "$kind")"
         if [[ ! -e "$file" ]]; then
             echo "$kind: free (never acquired)"
@@ -295,7 +306,7 @@ timeout=""
 reason=""
 while (( $# )); do
     case "$1" in
-        build|device)
+        build|device|device-quick)
             [[ -z "$kind" ]] || die "lock kind specified twice"
             kind="$1"
             shift
@@ -361,7 +372,11 @@ if [[ "$kind" == "build" ]] \
 fi
 
 exec 9>>"$lock_file"
-if ! flock -w "$timeout" 9; then
+# device-quick takes a SHARED lock: several read-only probes may run together,
+# but none may run while a `device` holder has the tablet.
+flock_mode="-w"
+[[ "$kind" == "device-quick" ]] && flock_mode="-s -w"
+if ! flock $flock_mode "$timeout" 9; then
     waited_ms=$(( $(now_ms) - wait_start_ms ))
     log_event timeout "$kind" "$lock_file" "${reason:-unspecified}" \
         "$timeout" "$waited_ms" 0 75
@@ -421,6 +436,7 @@ release_note() {
         device_app_busy 0
         device_sleep
     fi
+    # device-quick deliberately leaves the tablet alone: no BUSY, no sleep.
     # fd 9 is still open here, so we still own the lock.
     {
         echo "released_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
