@@ -4319,6 +4319,7 @@ void ptc_format_status(char *buf, int len) {
     extern int gfx_opengl_light_state(int which);
     extern int gfx_opengl_denoise_state(int which);
     extern int gfx_rate_state(int which);
+    extern float gfx_stereo_fps;
 
     portal_last_camera_jump(&pcamD, &pcamA);
     extern int camera_portal_remap_count(void);
@@ -4345,7 +4346,7 @@ void ptc_format_status(char *buf, int len) {
              "wall=%d ceil=%d ledge=%d "
              "coins=%d stars=%d save=%d before=%d/%d "
              "cal=%.1f,%.1f,%.1f ledge_reach=%.1f goomba=%d,%.1f,%.1f gmodel=%d "
-             "gobj=%d,0x%x,%d,%d annex=%d,%d,%d gun=%d,%d,%d tool=%d lgt=%d,%d,%d,%d,%d,%d,%d,%d show=%d,%d dn=%d,%d,%d,%d,%d,%d,%d rate=%d,%d,%d "
+             "gobj=%d,0x%x,%d,%d annex=%d,%d,%d gun=%d,%d,%d tool=%d lgt=%d,%d,%d,%d,%d,%d,%d,%d show=%d,%d dn=%d,%d,%d,%d,%d,%d,%d rate=%d,%d,%d fps=%.1f "
              "chain=%d,%d,0x%x,%d,%d cmode=%d loop=%d "
              "face=%.1f,%.1f,%.1f anim=%d mh=%.1f remap=%d cdbg=%d,%d,%d,%d,%d walk=%d,%d,%d "
              "mpw=%d,%d,%d,%d,%d,%d,%d fc=%d,%d,%d,%d cg=%d,%.0f,%.0f,%.0f,0x%x",
@@ -4393,6 +4394,7 @@ void ptc_format_status(char *buf, int len) {
              gfx_opengl_denoise_state(6), gfx_opengl_denoise_state(3),
              gfx_opengl_denoise_state(8),
              gfx_rate_state(1), gfx_rate_state(2), gfx_rate_state(3),
+             gfx_stereo_fps,
              s_chainMode, s_chainTimer, s_chainFlags,
              s_chainGoombaCross,
              boxphys_test_boxes_near(CH_BOX_X, 120.0f, CH_BOX_B_Z, 300.0f),

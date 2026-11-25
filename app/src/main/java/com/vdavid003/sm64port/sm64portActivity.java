@@ -2268,6 +2268,8 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addIntSlider("Denoise radius", 1, 4, 1, v -> debugFx(214, v));
         addIntSlider("Denoise frames", 1, 8, 1, v -> debugFx(215, v));
         addIntSlider("Denoise bounces", 1, 4, 1, v -> debugFx(216, v));
+        // 1 = full-res (legacy), 2-4 = filter at scene_res/n then upsample.
+        addIntSlider("Denoise res 1/n", 1, 4, 4, v -> debugFx(220, v));
     }
 
     private String buildBranch() {

@@ -44,7 +44,7 @@ segment() {
     adb shell $B --es cmd dump >/dev/null 2>&1 || true
     sleep 0.2
     shot "$name"
-    printf '%s\tdn=%s\trate=%s\n' "$name" "$(kv "$st" dn)" "$(kv "$st" rate)" | tee -a "$OUT/results.txt"
+    printf '%s\tdn=%s\trate=%s\tfps=%s\n' "$name" "$(kv "$st" dn)" "$(kv "$st" rate)" "$(kv "$st" fps)" | tee -a "$OUT/results.txt"
 }
 
 say "artifacts: $OUT"
@@ -63,7 +63,7 @@ setfx 217 1
 sleep 0.5
 
 adb shell rm -f /sdcard/denoise.mp4
-adb shell screenrecord --time-limit 32 --size 1600x1000 --bit-rate 16000000 /sdcard/denoise.mp4 &
+adb shell screenrecord --time-limit 60 --size 1600x1000 --bit-rate 16000000 /sdcard/denoise.mp4 &
 SR=$!
 sleep 0.8
 
@@ -73,6 +73,12 @@ segment 03_alt_i30_p1_f1_b1    210=1 211=1 212=30 213=1 215=1 216=1
 segment 04_alt_i70_p2_f2_b2    212=70 213=2 215=2 216=2
 segment 05_alt_i100_p3_f4_b4   212=100 213=3 215=4 216=4
 segment 06_alt_rate30          201=30 200=1
+# Reduced-resolution default: same intensity/passes at 1/1, 1/2 and 1/4 res.
+segment 07_alt_r1_p2           200=1 201=60 212=70 213=2 215=2 216=2 220=1
+segment 08_alt_r2_p2           220=2
+segment 09_alt_r4_p2           220=4
+segment 10_alt_r4_p3           213=3 216=1
+segment 11_alt_r4_denoise_off  211=0
 
 wait $SR || true
 adb pull /sdcard/denoise.mp4 "$OUT/denoise.mp4" >/dev/null 2>&1 || true

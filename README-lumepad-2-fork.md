@@ -514,7 +514,15 @@ the auto distance), SSGI `21`-`25`, SSRTX `70`-`77`, normal flip `32`.
 | light probes | `110` show, `111` spacing, `113` radius, `114` resolution, `115` grid cols (X), `116` grid rows (Y), `117` grid repeats (Z); `112` sets all three axes at once |
 | bokeh / DOF | `160` kernel, `161` aspect %, `162` blades, `163` rotation, `164` anamorphic %, `165` highlight %, `166` cat eye % |
 | rate limit | `200` on, `201` target fps, `202` adaptive, `203` reset stats |
-| denoiser | `210` alternative path, `211` on, `212` intensity, `213` passes, `214` radius, `215` frames, `216` bounces, `217` test captions |
+| denoiser | `210` alternative path, `211` on, `212` intensity, `213` passes, `214` radius, `215` frames, `216` bounces, `217` test captions, `220` resolution `1/n` (1 = full res, 2-4 = reduced; default 4) |
+
+The denoiser runs at 1/4 resolution by default: the scene colour and depth are
+downsampled to `scene_res/4`, 1-3 edge-aware à-trous passes run there, and a
+dedicated pass bilaterally (depth-aware) upsamples the result and hands it to
+the FX pass as the scene colour. `220 1` restores the original full-resolution
+in-shader filter for A/B. Measured on the light-test scene: 38.0 ms/frame at
+1/4 res vs 66.7 ms at full res (`fps=` in `cmd dump`). See
+`DENOISER-RESEARCH.md` §4 and `DENOISER-RATE-LIMIT.md` §§3, 5.2.
 
 The probe grid is a `cols x rows x repeats` lattice around the probe centre,
 capped at 16 probes (4x4x1, 2x2x2, 2x2x4, ...). It is only used for the probe

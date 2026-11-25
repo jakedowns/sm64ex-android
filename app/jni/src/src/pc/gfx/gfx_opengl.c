@@ -756,6 +756,10 @@ static int s_denoise_radius = 1;
 static int s_denoise_frames = 1;
 static int s_denoise_bounces = 1;
 static int s_denoise_caption = 1;
+/* Denoise resolution divisor: 1 = full res (legacy path), 2..4 = the scene
+ * colour is downsampled to scene_res/div, filtered there and upsampled back
+ * bilaterally.  4 is the default (DENOISER-RESEARCH.md §4.1). */
+static int s_denoise_div = 4;
 /* Motion-vector heatmap normalisation (pixels of motion = full scale). */
 static int s_fx_vec_gain = 120;
 extern int gfx_vel_enabled;
@@ -1091,7 +1095,8 @@ static const char *s_fx_fs =
     "    }\n"
     "  }\n"
     "  return ws > 0.0 ? acc / ws : cc;\n"
-    "}\n"    "vec3 heatColour(float t) {\n"
+    "}\n"
+    "vec3 heatColour(float t) {\n"
     "  t = clamp(t, 0.0, 1.0);\n"
     "  vec3 c = mix(vec3(0.04, 0.10, 0.85), vec3(0.0, 0.85, 0.95), smoothstep(0.0, 0.30, t));\n"
     "  c = mix(c, vec3(0.10, 0.95, 0.25), smoothstep(0.25, 0.55, t));\n"
@@ -1417,6 +1422,147 @@ static const char *s_fx_fs =
     "  }\n"
     "}\n";
 
+/* ---------------- Reduced-resolution denoise prepass ---------------------
+ * Runs before the per-eye FX pass when the alternative path has the denoiser
+ * on and the resolution divisor is > 1 (DENOISER-RESEARCH.md §4.1):
+ *
+ *   mode 0  downsample scene colour  -> RGBA8 low-res colour   (ping)
+ *   mode 1  downsample depth         -> RGBA8 low-res packed z (8.8 fixed)
+ *   mode 2  one edge-aware à-trous pass over the low-res colour, steered by
+ *           the low-res depth (5x5 B3 kernel, 25 taps)
+ *   mode 3  bilateral (depth-aware) upsample back to full resolution
+ *
+ * The FX shader then only sees mode 3's mixed result as its scene colour
+ * (uColor); doing the 4-tap upsample inside the big FX shader cost far more
+ * on this GPU than a dedicated pass, and an extra sampler there slowed the
+ * whole post chain down.  All of it is skipped on the MAIN path and when
+ * divisor == 1, which keeps the original full-resolution denoiseTap()
+ * in-shader path available as the A/B.
+ */
+static const char *s_dn_vs =
+    "attribute vec2 aPos; attribute vec2 aUV; varying vec2 vUV;\n"
+    "void main(){ vUV = aUV; gl_Position = vec4(aPos, 0.0, 1.0); }\n";
+
+static const char *s_dn_fs =
+    "precision highp float;\n"
+    "varying vec2 vUV;\n"
+    "uniform sampler2D uSrc;\n"        /* full-res eye colour      (mode 0) */
+    "uniform sampler2D uSrcDepth;\n"   /* full-res eye depth       (mode 1) */
+    "uniform sampler2D uLowCol;\n"     /* low-res colour in        (mode 2) */
+    "uniform sampler2D uLowDep;\n"     /* low-res packed z         (mode 2) */
+    "uniform float uMode;\n"
+    "uniform vec2 uTexel;\n"           /* 1 / low-res size (UV texel) */
+    "uniform float uStep;\n"           /* à-trous step, low-res texels */
+    "uniform float uNear;\n"
+    "uniform float uFar;\n"
+    "uniform float uDepthSigma;\n"
+    "uniform float uColourSigma;\n"
+    "uniform float uUpSigma;\n"
+    "uniform float uMixA;\n"
+    "float linZ(float d) {\n"
+    "  float z = d * 2.0 - 1.0;\n"
+    "  return (2.0 * uNear * uFar) / (uFar + uNear - z * (uFar - uNear));\n"
+    "}\n"
+    "vec2 packZ(float z) {\n"
+    "  float v = clamp(z / uFar, 0.0, 1.0) * 65025.0;\n"
+    "  float hi = floor(v / 255.0);\n"
+    "  float lo = v - hi * 255.0;\n"
+    "  return vec2(hi / 255.0, lo / 255.0);\n"
+    "}\n"
+    "float unpackZ(vec4 c) {\n"
+    "  return ((c.r * 255.0) * 255.0 + c.g * 255.0) / 65025.0 * uFar;\n"
+    "}\n"
+    /* Binomial [1,4,6,4,1]/16 (the B3 spline sampled at integers) without
+     * array indexing, which keeps the ES2 compilers happy. */
+    "float b3w(float i) {\n"
+    "  float a = abs(i);\n"
+    "  return (a < 0.5) ? 0.375 : ((a < 1.5) ? 0.25 : 0.0625);\n"
+    "}\n"
+    "void main() {\n"
+    "  if (uMode < 0.5) {\n"           /* colour downsample: 4 bilinear taps */
+    "    vec2 o = uTexel * 0.25;\n"
+    "    vec3 c = texture2D(uSrc, vUV + vec2(-o.x, -o.y)).rgb;\n"
+    "    c += texture2D(uSrc, vUV + vec2( o.x, -o.y)).rgb;\n"
+    "    c += texture2D(uSrc, vUV + vec2(-o.x,  o.y)).rgb;\n"
+    "    c += texture2D(uSrc, vUV + vec2( o.x,  o.y)).rgb;\n"
+    "    gl_FragColor = vec4(c * 0.25, 1.0);\n"
+    "  } else if (uMode < 1.5) {\n"   /* depth downsample: linear z, packed */
+    "    float z = linZ(texture2D(uSrcDepth, vUV).r);\n"
+    "    gl_FragColor = vec4(packZ(z), 0.0, 1.0);\n"
+    "  } else {\n"
+    "    if (uMode < 2.5) {\n"        /* one à-trous iteration */
+    "    vec3 cc = texture2D(uLowCol, vUV).rgb;\n"
+    "    float cz = unpackZ(texture2D(uLowDep, vUV));\n"
+    "    vec3 acc = vec3(0.0);\n"
+    "    float ws = 0.0;\n"
+    "    for (int y = 0; y < 5; y++) {\n"
+    "      for (int x = 0; x < 5; x++) {\n"
+    "        float ox = float(x) - 2.0;\n"
+    "        float oy = float(y) - 2.0;\n"
+    "        vec2 suv = vUV + vec2(ox, oy) * uStep * uTexel;\n"
+    "        if (suv.x < 0.0 || suv.x > 1.0 || suv.y < 0.0 || suv.y > 1.0) continue;\n"
+    "        vec3 sc = texture2D(uLowCol, suv).rgb;\n"
+    "        float sz = unpackZ(texture2D(uLowDep, suv));\n"
+    "        float w = b3w(ox) * b3w(oy) * exp(-abs(sz - cz) * uDepthSigma)\n"
+    "                * exp(-length(sc - cc) * uColourSigma);\n"
+    "        acc += sc * w;\n"
+    "        ws += w;\n"
+    "      }\n"
+    "    }\n"
+    "    gl_FragColor = vec4(ws > 0.0 ? acc / ws : cc, 1.0);\n"
+    "    } else {\n"                  /* bilateral (depth-aware) upsample */
+    // Four low-res taps around this pixel, weighted by their bilinear
+    // coverage and by |z_tap - z_pixel|, so the upsample does not smear
+    // across silhouettes.  The centre depth comes from the same low-res
+    // field: at full resolution the extra depth fetches are cache misses
+    // and cost an order of magnitude more than the whole à-trous chain.
+    "    vec2 low = 1.0 / max(uTexel, vec2(1.0e-6));\n"
+    "    vec2 p = vUV * low - 0.5;\n"
+    "    vec2 f = p - floor(p);\n"
+    "    vec2 base = (floor(p) + 0.5) / low;\n"
+    "    float cz = unpackZ(texture2D(uLowDep, vUV));\n"
+    "    vec3 acc = vec3(0.0);\n"
+    "    float ws = 0.0;\n"
+    "    for (int i = 0; i < 4; i++) {\n"
+    "      float ox = (i == 1 || i == 3) ? 1.0 : 0.0;\n"
+    "      float oy = (i >= 2) ? 1.0 : 0.0;\n"
+    "      vec2 suv = base + vec2(ox, oy) * uTexel;\n"
+    "      vec3 sc = texture2D(uLowCol, suv).rgb;\n"
+    "      float sz = unpackZ(texture2D(uLowDep, suv));\n"
+    "      float bw = mix(1.0 - f.x, f.x, ox) * mix(1.0 - f.y, f.y, oy);\n"
+    "      float w = bw * exp(-abs(sz - cz) * uUpSigma);\n"
+    "      acc += sc * w;\n"
+    "      ws += w;\n"
+    "    }\n"
+    "    vec3 sharp = texture2D(uSrc, vUV).rgb;\n"
+    "    gl_FragColor = vec4(ws > 0.0001 ? mix(sharp, acc / ws, uMixA)\n"
+    "                                     : sharp, 1.0);\n"
+    "    }\n"
+    "  }\n"
+    "}\n";
+
+static GLuint s_dn_prog = 0;
+static int    s_dn_prog_state = 0;   // 0 = untried, 1 = ok, -1 = failed
+static GLint  s_dn_apos = -1, s_dn_auv = -1;
+static struct {
+    GLint mode, src, src_depth, low_col, low_dep;
+    GLint texel, step, nearv, farv, depth_sigma, colour_sigma, up_sigma;
+    GLint mix_a;
+} s_dn_u;
+/* [eye][ping-pong stage] colour targets + one packed-depth target per eye. */
+static GLuint s_dn_fbo[2][2] = {{0, 0}, {0, 0}};
+static GLuint s_dn_col[2][2] = {{0, 0}, {0, 0}};
+static GLuint s_dn_dfbo[2] = {0, 0};
+static GLuint s_dn_dep[2] = {0, 0};
+/* Full-res bilateral upsample result (one texture per eye) + its FBO. */
+static GLuint s_dn_up[2] = {0, 0};
+static GLuint s_dn_ufbo[2] = {0, 0};
+static int    s_dn_w = 0, s_dn_h = 0, s_dn_div = 0;
+static int    s_dn_upw = 0, s_dn_uph = 0;
+static GLuint s_dn_result[2] = {0, 0};   // per-eye colour for the FX pass
+static int    s_dn_valid[2] = {0, 0};
+static int    s_dn_src[2] = {0, 0};      // last à-trous stage per eye
+
 static struct {
     GLint color, depth, res, canvas, nearv, farv, tanhalf, aspect, frame;
     GLint ao_on, ao_intensity, ao_radius, ao_samples, ao_bias, ao_power;
@@ -1452,7 +1598,8 @@ static int    s_pp_w = 0, s_pp_h = 0;
 static int stereo_fx_any(void) {
     return s_fx_ao_on || s_fx_dof_on || s_fx_gi_on || s_fx_debug != 0
         || (gfx_shadow_enabled && s_shadow_map_valid)
-        || s_fx_ssrtx_on || s_fx_mb_on || s_light_count > 0 || s_probe_vis;
+        || s_fx_ssrtx_on || s_fx_mb_on || s_light_count > 0 || s_probe_vis
+        || (s_denoise_path && s_denoise_on);   /* denoise needs the FX pass */
 }
 
 // Row-vector matrix (translation in row 3). GLSL matrices are column-major,
@@ -1567,6 +1714,8 @@ void gfx_opengl_ssfx_set(int which, int value) {
         case 215: s_denoise_frames = value < 1 ? 1 : (value > 8 ? 8 : value); break;
         case 216: s_denoise_bounces = value < 1 ? 1 : (value > 4 ? 4 : value); break;
         case 217: s_denoise_caption = value ? 1 : 0; break;
+        /* Denoise resolution divisor (1 = full res, 2-4 = scene_res/n). */
+        case 220: s_denoise_div = value < 1 ? 1 : (value > 4 ? 4 : value); break;
         /* Rate limiter (lives in gfx_sdl2.c). */
         case 200: { extern int gfx_rate_enabled; gfx_rate_enabled = value != 0; break; }
         case 201: { extern int gfx_rate_target_fps; gfx_rate_target_fps = value < 0 ? 0 : (value > 240 ? 240 : value); break; }
@@ -1679,6 +1828,7 @@ int gfx_opengl_ssfx_get(int which) {
         case 215: return s_denoise_frames;
         case 216: return s_denoise_bounces;
         case 217: return s_denoise_caption;
+        case 220: return s_denoise_div;
         case 200: { extern int gfx_rate_enabled; return gfx_rate_enabled; }
         case 201: { extern int gfx_rate_target_fps; return gfx_rate_target_fps; }
         case 202: { extern int gfx_rate_adaptive; return gfx_rate_adaptive; }
@@ -1900,6 +2050,7 @@ int gfx_opengl_denoise_state(int which) {
         case 5: return s_denoise_frames;
         case 6: return s_denoise_bounces;
         case 7: return s_denoise_caption;
+        case 8: return s_denoise_div;
     }
     return -1;
 }
@@ -2398,6 +2549,244 @@ static void fx_build_vp(float out[4][4]) {
     fx_mat4_mul(out, V, gfx_last_persp_proj);
 }
 
+/* ---------------- Reduced-resolution denoise prepass ---------------- */
+
+static int denoise_ensure_program(void) {
+    if (s_dn_prog_state != 0) return s_dn_prog_state == 1;
+    GLuint vs = compile_shader_checked(GL_VERTEX_SHADER, s_dn_vs, "denoise vertex");
+    GLuint fs = compile_shader_checked(GL_FRAGMENT_SHADER, s_dn_fs, "denoise fragment");
+    if (!vs || !fs) {
+        s_dn_prog_state = -1;
+        if (vs) glDeleteShader(vs);
+        if (fs) glDeleteShader(fs);
+        return 0;
+    }
+    s_dn_prog = glCreateProgram();
+    glAttachShader(s_dn_prog, vs);
+    glAttachShader(s_dn_prog, fs);
+    glLinkProgram(s_dn_prog);
+    GLint ok = 0;
+    glGetProgramiv(s_dn_prog, GL_LINK_STATUS, &ok);
+    glDeleteShader(vs);
+    glDeleteShader(fs);
+    if (!ok) {
+        char log[512];
+        glGetProgramInfoLog(s_dn_prog, sizeof(log), NULL, log);
+        __android_log_print(ANDROID_LOG_WARN, "SM64FX", "denoise link failed: %s", log);
+        glDeleteProgram(s_dn_prog);
+        s_dn_prog = 0;
+        s_dn_prog_state = -1;
+        return 0;
+    }
+    s_dn_apos = glGetAttribLocation(s_dn_prog, "aPos");
+    s_dn_auv = glGetAttribLocation(s_dn_prog, "aUV");
+    s_dn_u.mode = glGetUniformLocation(s_dn_prog, "uMode");
+    s_dn_u.src = glGetUniformLocation(s_dn_prog, "uSrc");
+    s_dn_u.src_depth = glGetUniformLocation(s_dn_prog, "uSrcDepth");
+    s_dn_u.low_col = glGetUniformLocation(s_dn_prog, "uLowCol");
+    s_dn_u.low_dep = glGetUniformLocation(s_dn_prog, "uLowDep");
+    s_dn_u.texel = glGetUniformLocation(s_dn_prog, "uTexel");
+    s_dn_u.step = glGetUniformLocation(s_dn_prog, "uStep");
+    s_dn_u.nearv = glGetUniformLocation(s_dn_prog, "uNear");
+    s_dn_u.farv = glGetUniformLocation(s_dn_prog, "uFar");
+    s_dn_u.depth_sigma = glGetUniformLocation(s_dn_prog, "uDepthSigma");
+    s_dn_u.colour_sigma = glGetUniformLocation(s_dn_prog, "uColourSigma");
+    s_dn_u.up_sigma = glGetUniformLocation(s_dn_prog, "uUpSigma");
+    s_dn_u.mix_a = glGetUniformLocation(s_dn_prog, "uMixA");
+    s_dn_prog_state = 1;
+    __android_log_print(ANDROID_LOG_INFO, "SM64FX", "denoise program ready (%u)", s_dn_prog);
+    return 1;
+}
+
+/* Colour ping-pong + packed-depth targets at s_eye_w/div x s_eye_h/div, plus
+ * the full-res bilateral upsample target per eye. */
+static void stereo_ensure_denoise(int div) {
+    int w = s_eye_w / div;
+    int h = s_eye_h / div;
+    if (w < 1) w = 1;
+    if (h < 1) h = 1;
+    if (w == s_dn_w && h == s_dn_h && div == s_dn_div && s_dn_fbo[0][0] != 0
+        && s_dn_upw == s_eye_w && s_dn_uph == s_eye_h) {
+        return;
+    }
+    for (int eye = 0; eye < 2; eye++) {
+        for (int st = 0; st < 2; st++) {
+            if (s_dn_fbo[eye][st]) glDeleteFramebuffers(1, &s_dn_fbo[eye][st]);
+            if (s_dn_col[eye][st]) glDeleteTextures(1, &s_dn_col[eye][st]);
+            glGenTextures(1, &s_dn_col[eye][st]);
+            glBindTexture(GL_TEXTURE_2D, s_dn_col[eye][st]);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA,
+                         GL_UNSIGNED_BYTE, NULL);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glGenFramebuffers(1, &s_dn_fbo[eye][st]);
+            glBindFramebuffer(GL_FRAMEBUFFER, s_dn_fbo[eye][st]);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                   GL_TEXTURE_2D, s_dn_col[eye][st], 0);
+        }
+        if (s_dn_dfbo[eye]) glDeleteFramebuffers(1, &s_dn_dfbo[eye]);
+        if (s_dn_dep[eye]) glDeleteTextures(1, &s_dn_dep[eye]);
+        glGenTextures(1, &s_dn_dep[eye]);
+        glBindTexture(GL_TEXTURE_2D, s_dn_dep[eye]);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA,
+                     GL_UNSIGNED_BYTE, NULL);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glGenFramebuffers(1, &s_dn_dfbo[eye]);
+        glBindFramebuffer(GL_FRAMEBUFFER, s_dn_dfbo[eye]);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                               GL_TEXTURE_2D, s_dn_dep[eye], 0);
+        /* Full-res bilateral upsample destination. */
+        if (s_dn_ufbo[eye]) glDeleteFramebuffers(1, &s_dn_ufbo[eye]);
+        if (s_dn_up[eye]) glDeleteTextures(1, &s_dn_up[eye]);
+        glGenTextures(1, &s_dn_up[eye]);
+        glBindTexture(GL_TEXTURE_2D, s_dn_up[eye]);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, s_eye_w, s_eye_h, 0, GL_RGBA,
+                     GL_UNSIGNED_BYTE, NULL);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glGenFramebuffers(1, &s_dn_ufbo[eye]);
+        glBindFramebuffer(GL_FRAMEBUFFER, s_dn_ufbo[eye]);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                               GL_TEXTURE_2D, s_dn_up[eye], 0);
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    s_dn_w = w;
+    s_dn_h = h;
+    s_dn_div = div;
+    s_dn_upw = s_eye_w;
+    s_dn_uph = s_eye_h;
+    __android_log_print(ANDROID_LOG_INFO, "SM64FX",
+            "DN fbo eye0=%u,%u dep=%u up=%u %dx%d div=%d (eye %dx%d)",
+            s_dn_col[0][0], s_dn_col[0][1], s_dn_dep[0], s_dn_up[0], w, h, div,
+            s_eye_w, s_eye_h);
+}
+
+/* Downsample + à-trous at 1/div resolution + bilateral upsample, both eyes.
+ * Leaves the full-res denoised colour in s_dn_result[eye] for the FX pass. */
+static void stereo_denoise_prepass(int div) {
+    s_dn_valid[0] = s_dn_valid[1] = 0;
+    stereo_ensure_denoise(div);
+    if (!denoise_ensure_program()) return;
+
+    int passes = s_denoise_passes + s_denoise_bounces - 1;
+    if (passes < 1) passes = 1;
+    if (passes > 6) passes = 6;
+
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
+    glDisable(GL_SCISSOR_TEST);
+    glUseProgram(s_dn_prog);
+
+    static const float quad[] = {
+        -1.0f, -1.0f, 0.0f, 0.0f,
+         1.0f, -1.0f, 1.0f, 0.0f,
+        -1.0f,  1.0f, 0.0f, 1.0f,
+         1.0f,  1.0f, 1.0f, 1.0f,
+    };
+    if (!s_comp_vbo) glGenBuffers(1, &s_comp_vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, s_comp_vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(quad), quad, GL_STREAM_DRAW);
+    glEnableVertexAttribArray(s_dn_apos);
+    glVertexAttribPointer(s_dn_apos, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void *)0);
+    glEnableVertexAttribArray(s_dn_auv);
+    glVertexAttribPointer(s_dn_auv, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float),
+                          (void *)(2 * sizeof(float)));
+
+    glUniform1i(s_dn_u.src, 0);
+    glUniform1i(s_dn_u.src_depth, 1);
+    glUniform1i(s_dn_u.low_col, 2);
+    glUniform1i(s_dn_u.low_dep, 3);
+    glUniform2f(s_dn_u.texel, 1.0f / (float)s_dn_w, 1.0f / (float)s_dn_h);
+    glUniform1f(s_dn_u.nearv, gfx_cam_near);
+    glUniform1f(s_dn_u.farv, gfx_cam_far);
+    /* The tap spacing is one reduced-res texel, i.e. `div` screen pixels, so
+     * the depth acceptance is divided by `div` to keep the same surface
+     * tolerance the full-res tap path uses at one screen pixel. */
+    glUniform1f(s_dn_u.depth_sigma, 0.10f / (float)div);
+    glUniform1f(s_dn_u.colour_sigma, 2.0f);
+    /* Upsample edge-stop: ~4x tighter than the à-trous weight because the
+     * four taps are only `div` pixels from the centre. */
+    glUniform1f(s_dn_u.up_sigma, 0.25f / (float)div);
+    /* Same blend the in-shader full-res path uses for intensity/frames; the
+     * FX shader's own denoise block is disabled when this prepass runs. */
+    {
+        float accw = 1.0f / (float)(s_denoise_frames < 1 ? 1 : s_denoise_frames);
+        float a = ((float)s_denoise_intensity / 100.0f) * (0.45f + 0.55f * accw);
+        glUniform1f(s_dn_u.mix_a, a < 0.0f ? 0.0f : (a > 1.0f ? 1.0f : a));
+    }
+
+    for (int eye = 0; eye < 2; eye++) {
+        if (gfx_single_eye >= 0 && eye != gfx_single_eye) continue;
+
+        glViewport(0, 0, s_dn_w, s_dn_h);
+        /* 1. scene colour -> low-res colour (stage 0) */
+        glBindFramebuffer(GL_FRAMEBUFFER, s_dn_fbo[eye][0]);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, s_eye_tex[eye]);
+        glUniform1f(s_dn_u.mode, 0.0f);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+
+        /* 2. depth -> low-res packed linear z */
+        glBindFramebuffer(GL_FRAMEBUFFER, s_dn_dfbo[eye]);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, s_eye_depth[eye]);
+        glUniform1f(s_dn_u.mode, 1.0f);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+
+        /* 3. N edge-aware à-trous iterations over the low-res colour */
+        int src = 0;
+        float step = (float)s_denoise_radius;
+        for (int p = 0; p < passes; p++) {
+            int dst = 1 - src;
+            glBindFramebuffer(GL_FRAMEBUFFER, s_dn_fbo[eye][dst]);
+            glActiveTexture(GL_TEXTURE2);
+            glBindTexture(GL_TEXTURE_2D, s_dn_col[eye][src]);
+            glActiveTexture(GL_TEXTURE3);
+            glBindTexture(GL_TEXTURE_2D, s_dn_dep[eye]);
+            glUniform1f(s_dn_u.step, step);
+            glUniform1f(s_dn_u.mode, 2.0f);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            src = dst;
+            step *= 2.0f;
+        }
+        s_dn_src[eye] = src;
+    }
+
+    /* 4. bilateral upsample to full res, mixed with the sharp scene colour by
+     * the same intensity/frames weight the in-shader path uses.  The FX pass
+     * then just receives this as its uColor. */
+    for (int eye = 0; eye < 2; eye++) {
+        if (gfx_single_eye >= 0 && eye != gfx_single_eye) continue;
+        int src = s_dn_src[eye];
+        glViewport(0, 0, s_eye_w, s_eye_h);
+        glBindFramebuffer(GL_FRAMEBUFFER, s_dn_ufbo[eye]);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, s_eye_tex[eye]);
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, s_dn_col[eye][src]);
+        glActiveTexture(GL_TEXTURE3);
+        glBindTexture(GL_TEXTURE_2D, s_dn_dep[eye]);
+        glUniform1f(s_dn_u.mode, 3.0f);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        s_dn_result[eye] = s_dn_up[eye];
+        s_dn_valid[eye] = 1;
+    }
+
+    glDisableVertexAttribArray(s_dn_apos);
+    glDisableVertexAttribArray(s_dn_auv);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glUseProgram(0);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, 0);
+}
+
 /* Runs the post pass for both eyes. Returns 1 if s_pp_tex is valid to composite. */
 static int stereo_fx_pass(void) {
     if (!stereo_fx_any()) return 0;
@@ -2413,6 +2802,19 @@ static int stereo_fx_pass(void) {
     stereo_fx_init();
     if (s_fx_prog_state != 1) return 0;
     stereo_ensure_pp(s_eye_w, s_eye_h);
+
+    /* Alternative path + denoiser at divisor > 1: the reduced-res chain runs
+     * offscreen and its mixed result becomes the FX pass's scene colour.
+     * Divisor 1 keeps the original in-shader full-res denoiseTap() path. */
+    int dn_div = (s_denoise_path && s_denoise_on && s_denoise_div > 1) ? s_denoise_div : 0;
+    if (dn_div > 0) {
+        stereo_denoise_prepass(dn_div);
+        /* If the prepass could not build its program/targets, fall back to the
+         * in-shader full-res path rather than sampling empty textures. */
+        if (!s_dn_valid[0] && !s_dn_valid[1]) dn_div = 0;
+    } else {
+        s_dn_valid[0] = s_dn_valid[1] = 0;
+    }
 
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_BLEND);
@@ -2574,7 +2976,10 @@ static int stereo_fx_pass(void) {
         glUniform1f(s_fx_u.bokeh_highlight, (float)s_fx_bokeh_highlight);
         glUniform1f(s_fx_u.cat_eye, (float)s_fx_cat_eye);
         glUniform1f(s_fx_u.denoise_path, s_denoise_path ? 1.0f : 0.0f);
-        glUniform1f(s_fx_u.denoise_on, s_denoise_on ? 1.0f : 0.0f);
+        /* When the reduced-res prepass ran, the denoised colour arrives as
+         * uColor and this block must stay off. */
+        glUniform1f(s_fx_u.denoise_on,
+                    (s_denoise_on && dn_div == 0) ? 1.0f : 0.0f);
         glUniform1f(s_fx_u.denoise_intensity, (float)s_denoise_intensity);
         glUniform1f(s_fx_u.denoise_passes, (float)s_denoise_passes);
         glUniform1f(s_fx_u.denoise_radius, (float)s_denoise_radius);
@@ -2645,7 +3050,10 @@ static int stereo_fx_pass(void) {
         glBindFramebuffer(GL_FRAMEBUFFER, s_pp_fbo[eye]);
         glViewport(0, 0, s_eye_w, s_eye_h);
         glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, s_eye_tex[eye]);
+        /* Reduced-res denoise: the prepass already wrote the mixed result;
+         * hand it to the FX shader as the scene colour. */
+        glBindTexture(GL_TEXTURE_2D,
+                      s_dn_valid[eye] ? s_dn_result[eye] : s_eye_tex[eye]);
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, s_eye_depth[eye]);
         glUniform1f(s_fx_u.shear, gfx_eye_shear[eye]);
