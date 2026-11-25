@@ -13,6 +13,18 @@ that is finished gets deleted here, not ticked.
 
 Nothing active.
 
+### Dithered punch-through for an occluded Mario
+Started 2026-11-25 in worktree `occlusion-fade` (not merged).
+
+Today an occluder just wins: `gfx_cam_noclip` hides the PTC wall and the
+per-object occluder fade (`ptc.c`) makes specific platforms vanish; there is no
+general "let me see Mario" behaviour. The thread adds four modes — OFF, FULL
+DROPOUT (today), PARTIAL ALPHA (dithered see-through), CIRCULAR CUTOUT (soft
+radial hole with a dithered feather) — as a `discard` in the generated scene
+shader, restricted to fragments nearer than Mario, with a per-eye centre and
+depth so it lands correctly in 3D. Controls: OCCLUSION group in the panel
+(mode, radius, feather, dither, depth bias), `fx 27x`.
+
 ---
 
 ## Planned, not started
