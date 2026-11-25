@@ -53,6 +53,14 @@ Use it for every adb interaction, even a one-line `dumpsys`.
   `adb shell input keyevent 26`) so the screen is off.
 - Keep the device lock command self-contained; its trap clears BUSY and sleeps
   the tablet even if the command fails.
+- **adb is over Wi-Fi (`192.168.1.207:5555`), so sleeping the tablet drops the
+  connection.** During a multi-agent session pass `AGENT_NO_SLEEP=1` on
+  intermediate device calls and only let the final call sleep it. If `adb
+  devices` is empty, that is usually why.
+- **Never `adb reboot` the tablet.** `getprop sys.boot.reason` records
+  `reboot,shell` when an agent does this, and it destroys everyone's session
+  state. If the tablet stops answering, say so and let a human wake it; a
+  reboot is not a retry.
 - For multi-step testing, `AGENT_NO_SLEEP=1` keeps the tablet awake between
   device-lock calls; never leave it set for the final call.
 
@@ -94,6 +102,41 @@ rebuild + install + level load 2-4 minutes.
 
 Full rationale, costs, probing examples and anti-patterns:
 [`EFFICIENT-DEBUGGING.md`](EFFICIENT-DEBUGGING.md).
+
+## Quick device loop
+
+One command runs the whole loop in one lock hold and prints a summary you can act
+on without opening anything else:
+
+```bash
+# install-if-changed, start, wait for the level, fx/ptc, capture, summary
+AGENT_TABLET_MUTE=1 scripts/agent-lock.sh device --reason "quick dev" -- \
+    scripts/quick-dev.sh --level 38 --ptc annex --fx "100=1 101=200"
+
+# read-only capture of the current screen/state (shared lock, never queues)
+scripts/agent-lock.sh device-quick --reason "quick capture" -- \
+    scripts/quick-dev.sh --capture-only
+```
+
+It installs only when the APK stamp (mtime+size) or the installed package's
+`lastUpdateTime` changed, waits for `PTC level=<n>` instead of sleeping, and
+writes `status.txt`, `shot.png`, filtered `logcat.txt` and `meta.txt` under
+`/media/share/tmp/artifacts/sm64/quickdev/<stamp>/`. The summary is level/area/
+phase, `fps=`, `slowmo=`, `rays=` (plus `glow=`/`occl=` when present), any
+`FATAL`/`ANR` lines, artifact paths and the measured wall time.
+
+- Changing a **number**: use `--fx` or `scripts/fx-sweep.sh`, never a rebuild.
+- Changing **behaviour**: rebuild once; then `--fx`/`--ptc`/`--level` for every
+  data point after that.
+- `--dry-run` prints the plan without touching the tablet; `--help` lists every
+  flag. A full cycle under ~15 s means the app was already at the level;
+  installs are the only slow step.
+
+The in-app **DEBUG → SYS → QUICK DEV** toggle (off by default) makes launches
+themselves cheap: it boots the configured level directly (default L38) without
+the logo/title/attract sequence and adds `qd=<on>,<level>,<mute>` to `cmd dump`.
+`quick-dev.sh --quickdev 1 --level 38 --restart` sets it from the shell. Leave it
+off when reproducing a normal launch.
 
 ## Backlog
 

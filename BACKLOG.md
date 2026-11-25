@@ -112,6 +112,18 @@ object.
 
 ## Known bugs and limits
 
+- **The app sometimes "refuses to die" on relaunch.** Dropbox repeatedly logs
+  `ProcessRecord{... com.vdavid003.sm64port} <pid> refused to die, but we need to
+  launch ...` — the old process does not exit promptly when the activity is
+  restarted, so the system has to kill it. Likely a native thread that does not
+  observe the shutdown (SDL/Leia), and it is why relaunch cycles can stall.
+  Worth a proper look: reproduce with `am start` after `am force-stop`, watch
+  `dumpsys dropbox --print` for a fresh entry, and check which thread survives.
+- **Wi-Fi adb + device sleep is a deadlock.** The device lock sleeps the tablet
+  on release; sleeping drops the Wi-Fi adb link; waking it needs adb. Mitigation
+  is documented (AGENTS.md): `AGENT_NO_SLEEP=1` during a multi-agent session and
+  sleep only at the end. Never break the loop with `adb reboot`.
+
 - **Motion-vector heatmap renders a flat blue frame.** `fx 31 9` (VIEW VECTORS)
   with `fx 149 2` shows solid blue even with the blur pass on, so the debug view
   itself is broken, not the vectors. It is the only visibly wrong tile in the
