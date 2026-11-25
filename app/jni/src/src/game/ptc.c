@@ -1540,6 +1540,90 @@ static void ptc_lightshow_update(void) {
     s_showTimer++;
 }
 
+/* ---------------------------------------------------------- blur showcase
+ * 10 s wall-clock orbit around Mario with repeated slow-motion backflips.
+ * The sim runs every 3rd frame (g_sim_slow_div) so the flip floats, while the
+ * camera keeps orbiting in real time. Lights/probes/shadows are off so the
+ * only moving thing in frame is Mario. */
+static int s_blurShow;
+static u32 s_blurStart;
+static u32 s_blurLastFlip;
+static Vec3f s_blurCenter;
+
+static void ptc_blurshow_begin(void) {
+    extern void gfx_opengl_light_count(int count);
+    extern void gfx_opengl_light_shadows(int on);
+    extern void gfx_opengl_ssfx_set(int which, int value);
+    extern int g_sim_slow_div;
+    struct MarioState *m = gMarioState;
+
+    s_testMode = 0;
+    s_showOn = 0;
+    s_blurShow = 1;
+    s_blurStart = 0;
+    s_blurLastFlip = 0;
+    if (m != NULL) {
+        vec3f_copy(s_blurCenter, m->pos);
+    }
+    g_sim_slow_div = 3;
+    gfx_opengl_light_count(0);
+    gfx_opengl_light_shadows(0);
+    gfx_opengl_ssfx_set(1, 0);     /* AO */
+    gfx_opengl_ssfx_set(11, 0);    /* DOF */
+    gfx_opengl_ssfx_set(21, 0);    /* SSGI */
+    gfx_opengl_ssfx_set(70, 0);    /* SSRTX */
+    gfx_opengl_ssfx_set(50, 0);    /* shadows */
+    gfx_opengl_ssfx_set(110, 0);   /* probes */
+    gfx_set_debug_note("BLUR SHOW: 10s orbit, slow-mo backflips, lights off");
+}
+
+static void ptc_blurshow_stop(void) {
+    extern void custom_camera_set_freelook(int on, const Vec3f pos, const Vec3f focus);
+    extern int g_sim_slow_div;
+    Vec3f p = { 0, 0, 0 };
+    s_blurShow = 0;
+    g_sim_slow_div = 1;
+    custom_camera_set_freelook(0, p, p);
+}
+
+static void ptc_blurshow_update(void) {
+    extern void custom_camera_set_freelook(int on, const Vec3f pos, const Vec3f focus);
+    struct MarioState *m = gMarioState;
+    u32 now;
+    float sec, ph;
+    Vec3f pos, focus;
+    const float R = 650.0f, H = 420.0f;
+
+    if (!s_blurShow || m == NULL) {
+        return;
+    }
+    now = (u32) osGetTime();
+    if (s_blurStart == 0) {
+        s_blurStart = now;
+    }
+    sec = (float)(now - s_blurStart) * 0.001f;
+    ph = (2.0f * 3.14159265f) * fmodf(sec, 10.0f) / 10.0f;
+
+    pos[0] = s_blurCenter[0] - sinf(ph) * R;
+    pos[1] = s_blurCenter[1] + H;
+    pos[2] = s_blurCenter[2] - cosf(ph) * R;
+    focus[0] = m->pos[0];
+    focus[1] = m->pos[1] + 90.0f;
+    focus[2] = m->pos[2];
+    custom_camera_set_freelook(1, pos, focus);
+
+    /* Repeat the backflip whenever he is back on the ground. */
+    if (s_blurLastFlip == 0 || (now - s_blurLastFlip) > 3200) {
+        if (m->pos[1] <= s_blurCenter[1] + 6.0f && fabsf(m->vel[1]) < 4.0f) {
+            m->faceAngle[1] = atan2s(pos[2] - m->pos[2], pos[0] - m->pos[0]);
+            set_mario_action(m, ACT_BACKFLIP, 0);
+            m->vel[1] = 30.0f;
+            m->forwardVel = 0.0f;
+            s_blurLastFlip = now;
+        }
+    }
+}
+
 void ptc_update(void) {
     struct MarioState *m = gMarioState;
     extern void portal_telemetry_tick(void);
@@ -1547,6 +1631,7 @@ void ptc_update(void) {
     ptc_occlusion_update();
     portal_telemetry_tick();
     ptc_lightshow_update();
+    ptc_blurshow_update();
 
     if (s_pendingCommandReady) {
         s_pendingCommandReady = 0;
@@ -3843,6 +3928,11 @@ static void ptc_apply_command(const char *action) {
         custom_camera_set_freelook(1, (Vec3f){ 0.0f, 650.0f, -900.0f },
                                    (Vec3f){ 0.0f, 90.0f, -1800.0f });
         gfx_set_debug_note("LIGHT LOOP: 10 s orbit, counter-rotating camera, backflip @5 s");
+    } else if (strcmp(action, "blurshow") == 0) {
+        s_chainMode = CH_OFF;
+        ptc_blurshow_begin();
+    } else if (strcmp(action, "blurshowstop") == 0) {
+        ptc_blurshow_stop();
     } else if (strcmp(action, "lightshowstop") == 0) {
         s_showOn = 0;
     } else if (strcmp(action, "lighttest") == 0) {

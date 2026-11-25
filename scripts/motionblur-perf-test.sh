@@ -53,7 +53,7 @@ segment() {
     for kvp in "$@"; do
         setfx "${kvp%%=*}" "${kvp##*=}"
     done
-    sleep 2.0
+    sleep 5.0
     local st; st=$(dump_state)
     echo "$st" >"$OUT/$name.state.txt"
     shot "$name"
@@ -87,9 +87,10 @@ sleep 9
 # Capture in 2D: a stereo SBS frame doubles the image in the recording.
 stereo 0
 sleep 1
-# Light loop: scripted orbit + counter-rotating camera (the strongest vectors).
-adb shell $B --es cmd ptc --es action lightshow >/dev/null || true
-sleep 2
+# Blur showcase at the spawn area (open floor): 10 s wall-clock orbit around
+# Mario, repeated slow-motion backflips, lights/probes/shadows off.
+adb shell $B --es cmd ptc --es action blurshow >/dev/null || true
+sleep 3
 
 # Captions carry PATH/DN/rate + MB strength/x/res and a VIEW VECTORS marker.
 setfx 217 1
@@ -98,31 +99,25 @@ setfx 149 1
 sleep 0.5
 
 adb shell rm -f /sdcard/mb.mp4
-adb shell screenrecord --time-limit 55 --size 1600x1000 --bit-rate 16000000 /sdcard/mb.mp4 &
+adb shell screenrecord --time-limit 46 --size 1600x1000 --bit-rate 16000000 /sdcard/mb.mp4 &
 SR=$!
-animate_char &
-ANIM=$!
-trap 'kill $ANIM 2>/dev/null || true; kill $SR 2>/dev/null || true' EXIT
+trap 'kill $SR 2>/dev/null || true' EXIT
 sleep 1
 
-segment 01_off            100=0 31=0
-segment 02_cheap          100=1 101=60  142=1 144=8 145=2 146=0   143=12 141=180
-segment 03_medium         100=1 101=90  142=2 144=8 145=1 146=50  143=18 141=180
-segment 04_balanced       100=1 101=110 142=4 144=4 145=1 146=100 143=24 141=180
-segment 05_quality        100=1 101=160 142=8 144=2 145=1 146=100 143=48 141=320
-segment 06_camera_vectors 101=110 142=4 144=4 145=1 146=100 143=24 141=180 140=0
-segment 07_vertex_vectors 140=1
-segment 08_heatmap        100=0 31=9
-segment 09_off_again      31=0 100=0 140=1
+segment 01_off      100=0 31=0
+segment 02_cheap    100=1 101=60  142=1 144=8 145=2 146=0   143=12 141=180
+segment 03_balanced 100=1 101=120 142=4 144=4 145=1 146=100 143=32 141=270
+segment 04_quality  100=1 101=180 142=8 144=2 145=1 146=100 143=56 141=360
+segment 05_heatmap  100=0 31=9 149=2
+segment 06_off      31=0 100=0 140=1
 
 wait $SR || true
-kill $ANIM 2>/dev/null || true
 trap - EXIT
 adb pull /sdcard/mb.mp4 "$OUT/motionblur.mp4" >/dev/null 2>&1 || true
 adb shell rm -f /sdcard/mb.mp4
 # Leave the game in a clean state for normal use.
 setfx 100 0; setfx 31 0; setfx 140 1
-adb shell $B --es cmd ptc --es action lightshowstop >/dev/null 2>&1 || true
+adb shell $B --es cmd ptc --es action blurshowstop >/dev/null 2>&1 || true
 stereo 1
 
 say "video  $OUT/motionblur.mp4"

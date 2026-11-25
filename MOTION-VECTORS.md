@@ -80,37 +80,28 @@ blur is on or the heatmap view is selected.
 
 ## Smoke test
 
-`scripts/motionblur-perf-test.sh` drives the PTC light loop (counter-rotating
-camera = fast vectors) through profiles and records a video plus a frame-time
-table:
+`scripts/motionblur-perf-test.sh` runs the **blur showcase** (`ptc blurshow`):
+a 10 s wall-clock camera orbit around Mario, repeated backflips with the
+simulation at 1/3 speed (the renderer keeps presenting and HFR interpolation
+smooths it), lights/probes/shadows/AO/DOF/GI/SSRTX disabled, and capture in
+2D so the video is a single image. The orbit gives foreground/background
+parallax; Mario is the only moving object, so the blur is unambiguous.
 
-| segment | profile |
-| --- | --- |
-| 01_off | motion blur off (baseline) |
-| 02_cheap | 1 sub-step, strength 60, velocity 1/8, update every 2 frames, no jitter |
-| 03_balanced | 4 sub-steps, strength 110, velocity 1/4, every frame, jitter 100 |
-| 04_quality | 8 sub-steps, strength 160, velocity 1/2, shutter 320, max 48 px |
-| 05_camera_vectors | balanced with the camera-only fallback (fx 140 0) |
-| 06_vertex_vectors | balanced with per-vertex vectors (fx 140 1) |
-| 07_heatmap | motion-vector heatmap (view 9, direction style) |
-| 08_off_again | back to off |
-
-Each segment saves a still and a dump; `results.txt` records EMA frame ms and
-fps. The script records in **2D** (`cmd stereo 0`) so the capture is a single
-image, and animates the character with in-place jumps/ground pounds while the
-light loop orbits the camera. Measured on the Lume Pad 2:
+Profiles and measured frame time on the Lume Pad 2:
 
 | profile | frame | fps |
 | --- | --- | --- |
-| 01_off | 15.5 ms | 65 |
-| 02_cheap (1 tap, 1/8, stride 2) | 16.1 ms | 62 |
-| 03_medium (2 taps, 1/8) | 17.2 ms | 58 |
-| 04_balanced (4 taps, 1/4) | 17.4 ms | 57 |
-| 05_quality (8 taps, 1/2, shutter 320) | 19.1 ms | 52 |
-| 06_camera_vectors (balanced, fx 140 0) | 15.9 ms | 63 |
-| 07_vertex_vectors (balanced) | 17.8 ms | 56 |
-| 08_heatmap (view 9) | 12.4 ms | 81 |
-| 09_off_again | 15.9 ms | 63 |
+| 01_off | 8.3 ms | 121 |
+| 02_cheap (1 tap, 1/8, stride 2) | 9.3 ms | 108 |
+| 03_balanced (4 taps, 1/4, shutter 270) | 9.1 ms | 110 |
+| 04_quality (8 taps, 1/2, shutter 360) | 10.8 ms | 93 |
+| 05_heatmap (view 9, segments) | 10.3 ms | 97 |
+| 06_off | 8.3 ms | 120 |
+
+The slow-motion sim keeps per-frame vectors small, so this scene is cheaper
+than the earlier light-loop capture (off 15.5 ms, quality 19.1 ms in 2D).
+The heatmap segment is the vector evidence; the quality segment shows the
+smear most clearly.
 
 The same matrix in 3D costs roughly twice as much (off 32.7 ms, balanced
 96.2 ms, quality 113.1 ms) because the post pass runs per eye.

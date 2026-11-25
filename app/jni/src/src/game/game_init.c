@@ -640,6 +640,10 @@ void thread5_game_loop(UNUSED void *arg) {
     gGlobalTimer++;
 }
 
+/* Demo knob: 1 = normal speed, N = run the sim every Nth frame. */
+int g_sim_slow_div = 1;
+static int g_sim_slow_tick;
+
 void game_loop_one_iteration(void) {
         if (s_pendingIntroReset) {
             s_pendingIntroReset = 0;
@@ -685,7 +689,11 @@ void game_loop_one_iteration(void) {
             if (g_hard_paused && g_step_ticks > 0) {
                 g_step_ticks--;
             }
-            levelCommandAddr = level_script_execute(levelCommandAddr);
+            /* Slow-motion demo: run the simulation every Nth frame while the
+             * renderer keeps presenting (HFR interpolation smooths it). */
+            if (g_sim_slow_div <= 1 || (++g_sim_slow_tick % g_sim_slow_div) == 0) {
+                levelCommandAddr = level_script_execute(levelCommandAddr);
+            }
         }
         display_and_vsync();
 
