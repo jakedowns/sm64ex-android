@@ -40,20 +40,37 @@ segment() {
     for kvp in "$@"; do
         setfx "${kvp%%=*}" "${kvp##*=}"
     done
-    sleep 3.4
-    local st; st=$(dump_state)
+    sleep 1.6
+    # Capture the still at the fastest point of the orbit within this step.
+    # Camera speed comes from two status dumps: the scripted orbit is the
+    # dominant screen motion, so its speed is the blur magnitude.
+    local best="0" v st st2 c1 c2
+    for _ in 1 2 3; do
+        sleep 0.3
+        st=$(dump_state)
+        st2=$(dump_state)
+        c1=$(kv "$st" cam)
+        c2=$(kv "$st2" cam)
+        v=$(awk -v a="$c1" -v b="$c2" 'BEGIN{
+            if (a == "" || b == "") { print "0"; exit }
+            split(a, p, ","); split(b, q, ",")
+            dx = p[1] - q[1]; dz = p[3] - q[3]
+            printf "%.1f", sqrt(dx * dx + dz * dz)
+        }')
+        if awk -v a="$v" -v b="$best" 'BEGIN{exit !(a > b)}'; then
+            best=$v
+            shot "$name"
+        fi
+    done
+    [ -f "$OUT/$name.png" ] || shot "$name"
+    st=$(dump_state)
     echo "$st" >"$OUT/$name.state.txt"
-    shot "$name"
-    local rate ema_us ms fps
-    rate=$(kv "$st" rate)
-    ema_us=$(cut -d, -f3 <<<"$rate")
-    if [ -n "$ema_us" ] && [ "$ema_us" -gt 0 ] 2>/dev/null; then
-        ms=$(awk -v u="$ema_us" 'BEGIN{printf "%.1f", u/1000.0}')
-        fps=$(awk -v u="$ema_us" 'BEGIN{printf "%.0f", 1000000.0/u}')
-    else
-        ms="-"; fps="-"
-    fi
-    printf '%s\t%s\tms=%s\tfps=%s\targs=%s\n' "$name" "$label" "$ms" "$fps" "${*:-none}" \
+    local fps ms
+    fps=$(grep -o 'fps=[0-9.]*' <<<"$st" | cut -d= -f2)
+    [ -z "$fps" ] && fps=$(kv "$st" rate | cut -d, -f3)
+    ms=$(awk -v f="${fps:-0}" 'BEGIN{ if (f+0 > 0) printf "%.1f", 1000.0/(f+0); else printf "-" }')
+    printf '%s\t%s\tms=%s\tfps=%s\tmotion=%s\targs=%s\n' \
+        "$name" "$label" "$ms" "$fps" "$best" "${*:-none}" \
         | tee -a "$OUT/results.txt"
 }
 
@@ -77,7 +94,7 @@ setfx 140 1
 setfx 149 2
 
 adb shell rm -f /sdcard/sweep.mp4
-adb shell screenrecord --time-limit 95 --size 1600x1000 --bit-rate 16000000 /sdcard/sweep.mp4 &
+adb shell screenrecord --time-limit 150 --size 1600x1000 --bit-rate 16000000 /sdcard/sweep.mp4 &
 SR=$!
 trap 'kill $SR 2>/dev/null || true' EXIT
 sleep 1
@@ -101,7 +118,7 @@ segment 16_px8 "SWEEP: MAX BLUR 8"  143=8
 segment 17_px24 "SWEEP: MAX BLUR 24" 143=24
 segment 18_px64 "SWEEP: MAX BLUR 64" 143=64
 segment 19_px128 "SWEEP: MAX BLUR 128" 143=128
-segment 20_heatmap "HEATMAP: VECTORS" 100=0 31=9 149=2
+segment 20_heatmap "HEATMAP: VECTORS" 100=1 31=9 149=2
 
 wait $SR || true
 trap - EXIT
@@ -111,6 +128,10 @@ adb shell $B --es cmd ptc --es action blurshowstop >/dev/null 2>&1 || true
 adb shell $B --es cmd stereo --ei v 1 >/dev/null 2>&1 || true
 setfx 100 0; setfx 31 0
 
+if command -v python3 >/dev/null 2>&1 && python3 -c 'import PIL' 2>/dev/null; then
+    python3 "$ROOT/scripts/contact-sheet.py" "$OUT" "$OUT/contact_sheet.png" 5 || true
+    say "sheet  $OUT/contact_sheet.png"
+fi
 say "video $OUT/blursweep.mp4"
 say "table $OUT/results.txt"
 column -t -s $'\t' "$OUT/results.txt" | sed -n '1,24p'

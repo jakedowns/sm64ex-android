@@ -148,3 +148,18 @@ free-look module), so the orbit actually moves.
 Mode 0 is the cheapest and still clamps the vector at `Velocity clamp px`,
 but loses the neighbour dilation that keeps foreground motion from bleeding
 over background. Mode 1 (default) keeps a bound for one fetch per pixel.
+
+## Sweep contact sheet
+
+`scripts/blur-sweep-test.sh` keeps, for each sweep step, the still taken at the
+fastest point of the scripted orbit: it dumps `cam=` twice and keeps the shot
+with the largest camera displacement. `ms`/`fps` in `results.txt` come from the
+`fps=` field of the status line (real composited frames, not the `rate=` EMA).
+
+`scripts/contact-sheet.py <artifact-dir> <out.png> [columns]` tiles one still
+per step with the sweep label, the frame time and the measured motion:
+
+```
+python3 scripts/contact-sheet.py test-artifacts/blursweep-<stamp> sheet.png 5
+```
+
