@@ -19,9 +19,13 @@ const LevelScript level_ptc_entry[] = {
     INIT_LEVEL(),
     LOAD_MIO0(/*seg*/ 0x07, _ptc_segment_7SegmentRomStart, _ptc_segment_7SegmentRomEnd),
     LOAD_RAW(/*seg*/ 0x13, _behaviorSegmentRomStart, _behaviorSegmentRomEnd),
+    /* Bowser's geometry + assets for `ptc bowser` (held tail-spin HFR rig). */
+    LOAD_MIO0(/*seg*/ 0x06, _group12_mio0SegmentRomStart, _group12_mio0SegmentRomEnd),
+    LOAD_RAW(/*seg*/ 0x0D, _group12_geoSegmentRomStart, _group12_geoSegmentRomEnd),
     ALLOC_LEVEL_POOL(),
     /* The goomba-lemming finale needs this model. */
     LOAD_MODEL_FROM_GEO(MODEL_GOOMBA, goomba_geo),
+    JUMP_LINK(script_func_global_13),
     MARIO(/*model*/ MODEL_MARIO, /*behParam*/ 0x00000001, /*beh*/ bhvMario),
 
     AREA(/*index*/ 1, ptc_geo),

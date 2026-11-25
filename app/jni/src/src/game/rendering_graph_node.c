@@ -1,6 +1,18 @@
 #include <ultra64.h>
 #include <string.h>
 #include <math.h>
+#include <stdio.h>
+
+#if defined(__ANDROID__)
+#include <android/log.h>
+#define SM64_HFR_LOG(...) __android_log_print(ANDROID_LOG_INFO, "SM64HFR", __VA_ARGS__)
+#else
+#define SM64_HFR_LOG(...)                                                                          \
+    do {                                                                                           \
+        fprintf(stderr, "SM64HFR " __VA_ARGS__);                                                   \
+        fputc('\n', stderr);                                                                       \
+    } while (0)
+#endif
 
 #include "sm64.h"
 #include "gfx_dimensions.h"
@@ -141,10 +153,13 @@ struct GraphNodeCamera *gCurGraphNodeCamera = NULL;
 extern float gfx_dof_focus_auto;
 extern int gfx_cam_mode;
 extern struct Object *gMarioObject;
+extern int gfx_fps_mode;
+extern int gfx_hfr_interp;
+extern int gfx_slowmo_div;
 
 // ---- HFR frame interpolation ---------------------------------------------
 // The simulation runs at a fixed 30 Hz and builds one display list per tick.
-// Extra frames replay that list, with every transform matrix in it lerped
+// Extra frames replay that list, with every transform matrix in it blended
 // between the previous and the current tick. Two float matrix stacks are
 // built in lockstep (this tick and the previous tick); each gSPMatrix that
 // ends up in the list is recorded together with the previous tick's matrix
@@ -153,18 +168,217 @@ extern struct Object *gMarioObject;
 // Note: on this build Mtx is float[4][4] (guMtxF2L is a memcpy), so a Mtx and
 // a Mat4 have the same layout and can be blended directly.
 
+struct GraphNodeObject *gCurGraphNodeObject = NULL;
+struct GraphNodeHeldObject *gCurGraphNodeHeldObject = NULL;
+// Root previous-tick matrix of the object currently being drawn. The held
+// object's current transform is built from gCurGraphNodeObject->throwMatrix,
+// so its previous transform must be built from this, not from the local stack.
+static f32 (*gCurObjectRootPrev)[4] = NULL;
+
 Mat4 gMatStackPrev[32];
+
+// Matrices are row-vector (v' = v * M): rows 0..2 are the transformed basis
+// vectors (rotation * scale) and row 3 is the translation. They are built as
+// rotate-then-scale, so a model matrix decomposes exactly into
+// translation, rotation and (possibly non-uniform) per-row scale.
+
+typedef struct {
+    f32 w, x, y, z;
+} HfrQuat;
+
+enum { HFR_KIND_MODEL = 0, HFR_KIND_PROJECTION = 1 };
+enum { HFR_BLEND_LINEAR = 0, HFR_BLEND_TRS = 1 };
 
 typedef struct {
     Mtx *dst;      // matrix the display list command points at
     Mtx cur;       // this tick's matrix
     Mtx prev;      // previous tick's matrix
+    u8 held;       // recorded while traversing a held object
+    u8 blend;      // HFR_BLEND_*
+    HfrQuat qPrev; // rotation of prev (TRS blend only)
+    HfrQuat qCur;  // rotation of cur  (TRS blend only)
+    f32 sPrev[3];  // per-row scale of prev (TRS blend only)
+    f32 sCur[3];   // per-row scale of cur  (TRS blend only)
 } HfrMtxEntry;
 
 // Fixed capacity: overflowing entries simply keep their current matrix.
 #define HFR_MAX_MTX 4096
 static HfrMtxEntry sMtxTbl[HFR_MAX_MTX];
 static s32 sMtxTblSize;
+
+// --- HFR scale telemetry ---------------------------------------------------
+// Measures, once per presented frame, the scale of the drawn held object:
+//   * mean/out row lengths and `dev` (blend error against lerp(prev, cur)),
+//   * `hdev` = how far the drawn body matrices are from their alpha=1 scale.
+// Both a previous matrix from the wrong parent chain and an element-wise
+// rotation blend show up here. Off by default; `ptc hfron` enables it.
+int gfx_hfr_scale_debug = 0;
+// 0..1000 forces every present to that alpha (deterministic screenshots), -1 off.
+int gfx_hfr_force_alpha = -1;
+// 1 = decompose/lerp/slerp model matrices whose rotation changes enough to
+// make the linear blend visibly wrong. `ptc hfrslerpoff` disables it for A/B.
+int gfx_hfr_slerp = 1;
+
+// Dot(qPrev,qCur) below which the rotation blend shrinks by more than ~0.01%.
+#define HFR_SLERP_DOT 0.9999f
+
+static HfrQuat hfr_quat_normalize(HfrQuat q) {
+    f32 n = sqrtf(q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z);
+
+    if (n > 0.0f) {
+        q.w /= n;
+        q.x /= n;
+        q.y /= n;
+        q.z /= n;
+    }
+    return q;
+}
+
+// Row-basis rotation matrix -> quaternion. Rows are orthonormal and det > 0.
+static HfrQuat hfr_quat_from_rows(f32 r[3][3]) {
+    // Column-basis matrix C = transpose(r); standard trace formulas on C.
+    f32 c00 = r[0][0], c01 = r[1][0], c02 = r[2][0];
+    f32 c10 = r[0][1], c11 = r[1][1], c12 = r[2][1];
+    f32 c20 = r[0][2], c21 = r[1][2], c22 = r[2][2];
+    f32 tr = c00 + c11 + c22;
+    HfrQuat q;
+
+    if (tr > 0.0f) {
+        f32 s = sqrtf(tr + 1.0f) * 2.0f;
+        q.w = 0.25f * s;
+        q.x = (c21 - c12) / s;
+        q.y = (c02 - c20) / s;
+        q.z = (c10 - c01) / s;
+    } else if (c00 > c11 && c00 > c22) {
+        f32 s = sqrtf(1.0f + c00 - c11 - c22) * 2.0f;
+        q.w = (c21 - c12) / s;
+        q.x = 0.25f * s;
+        q.y = (c01 + c10) / s;
+        q.z = (c02 + c20) / s;
+    } else if (c11 > c22) {
+        f32 s = sqrtf(1.0f + c11 - c00 - c22) * 2.0f;
+        q.w = (c02 - c20) / s;
+        q.x = (c01 + c10) / s;
+        q.y = 0.25f * s;
+        q.z = (c12 + c21) / s;
+    } else {
+        f32 s = sqrtf(1.0f + c22 - c00 - c11) * 2.0f;
+        q.w = (c10 - c01) / s;
+        q.x = (c02 + c20) / s;
+        q.y = (c12 + c21) / s;
+        q.z = 0.25f * s;
+    }
+    return hfr_quat_normalize(q);
+}
+
+// Quaternion -> row-basis rotation matrix.
+static void hfr_quat_to_rows(HfrQuat q, f32 r[3][3]) {
+    f32 xx = q.x * q.x, yy = q.y * q.y, zz = q.z * q.z;
+    f32 xy = q.x * q.y, xz = q.x * q.z, yz = q.y * q.z;
+    f32 wx = q.w * q.x, wy = q.w * q.y, wz = q.w * q.z;
+    f32 c[3][3];
+    int i, j;
+
+    c[0][0] = 1.0f - 2.0f * (yy + zz);
+    c[0][1] = 2.0f * (xy - wz);
+    c[0][2] = 2.0f * (xz + wy);
+    c[1][0] = 2.0f * (xy + wz);
+    c[1][1] = 1.0f - 2.0f * (xx + zz);
+    c[1][2] = 2.0f * (yz - wx);
+    c[2][0] = 2.0f * (xz - wy);
+    c[2][1] = 2.0f * (yz + wx);
+    c[2][2] = 1.0f - 2.0f * (xx + yy);
+    for (i = 0; i < 3; i++) {
+        for (j = 0; j < 3; j++) {
+            r[i][j] = c[j][i];
+        }
+    }
+}
+
+static HfrQuat hfr_quat_slerp(HfrQuat a, HfrQuat b, f32 t) {
+    f32 dot = a.w * b.w + a.x * b.x + a.y * b.y + a.z * b.z;
+    HfrQuat q;
+
+    if (dot < 0.0f) {
+        b.w = -b.w;
+        b.x = -b.x;
+        b.y = -b.y;
+        b.z = -b.z;
+        dot = -dot;
+    }
+    if (dot > 0.9995f) {
+        q.w = a.w + (b.w - a.w) * t;
+        q.x = a.x + (b.x - a.x) * t;
+        q.y = a.y + (b.y - a.y) * t;
+        q.z = a.z + (b.z - a.z) * t;
+        return hfr_quat_normalize(q);
+    } else {
+        f32 theta = acosf(dot);
+        f32 sinTheta = sinf(theta);
+        f32 wa = sinf((1.0f - t) * theta) / sinTheta;
+        f32 wb = sinf(t * theta) / sinTheta;
+
+        q.w = a.w * wa + b.w * wb;
+        q.x = a.x * wa + b.x * wb;
+        q.y = a.y * wa + b.y * wb;
+        q.z = a.z * wa + b.z * wb;
+        return q;
+    }
+}
+
+// Splits an affine matrix into per-row scale + rotation. Fails for a
+// reflection, a singular matrix, or a non-rotation (shear). Translation is
+// row 3 and is blended linearly elsewhere.
+static int hfr_decompose(const f32 *m, f32 s[3], HfrQuat *q) {
+    f32 r[3][3];
+    f32 det;
+    int i;
+
+    for (i = 0; i < 3; i++) {
+        f32 x = m[i * 4 + 0], y = m[i * 4 + 1], z = m[i * 4 + 2];
+        f32 len = sqrtf(x * x + y * y + z * z);
+
+        if (!(len > 1.0e-5f)) {
+            return 0;
+        }
+        s[i] = len;
+        r[i][0] = x / len;
+        r[i][1] = y / len;
+        r[i][2] = z / len;
+    }
+    det = r[0][0] * (r[1][1] * r[2][2] - r[1][2] * r[2][1])
+        - r[0][1] * (r[1][0] * r[2][2] - r[1][2] * r[2][0])
+        + r[0][2] * (r[1][0] * r[2][1] - r[1][1] * r[2][0]);
+    // Reflections cannot be represented by a quaternion slerp; sheared bases
+    // (from a non-uniform parent scale under a rotation) also land here and
+    // keep the old element-wise blend.
+    if (det < 0.5f) {
+        return 0;
+    }
+    *q = hfr_quat_from_rows(r);
+    return 1;
+}
+
+// (Re)builds a model matrix from an interpolated rotation, per-row scale and
+// translation.
+static void hfr_compose(f32 *out, HfrQuat q, const f32 sp[3], const f32 sc[3], f32 alpha,
+                        const f32 *prev, const f32 *cur) {
+    f32 r[3][3];
+    f32 s[3];
+    int i, j;
+
+    hfr_quat_to_rows(q, r);
+    for (i = 0; i < 3; i++) {
+        s[i] = sp[i] + (sc[i] - sp[i]) * alpha;
+        for (j = 0; j < 3; j++) {
+            out[i * 4 + j] = r[i][j] * s[i];
+        }
+        out[i * 4 + 3] = 0.0f;
+    }
+    for (j = 0; j < 4; j++) {
+        out[12 + j] = prev[12 + j] + (cur[12 + j] - prev[12 + j]) * alpha;
+    }
+}
 
 // True when the stored previous tick really is the tick before this one.
 // A gap means the node was skipped, teleported or reloaded: don't lerp.
@@ -179,33 +393,130 @@ static int hfr_prev_valid(u32 prevTimestamp) {
     return gap >= 1 && gap <= maxGap;
 }
 
-// Registers a matrix that a display list command points at. The display list
-// keeps pointing at `dst`; gfx_patch_frame() overwrites it in place, so the
-// current tick stays available in this table for the next blend.
-static void hfr_record(Mtx *dst, Mtx *prev) {
-    HfrMtxEntry *e;
+// Telemetry: the held object's root matrix, plus the object/holder state,
+// sampled once per built display list.
+typedef struct {
+    int active;
+    int entries;
+    u32 timer;
+    u32 behavior;
+    u32 action;
+    u32 heldState;
+    s32 animFrame;
+    Vec3f gfxScale;
+    Vec3f pos;
+    Vec3f rootPrevPos;
+    Vec3f rootCurPos;
+    int idx;
+    int holderGap;
+    int prevEqCur;
+} HfrHeldDbg;
+static HfrHeldDbg sHeldDbg;
+static HfrMtxEntry sHeldRoot;
+static u32 sHfrFrame;
 
-    if (sMtxTblSize >= HFR_MAX_MTX) {
-        return;
-    }
-    e = &sMtxTbl[sMtxTblSize++];
-    e->dst = dst;
-    memcpy(&e->cur, dst, sizeof(Mtx));
-    memcpy(&e->prev, prev, sizeof(Mtx));
+// Windowed statistics over N presented frames (the summary in ptc status).
+#define HFR_WIN_FRAMES 120
+typedef struct {
+    u32 frames;
+    f32 smin;
+    f32 smax;
+    f32 devMax;     // max |out/expected - 1| over all held axes
+    f32 bodyMax;    // max |out/cur - 1| over drawn held body matrices
+    f32 deltaMax;   // max per-present change of the mean held scale
+    u32 jumps;      // frames with dev > 0.5%
+    f32 lastMean;
+    int haveLast;
+} HfrScaleWin;
+static HfrScaleWin sScaleWin;
+
+static f32 hfr_row_len(const f32 *m, int row) {
+    f32 x = m[row * 4 + 0], y = m[row * 4 + 1], z = m[row * 4 + 2];
+    return sqrtf(x * x + y * y + z * z);
 }
 
-// Blends every recorded matrix between the previous and the current tick.
-// alpha = 0 shows the previous tick, alpha = 1 the current one.
-void gfx_patch_frame(float alpha) {
-    s32 i, j;
+void gfx_hfr_scale_reset(void) {
+    memset(&sScaleWin, 0, sizeof(sScaleWin));
+    sScaleWin.smin = 1.0e9f;
+}
 
-    if (alpha < 0.0f) alpha = 0.0f;
-    if (alpha > 1.0f) alpha = 1.0f;
-    for (i = 0; i < sMtxTblSize; i++) {
-        HfrMtxEntry *e = &sMtxTbl[i];
-        f32 *out = e->dst->m[0];
-        const f32 *cur = e->cur.m[0];
-        const f32 *prev = e->prev.m[0];
+void gfx_hfr_scale_set(int on) {
+    gfx_hfr_scale_debug = on ? 1 : 0;
+    if (on) {
+        gfx_hfr_scale_reset();
+    }
+}
+
+int gfx_hfr_scale_get(void) {
+    return gfx_hfr_scale_debug;
+}
+
+// Compact one-line summary for ptc_format_status / `ptc hfrdump`.
+int gfx_hfr_scale_summary(char *buf, int len) {
+    if (buf == NULL || len <= 0) {
+        return 0;
+    }
+    if (sScaleWin.frames == 0) {
+        return snprintf(buf, len, "hfr=off");
+    }
+    return snprintf(buf, len, "hfr=%d,f=%u,s=%.3f..%.3f,dev=%.4f,body=%.4f,dmax=%.4f,jump=%u",
+                    gfx_hfr_scale_debug, sScaleWin.frames,
+                    sScaleWin.smin > 1.0e8f ? 0.0f : sScaleWin.smin, sScaleWin.smax,
+                    sScaleWin.devMax, sScaleWin.bodyMax, sScaleWin.deltaMax,
+                    sScaleWin.jumps);
+}
+
+void gfx_hfr_scale_dump(void) {
+    char buf[160];
+
+    gfx_hfr_scale_summary(buf, sizeof(buf));
+    SM64_HFR_LOG("summary %s slerp=%d", buf, gfx_hfr_slerp);
+}
+
+void gfx_hfr_scale_tick(float alpha);
+
+static f32 sTickHeldDev;
+
+// Fills an entry from a pair of matrices and decides how to blend it.
+static void hfr_prepare(HfrMtxEntry *e, Mtx *dst, const f32 (*cur)[4], const f32 (*prev)[4],
+                        int kind) {
+    e->dst = dst;
+    memcpy(&e->cur, cur, sizeof(Mtx));
+    memcpy(&e->prev, prev, sizeof(Mtx));
+    e->blend = HFR_BLEND_LINEAR;
+    e->held = 0;
+
+    if (gfx_hfr_slerp && kind == HFR_KIND_MODEL) {
+        HfrQuat qp, qc;
+        f32 sp[3], sc[3];
+
+        if (hfr_decompose(&e->prev.m[0][0], sp, &qp)
+            && hfr_decompose(&e->cur.m[0][0], sc, &qc)) {
+            f32 dot = qp.w * qc.w + qp.x * qc.x + qp.y * qc.y + qp.z * qc.z;
+
+            if (dot < 0.0f) dot = -dot;
+            if (dot < HFR_SLERP_DOT) {
+                e->blend = HFR_BLEND_TRS;
+                e->qPrev = qp;
+                e->qCur = qc;
+                memcpy(e->sPrev, sp, sizeof(sp));
+                memcpy(e->sCur, sc, sizeof(sc));
+            }
+        }
+    }
+}
+
+// Blends one entry into `out` (16 floats, may alias e->dst).
+static void hfr_blend_entry(const HfrMtxEntry *e, f32 alpha, f32 *out) {
+    const f32 *cur = e->cur.m[0];
+    const f32 *prev = e->prev.m[0];
+
+    if (e->blend == HFR_BLEND_TRS) {
+        HfrQuat q = hfr_quat_slerp(e->qPrev, e->qCur, alpha);
+
+        hfr_compose(out, q, e->sPrev, e->sCur, alpha, prev, cur);
+    } else {
+        s32 j;
 
         for (j = 0; j < 16; j++) {
             out[j] = prev[j] + (cur[j] - prev[j]) * alpha;
@@ -213,8 +524,183 @@ void gfx_patch_frame(float alpha) {
     }
 }
 
+// Registers a matrix that a display list command points at. The display list
+// keeps pointing at `dst`; gfx_patch_frame() overwrites it in place, so the
+// current tick stays available in this table for the next blend.
+static void hfr_record(Mtx *dst, const f32 (*prev)[4], int kind) {
+    HfrMtxEntry *e;
+
+    if (sMtxTblSize >= HFR_MAX_MTX) {
+        return;
+    }
+    e = &sMtxTbl[sMtxTblSize++];
+    hfr_prepare(e, dst, (const f32 (*)[4]) dst, prev, kind);
+    if (gCurGraphNodeHeldObject != NULL && kind == HFR_KIND_MODEL) {
+        e->held = 1;
+        sHeldDbg.entries++;
+    }
+}
+
+// Samples the held object's root matrix (the one every body-part matrix is
+// multiplied by), plus the object state, once per built display list.
+static void hfr_capture_held(const f32 (*cur)[4], const f32 (*prev)[4]) {
+    struct GraphNodeHeldObject *h = gCurGraphNodeHeldObject;
+    struct Object *obj;
+
+    if (h == NULL) {
+        return;
+    }
+    hfr_prepare(&sHeldRoot, NULL, cur, prev, HFR_KIND_MODEL);
+    sHeldDbg.active = 1;
+    sHeldDbg.timer = gGlobalTimer;
+    sHeldDbg.idx = gMatStackIndex;
+    sHeldDbg.prevEqCur = memcmp(cur, prev, sizeof(Mtx)) == 0;
+    sHeldDbg.rootPrevPos[0] = prev[3][0];
+    sHeldDbg.rootPrevPos[1] = prev[3][1];
+    sHeldDbg.rootPrevPos[2] = prev[3][2];
+    sHeldDbg.rootCurPos[0] = cur[3][0];
+    sHeldDbg.rootCurPos[1] = cur[3][1];
+    sHeldDbg.rootCurPos[2] = cur[3][2];
+    obj = h->objNode;
+    if (obj != NULL) {
+        sHeldDbg.behavior = (u32) (size_t) obj->behavior;
+        sHeldDbg.action = (u32) obj->oAction;
+        sHeldDbg.heldState = (u32) obj->oHeldState;
+        sHeldDbg.animFrame = obj->header.gfx.unk38.animFrame;
+        vec3f_copy(sHeldDbg.gfxScale, obj->header.gfx.scale);
+        vec3f_copy(sHeldDbg.pos, obj->header.gfx.pos);
+    }
+    if (gCurGraphNodeObject != NULL) {
+        struct Object *holder = (struct Object *) gCurGraphNodeObject;
+        u32 ts = holder->header.gfx.prevTimestamp;
+
+        sHeldDbg.holderGap = (ts != 0) ? (int) (gGlobalTimer - ts) : -1;
+    } else {
+        sHeldDbg.holderGap = -1;
+    }
+}
+
+// Blends every recorded matrix between the previous and the current tick.
+// alpha = 0 shows the previous tick, alpha = 1 the current one.
+void gfx_patch_frame(float alpha) {
+    s32 i;
+
+    if (gfx_hfr_force_alpha >= 0) {
+        alpha = (float) gfx_hfr_force_alpha / 1000.0f;
+    }
+    if (alpha < 0.0f) alpha = 0.0f;
+    if (alpha > 1.0f) alpha = 1.0f;
+    sTickHeldDev = 0.0f;
+    for (i = 0; i < sMtxTblSize; i++) {
+        HfrMtxEntry *e = &sMtxTbl[i];
+
+        if (e->blend == HFR_BLEND_TRS) {
+            hfr_blend_entry(e, alpha, e->dst->m[0]);
+        } else {
+            s32 j;
+            f32 *out = e->dst->m[0];
+            const f32 *cur = e->cur.m[0];
+            const f32 *prev = e->prev.m[0];
+
+            for (j = 0; j < 16; j++) {
+                out[j] = prev[j] + (cur[j] - prev[j]) * alpha;
+            }
+        }
+        if (e->held) {
+            /* Distortion of the drawn held body against its final (alpha=1)
+             * scale: the number the eye sees as growth/shrink. */
+            s32 row;
+
+            for (row = 0; row < 3; row++) {
+                f32 cl = hfr_row_len(e->cur.m[0], row);
+                f32 ol = hfr_row_len(e->dst->m[0], row);
+                f32 d = (cl > 1.0e-5f) ? fabsf(ol / cl - 1.0f) : 0.0f;
+
+                if (d > sTickHeldDev) sTickHeldDev = d;
+            }
+        }
+    }
+    if (gfx_hfr_scale_debug) {
+        gfx_hfr_scale_tick(alpha);
+    }
+}
+
+// Measures the held object's presented matrix against the scale it should
+// have (the linear blend of the previous and current scale).
+void gfx_hfr_scale_tick(float alpha) {
+    const HfrMtxEntry *e = &sHeldRoot;
+    f32 out[16];
+    f32 expected[3];
+    f32 mean = 0.0f;
+    f32 dev = 0.0f;
+    s32 row;
+
+    sHfrFrame++;
+    if (!sHeldDbg.active) {
+        return;
+    }
+    hfr_blend_entry(e, alpha, out);
+    for (row = 0; row < 3; row++) {
+        f32 pl = hfr_row_len(e->prev.m[0], row);
+        f32 cl = hfr_row_len(e->cur.m[0], row);
+        f32 len = hfr_row_len(out, row);
+        f32 d;
+
+        expected[row] = pl + (cl - pl) * alpha;
+        d = (expected[row] > 1.0e-5f) ? fabsf(len / expected[row] - 1.0f) : 0.0f;
+        if (d > dev) dev = d;
+        mean += len;
+    }
+    mean /= 3.0f;
+
+    if (sScaleWin.frames == 0) {
+        gfx_hfr_scale_reset();
+    }
+    sScaleWin.frames++;
+    if (mean < sScaleWin.smin) sScaleWin.smin = mean;
+    if (mean > sScaleWin.smax) sScaleWin.smax = mean;
+    if (dev > sScaleWin.devMax) sScaleWin.devMax = dev;
+    if (dev > 0.005f) sScaleWin.jumps++;
+    if (sTickHeldDev > sScaleWin.bodyMax) sScaleWin.bodyMax = sTickHeldDev;
+    if (sScaleWin.haveLast) {
+        f32 delta = fabsf(mean - sScaleWin.lastMean);
+
+        if (delta > sScaleWin.deltaMax) sScaleWin.deltaMax = delta;
+    }
+    sScaleWin.lastMean = mean;
+    sScaleWin.haveLast = 1;
+
+    SM64_HFR_LOG("f=%u tick=%u a=%.3f fps=%d interp=%d slow=%d held=%d entries=%d "
+                 "beh=%08x act=%d hs=%d anim=%d gs=%.3f,%.3f,%.3f "
+                 "prev=%.4f,%.4f,%.4f cur=%.4f,%.4f,%.4f out=%.4f,%.4f,%.4f "
+                 "mean=%.4f dev=%.4f hdev=%.4f pvmode=%d gap=%d peq=%d idx=%d "
+                 "cT=%.0f,%.0f,%.0f pT=%.0f,%.0f,%.0f pos=%.0f,%.0f,%.0f",
+                 sHfrFrame, gGlobalTimer, alpha, gfx_fps_mode, gfx_hfr_interp,
+                 (gfx_slowmo_div > 1) ? gfx_slowmo_div : 1, 1, sHeldDbg.entries,
+                 sHeldDbg.behavior, (int) sHeldDbg.action, (int) sHeldDbg.heldState,
+                 (int) sHeldDbg.animFrame, sHeldDbg.gfxScale[0], sHeldDbg.gfxScale[1],
+                 sHeldDbg.gfxScale[2], hfr_row_len(e->prev.m[0], 0),
+                 hfr_row_len(e->prev.m[0], 1), hfr_row_len(e->prev.m[0], 2),
+                 hfr_row_len(e->cur.m[0], 0), hfr_row_len(e->cur.m[0], 1),
+                 hfr_row_len(e->cur.m[0], 2), hfr_row_len(out, 0), hfr_row_len(out, 1),
+                 hfr_row_len(out, 2), mean, dev, sTickHeldDev, e->blend, sHeldDbg.holderGap,
+                 sHeldDbg.prevEqCur, sHeldDbg.idx,
+                 sHeldDbg.rootCurPos[0], sHeldDbg.rootCurPos[1], sHeldDbg.rootCurPos[2],
+                 sHeldDbg.rootPrevPos[0], sHeldDbg.rootPrevPos[1], sHeldDbg.rootPrevPos[2],
+                 sHeldDbg.pos[0], sHeldDbg.pos[1], sHeldDbg.pos[2]);
+
+    if (sScaleWin.frames >= HFR_WIN_FRAMES) {
+        char buf[160];
+
+        gfx_hfr_scale_summary(buf, sizeof(buf));
+        SM64_HFR_LOG("win %s slerp=%d", buf, gfx_hfr_slerp);
+        gfx_hfr_scale_reset();
+    }
+}
+
 static void hfr_reset(void) {
     sMtxTblSize = 0;
+    memset(&sHeldDbg, 0, sizeof(sHeldDbg));
 }
 
 // Number of matrices interpolated in the last built display list.
@@ -233,8 +719,6 @@ static f32 hfr_dist_sq(Vec3f a, Vec3f b) {
     return dx * dx + dy * dy + dz * dz;
 }
 
-struct GraphNodeObject *gCurGraphNodeObject = NULL;
-struct GraphNodeHeldObject *gCurGraphNodeHeldObject = NULL;
 u16 gAreaUpdateCounter = 0;
 
 // Splat slice: true while traversing an object selected for splatting. The
@@ -313,7 +797,7 @@ static void geo_append_display_list(void *displayList, s16 layer) {
         listNode->transform = gMatStackFixed[gMatStackIndex];
         // HFR: the master list will point at this matrix, so register it for
         // interpolation together with the previous tick's transform.
-        hfr_record(listNode->transform, gMatStackPrev[gMatStackIndex]);
+        hfr_record(listNode->transform, gMatStackPrev[gMatStackIndex], HFR_KIND_MODEL);
         listNode->displayList = displayList;
         listNode->splat = gSplatCurrentObject || (gfx_splat_target == 3);
         listNode->glow = gGlowCurrentObject;
@@ -408,7 +892,7 @@ static void geo_process_perspective(struct GraphNodePerspective *node) {
 
         gSPMatrix(gDisplayListHead++, VIRTUAL_TO_PHYSICAL(mtx),
                   G_MTX_PROJECTION | G_MTX_LOAD | G_MTX_NOPUSH);
-        hfr_record(mtx, prevMtx);
+        hfr_record(mtx, (const f32 (*)[4]) prevMtx, HFR_KIND_PROJECTION);
 
         gCurGraphNodeCamFrustum = node;
         geo_process_node_and_siblings(node->fnNode.node.children);
@@ -1334,6 +1818,11 @@ static void geo_process_object(struct Object *node) {
                 u32 glow = glow_tag_for_object(node);
                 u32 prevGlow = gGlowCurrentObject;
                 gCurGraphNodeObject = (struct GraphNodeObject *) node;
+                // The held-object node builds its current transform from this
+                // object's throwMatrix (the object root). Its previous
+                // transform must come from the same root at the previous tick,
+                // not from the local (hand) stack.
+                gCurObjectRootPrev = gMatStackPrev[gMatStackIndex];
                 node->header.gfx.sharedChild->parent = &node->header.gfx.node;
                 if (splat) gSplatCurrentObject = 1;
                 gGlowCurrentObject = glow;
@@ -1342,6 +1831,7 @@ static void geo_process_object(struct Object *node) {
                 gSplatCurrentObject = prevSplat;
                 node->header.gfx.sharedChild->parent = NULL;
                 gCurGraphNodeObject = NULL;
+                gCurObjectRootPrev = NULL;
             }
             if (node->header.gfx.node.children != NULL) {
                 geo_process_node_and_siblings(node->header.gfx.node.children);
@@ -1405,8 +1895,19 @@ void geo_process_held_object(struct GraphNodeHeldObject *node) {
         mtxf_mul(gMatStack[gMatStackIndex + 1], mat, gMatStack[gMatStackIndex + 1]);
         mtxf_scale_vec3f(gMatStack[gMatStackIndex + 1], gMatStack[gMatStackIndex + 1],
                          node->objNode->header.gfx.scale);
-        // HFR: the held object follows the interpolated parent.
-        mtxf_mul(gMatStackPrev[gMatStackIndex + 1], mat, gMatStackPrev[gMatStackIndex]);
+        // HFR: the held object follows the interpolated parent. Mirror the
+        // current path exactly: the holder's previous ROOT matrix (the hand
+        // chain is a different transform and can carry its own scale, e.g.
+        // 0.25 in the holding pose) with the hand's previous translation.
+        if (gCurObjectRootPrev != NULL) {
+            mtxf_copy(gMatStackPrev[gMatStackIndex + 1], gCurObjectRootPrev);
+            gMatStackPrev[gMatStackIndex + 1][3][0] = gMatStackPrev[gMatStackIndex][3][0];
+            gMatStackPrev[gMatStackIndex + 1][3][1] = gMatStackPrev[gMatStackIndex][3][1];
+            gMatStackPrev[gMatStackIndex + 1][3][2] = gMatStackPrev[gMatStackIndex][3][2];
+            mtxf_mul(gMatStackPrev[gMatStackIndex + 1], mat, gMatStackPrev[gMatStackIndex + 1]);
+        } else {
+            mtxf_mul(gMatStackPrev[gMatStackIndex + 1], mat, gMatStackPrev[gMatStackIndex]);
+        }
         mtxf_scale_vec3f(gMatStackPrev[gMatStackIndex + 1], gMatStackPrev[gMatStackIndex + 1],
                          node->objNode->header.gfx.scale);
         if (node->fnNode.func != NULL) {
@@ -1425,6 +1926,9 @@ void geo_process_held_object(struct GraphNodeHeldObject *node) {
         gGeoTempState.prevFrame = gPrevAnimFrame;
         gCurAnimType = 0;
         gCurGraphNodeHeldObject = (void *) node;
+        if (gfx_hfr_scale_debug) {
+            hfr_capture_held(gMatStack[gMatStackIndex], gMatStackPrev[gMatStackIndex]);
+        }
         if (node->objNode->header.gfx.unk38.curAnim != NULL) {
             geo_set_animation_globals(&node->objNode->header.gfx.unk38, hasAnimation);
         }
