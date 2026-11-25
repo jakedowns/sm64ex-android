@@ -1543,9 +1543,12 @@ static void ptc_lightshow_update(void) {
 
 /* ---------------------------------------------------------- blur showcase
  * 10 s wall-clock orbit around Mario with repeated slow-motion backflips.
- * The sim runs every 3rd frame (g_sim_slow_div) so the flip floats, while the
- * camera keeps orbiting in real time. Lights/probes/shadows are off so the
- * only moving thing in frame is Mario. */
+ * The sim runs every 3rd tick (g_sim_slow_div) so the flip floats, while the
+ * camera keeps orbiting in real time; the frozen ticks re-present the last
+ * display list at 1/3, 2/3 of the step so the motion stays continuous. If
+ * sub-frame interpolation is switched off the demo stays at normal speed
+ * rather than falling back to stop-motion. Lights/probes/shadows are off so
+ * the only moving thing in frame is Mario. */
 static int s_blurShow;
 static u32 s_blurStart;
 static u32 s_blurLastFlip;
@@ -1557,6 +1560,7 @@ static void ptc_blurshow_begin(void) {
     extern void gfx_opengl_light_shadows(int on);
     extern void gfx_opengl_ssfx_set(int which, int value);
     extern int g_sim_slow_div;
+    extern int g_sim_interp;
     struct MarioState *m = gMarioState;
 
     s_testMode = 0;
@@ -1580,7 +1584,7 @@ static void ptc_blurshow_begin(void) {
         s_blurCenter[1] = m->pos[1] + 80.0f;
         s_blurCenter[2] = m->pos[2];
     }
-    g_sim_slow_div = 3;
+    g_sim_slow_div = g_sim_interp ? 3 : 1;
     custom_camera_apply_mode(3);   /* CUSTOM: the free-look camera module */
     gfx_opengl_light_count(0);
     gfx_opengl_light_shadows(0);
@@ -2772,6 +2776,16 @@ void ptc_chain_hud_text(void) {
         }
         if (gfx_opengl_ssfx_get(31) == 9) {
             strncat(line, " | VIEW VECTORS", sizeof(line) - strlen(line) - 1);
+        }
+        {
+            extern int g_sim_slow_div;
+            extern int g_sim_interp;
+            if (g_sim_slow_div > 1) {
+                char sm[48];
+                snprintf(sm, sizeof(sm), " | SIM 1/%d%s", g_sim_slow_div,
+                         g_sim_interp ? "" : " NOINTERP");
+                strncat(line, sm, sizeof(line) - strlen(line) - 1);
+            }
         }
         print_caption2_small(SCREEN_WIDTH / 2, 34, line);
     }
@@ -4320,6 +4334,9 @@ void ptc_format_status(char *buf, int len) {
     extern int gfx_opengl_denoise_state(int which);
     extern int gfx_rate_state(int which);
     extern float gfx_stereo_fps;
+    extern int g_sim_slow_div;
+    extern int g_sim_interp;
+    extern int g_sim_present_t1;
 
     portal_last_camera_jump(&pcamD, &pcamA);
     extern int camera_portal_remap_count(void);
@@ -4349,7 +4366,8 @@ void ptc_format_status(char *buf, int len) {
              "gobj=%d,0x%x,%d,%d annex=%d,%d,%d gun=%d,%d,%d tool=%d lgt=%d,%d,%d,%d,%d,%d,%d,%d show=%d,%d dn=%d,%d,%d,%d,%d,%d,%d rate=%d,%d,%d fps=%.1f "
              "chain=%d,%d,0x%x,%d,%d cmode=%d loop=%d "
              "face=%.1f,%.1f,%.1f anim=%d mh=%.1f remap=%d cdbg=%d,%d,%d,%d,%d walk=%d,%d,%d "
-             "mpw=%d,%d,%d,%d,%d,%d,%d fc=%d,%d,%d,%d cg=%d,%.0f,%.0f,%.0f,0x%x",
+             "mpw=%d,%d,%d,%d,%d,%d,%d fc=%d,%d,%d,%d cg=%d,%.0f,%.0f,%.0f,0x%x "
+             "slowmo=%d,%d,%d",
              gCurrLevelNum, gCurrAreaIndex, s_phase, s_testMode, s_testActive, s_failed, s_failReason,
              s_starCollected[0], s_starCollected[1], ptc_star_visible(), portal_count(), s_shotA, s_shotB, g_portal_debug,
              g_portal_view.active, g_portal_view.source, portal_view_enabled(),
@@ -4415,7 +4433,8 @@ void ptc_format_status(char *buf, int len) {
              s_chainGoomba[0] ? s_chainGoomba[0]->oPosX : 0.0f,
              s_chainGoomba[0] ? s_chainGoomba[0]->oPosY : 0.0f,
              s_chainGoomba[0] ? s_chainGoomba[0]->oPosZ : 0.0f,
-             s_chainGoomba[0] ? (unsigned) s_chainGoomba[0]->header.gfx.node.flags : 0u);
+             s_chainGoomba[0] ? (unsigned) s_chainGoomba[0]->header.gfx.node.flags : 0u,
+             g_sim_slow_div, g_sim_interp, g_sim_present_t1);
 
     {
         size_t used = strlen(buf);

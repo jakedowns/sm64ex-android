@@ -1188,7 +1188,16 @@ static void gfx_sdl_main_loop(void (*run_one_game_iter)(void)) {
 
     // Render-rate above 30 Hz: present extra frames from the last display list.
     if (gfx_fps_mode > 0 && sims == 0) {
-        gfx_render_alpha = gfx_hfr_interp ? gfx_render_delta : 1.0f;
+        extern int gfx_slowmo_div;
+        extern float gfx_slowmo_alpha_between(float delta);
+        if (gfx_slowmo_div > 1) {
+            // Slow motion spreads one sim step over gfx_slowmo_div ticks;
+            // sub-tick frames advance by a fraction of one of those ticks, so
+            // the motion stays even instead of snapping once per tick.
+            gfx_render_alpha = gfx_slowmo_alpha_between(gfx_render_delta);
+        } else {
+            gfx_render_alpha = gfx_hfr_interp ? gfx_render_delta : 1.0f;
+        }
         gfx_start_frame();
         gfx_render_last();
     }

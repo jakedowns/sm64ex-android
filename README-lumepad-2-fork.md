@@ -514,6 +514,7 @@ the auto distance), SSGI `21`-`25`, SSRTX `70`-`77`, normal flip `32`.
 | light probes | `110` show, `111` spacing, `113` radius, `114` resolution, `115` grid cols (X), `116` grid rows (Y), `117` grid repeats (Z); `112` sets all three axes at once |
 | bokeh / DOF | `160` kernel, `161` aspect %, `162` blades, `163` rotation, `164` anamorphic %, `165` highlight %, `166` cat eye % |
 | rate limit | `200` on, `201` target fps, `202` adaptive, `203` reset stats |
+| slow motion | `241` sim speed `1/n` (1-8, 1 = normal), `242` sub-frame interpolation (1 = re-present the last display list at k/n of the step; 0 = old stop-motion), `243` diagnostic: always present `t=1` (step end) while still re-presenting |
 | denoiser | `210` alternative path, `211` on, `212` intensity, `213` passes, `214` radius, `215` frames, `216` bounces, `217` test captions, `220` resolution `1/n` (1 = full res, 2-4 = reduced; default 4) |
 
 The denoiser runs at 1/4 resolution by default: the scene colour and depth are

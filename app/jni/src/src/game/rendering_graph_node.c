@@ -165,8 +165,15 @@ static s32 sMtxTblSize;
 
 // True when the stored previous tick really is the tick before this one.
 // A gap means the node was skipped, teleported or reloaded: don't lerp.
+// Slow motion rebuilds the display list only every gfx_slowmo_div ticks while
+// gGlobalTimer still advances once per presented tick, so a node's previous
+// appearance is up to div ticks old and is still valid motion.
 static int hfr_prev_valid(u32 prevTimestamp) {
-    return gGlobalTimer == prevTimestamp + 1;
+    extern int gfx_slowmo_div;
+    u32 maxGap = (gfx_slowmo_div > 1) ? (u32) gfx_slowmo_div : 1u;
+    u32 gap = gGlobalTimer - prevTimestamp;
+
+    return gap >= 1 && gap <= maxGap;
 }
 
 // Registers a matrix that a display list command points at. The display list

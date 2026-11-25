@@ -206,6 +206,41 @@ float gfx_render_delta = 0.0f;
 // Interpolation factor of the frame being drawn (0 = previous tick, 1 = current).
 float gfx_render_alpha = 1.0f;
 
+// Slow-motion sub-frame presentation. game_init.c runs the simulation once
+// every gfx_slowmo_div presented ticks (1 = normal speed) and records how far
+// into the step the tick is: gfx_slowmo_phase 0 is the tick that actually
+// stepped the sim, div-1 is the last frozen tick before the next step. For
+// phase k the picture is drawn at k/div of the step, so a step is presented as
+// 0, 1/div, ..., (div-1)/div and the next step starts at 0 = the previous
+// step's end: continuous, no duplicate or skipped frame.
+int gfx_slowmo_div = 1;       // effective sub-frame divisor (1 = slow-mo off)
+int gfx_slowmo_phase = 0;     // presented ticks since the sim step
+int gfx_slowmo_present_t1 = 0; // diagnostic: always present the step end
+// Camera-derived motion vectors (FX fallback path) are built from
+// gfx_cam_inv_mtx, which is refreshed once per sim step. Spread over div
+// presented ticks they would be div times too long, so they are scaled down.
+float gfx_cam_vel_scale = 1.0f;
+
+// Alpha for the tick's own present (the one display_and_vsync sends).
+float gfx_slowmo_alpha_tick(void) {
+    if (gfx_slowmo_div <= 1) return gfx_render_alpha;
+    if (gfx_slowmo_present_t1) return 1.0f;
+    return (float)gfx_slowmo_phase / (float)gfx_slowmo_div;
+}
+
+// Alpha for an extra pacer frame between two ticks (delta = fraction of a
+// 1/30 s tick that has elapsed since the last tick present).
+float gfx_slowmo_alpha_between(float delta) {
+    float a;
+
+    if (gfx_slowmo_div <= 1) return delta;
+    if (gfx_slowmo_present_t1) return 1.0f;
+    a = ((float)gfx_slowmo_phase + delta) / (float)gfx_slowmo_div;
+    if (a < 0.0f) a = 0.0f;
+    if (a > 1.0f) a = 1.0f;
+    return a;
+}
+
 // Projection parameters of the last perspective node, sampled in
 // rendering_graph_node.c and consumed by the Android post-processing pass.
 float gfx_cam_near = 100.0f;
@@ -487,6 +522,14 @@ static int s_vel_cur_proj_valid;
 static float s_vel_prev_mp[4][4];
 static int s_vel_prev_mp_valid;
 static unsigned s_vel_lookups, s_vel_hits;
+/* Per-presented-frame motion magnitude, logged with the hit counter so the
+ * slow-motion sub-frame timing can be checked from logcat. */
+static double s_vel_abs_sum;
+static unsigned long s_vel_vert_count;
+/* Window aggregate (per-present mean velocity) so a div=1 vs div=3 run can be
+ * compared from a single log line. */
+static double s_vel_win_sum, s_vel_win_min, s_vel_win_max;
+static unsigned s_vel_win_frames, s_vel_win_zero;
 
 extern int gfx_opengl_velocity_begin(int w, int h, int divisor);
 extern void gfx_opengl_velocity_end(void);
@@ -508,7 +551,11 @@ static void gfx_vel_store(unsigned seq, const float mv[4][4]) {
 
 /* The game double-buffers its display list, so the same object's matrix
  * pointer comes back every other frame. Accept an entry up to 4 frames old and
- * report the gap so the vertex code can scale the velocity. */
+ * report the gap so the vertex code can scale the velocity.
+ * Entries are stamped once per *presented* frame (the colour pass stores the
+ * matrix that gfx_patch_frame() blended for this present), so under slow
+ * motion the vectors already describe the sub-frame step and must NOT be
+ * divided by the slow-motion divisor again. */
 static int s_vel_gap = 1;
 
 static int gfx_vel_lookup(unsigned seq, const float cur[4][4], float out[4][4]) {
@@ -530,9 +577,26 @@ static int gfx_vel_lookup(unsigned seq, const float cur[4][4], float out[4][4]) 
 static void gfx_vel_frame_begin(void) {
     s_vel_frame++;
     s_vel_counter++;
-    if (s_vel_lookups > 0 && (s_vel_counter % 120) == 0) {
-        SM64_VEL_LOG("prev-matrix hits %u/%u", s_vel_hits, s_vel_lookups);
+    if (s_vel_vert_count > 0) {
+        double m = s_vel_abs_sum / (double) s_vel_vert_count;
+        if (s_vel_win_frames == 0 || m < s_vel_win_min) s_vel_win_min = m;
+        if (s_vel_win_frames == 0 || m > s_vel_win_max) s_vel_win_max = m;
+        s_vel_win_sum += m;
+        s_vel_win_frames++;
+        if (m < 1.0e-5) s_vel_win_zero++;
+        s_vel_abs_sum = 0.0;
+        s_vel_vert_count = 0;
+    }
+    if ((s_vel_lookups > 0 || s_vel_win_frames > 0) && (s_vel_counter % 120) == 0) {
+        double mean = s_vel_win_frames > 0 ? s_vel_win_sum / s_vel_win_frames : 0.0;
+        SM64_VEL_LOG("prev-matrix hits %u/%u vel mean=%.4f min=%.4f max=%.4f "
+                "zero=%u/%u alpha=%.3f div=%d phase=%d",
+                s_vel_hits, s_vel_lookups, mean, s_vel_win_min, s_vel_win_max,
+                s_vel_win_zero, s_vel_win_frames,
+                gfx_render_alpha, gfx_slowmo_div, gfx_slowmo_phase);
         s_vel_lookups = s_vel_hits = 0;
+        s_vel_win_sum = s_vel_win_min = s_vel_win_max = 0.0;
+        s_vel_win_frames = s_vel_win_zero = 0;
     }
     if (s_vel_cur_proj_valid) {
         memcpy(s_vel_prev_proj, s_vel_cur_proj, sizeof(s_vel_prev_proj));
@@ -1450,6 +1514,8 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx *verti
                     float inv_gap = 1.0f / (float)(s_vel_gap > 0 ? s_vel_gap : 1);
                     d->vel[0] = 0.5f * (px / pw - x / w) * inv_gap;
                     d->vel[1] = 0.5f * (py / pw - y / w) * inv_gap;
+                    s_vel_abs_sum += fabsf(d->vel[0]) + fabsf(d->vel[1]);
+                    s_vel_vert_count++;
                 }
             }
         }
@@ -2927,6 +2993,18 @@ void gfx_render_last(void) {
         gfx_patch_frame(gfx_render_alpha);
         gfx_run(gfx_current_dlist);
     }
+}
+
+// Present the last built display list at an explicit interpolation alpha,
+// without rebuilding it. Frozen slow-motion ticks use this: rebuilding the list
+// from an unchanged simulation state would store prev == cur for every matrix
+// and the HFR blend would collapse to a still frame (and motion blur would
+// switch off). gfx_start_frame() also refreshes the drawable size / stereo
+// geometry, exactly like the pacer's extra 60/120 Hz frames.
+void gfx_present_last_alpha(float alpha) {
+    gfx_start_frame();
+    gfx_render_alpha = alpha;
+    gfx_render_last();
 }
 
 void gfx_end_frame(void) {

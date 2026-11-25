@@ -290,15 +290,23 @@ void config_gfx_pool(void) {
     gGfxPoolEnd = (u8 *) (gGfxPool->buffer + GFX_POOL_SIZE);
 }
 
-/** Handles vsync. */
-void display_and_vsync(void) {
+/** Handles vsync. `rebuild` = present the display list just built this tick;
+ *  otherwise re-present the last one (slow-motion frozen ticks), which keeps
+ *  the recorded previous/current matrix pairs alive for interpolation. */
+static void display_present(int rebuild) {
     profiler_log_thread5_time(BEFORE_DISPLAY_LISTS);
     osRecvMesg(&D_80339CB8, &D_80339BEC, OS_MESG_BLOCK);
     if (D_8032C6A0 != NULL) {
         D_8032C6A0();
         D_8032C6A0 = NULL;
     }
-    send_display_list(&gGfxPool->spTask);
+    if (rebuild) {
+        send_display_list(&gGfxPool->spTask);
+    } else {
+        extern void gfx_present_last_alpha(float alpha);
+        extern float gfx_render_alpha;
+        gfx_present_last_alpha(gfx_render_alpha);
+    }
     profiler_log_thread5_time(AFTER_DISPLAY_LISTS);
     osRecvMesg(&gGameVblankQueue, &D_80339BEC, OS_MESG_BLOCK);
     osViSwapBuffer((void *) PHYSICAL_TO_VIRTUAL(gPhysicalFrameBuffers[sCurrFBNum]));
@@ -311,6 +319,11 @@ void display_and_vsync(void) {
         frameBufferIndex = 0;
     }
     gGlobalTimer++;
+}
+
+/** Handles vsync. */
+void display_and_vsync(void) {
+    display_present(1);
 }
 
 // this function records distinct inputs over a 255-frame interval to RAM locations and was likely
@@ -640,11 +653,25 @@ void thread5_game_loop(UNUSED void *arg) {
     gGlobalTimer++;
 }
 
-/* Demo knob: 1 = normal speed, N = run the sim every Nth frame. */
+/* Slow motion: 1 = normal speed, N = advance the simulation once every Nth
+ * presented tick. With sub-frame interpolation on, the frozen ticks re-present
+ * the last display list at k/N of the step instead of rebuilding it, so the
+ * picture keeps advancing at 1/N speed instead of blur/still/blur. */
 int g_sim_slow_div = 1;
+/* 1 = interpolate the frozen ticks, 0 = old stop-motion (rebuild and show the
+ * simulation state only). */
+int g_sim_interp = 1;
+/* Diagnostic: always present the end of the step (alpha 1) even when
+ * interpolating, i.e. re-present the same picture until the next sim step. */
+int g_sim_present_t1 = 0;
 static int g_sim_slow_tick;
 
 void game_loop_one_iteration(void) {
+        extern int gfx_slowmo_div;
+        extern int gfx_slowmo_phase;
+        extern int gfx_slowmo_present_t1;
+        extern float gfx_cam_vel_scale;
+
         if (s_pendingIntroReset) {
             s_pendingIntroReset = 0;
             g_hard_paused = 0;
@@ -685,17 +712,66 @@ void game_loop_one_iteration(void) {
         audio_game_loop_tick();
         config_gfx_pool();
         read_controller_inputs();
-        if (!g_hard_paused || g_step_ticks > 0) {
-            if (g_hard_paused && g_step_ticks > 0) {
-                g_step_ticks--;
+
+        /* Slow-motion phase. The tick counter runs whenever the divisor is
+         * above 1; tick 0 is the one that actually steps the simulation. */
+        {
+            extern int gfx_test_uncapped;
+            int div = g_sim_slow_div;
+            int simNow, interpOn;
+
+            if (div < 1) {
+                div = 1;
+            } else if (div > 8) {
+                div = 8;
             }
-            /* Slow-motion demo: run the simulation every Nth frame while the
-             * renderer keeps presenting (HFR interpolation smooths it). */
-            if (g_sim_slow_div <= 1 || (++g_sim_slow_tick % g_sim_slow_div) == 0) {
-                levelCommandAddr = level_script_execute(levelCommandAddr);
+            /* The fast-forward test runner wants one sim tick per call, and a
+             * hard pause must present a stable picture (re-blending the stale
+             * last pair would wobble between two ticks). */
+            if (gfx_test_uncapped || (g_hard_paused && g_step_ticks <= 0)) {
+                div = 1;
             }
+            if (div > 1) {
+                if (++g_sim_slow_tick >= div) {
+                    g_sim_slow_tick = 0;
+                }
+            } else {
+                g_sim_slow_tick = 0;
+            }
+            simNow = (div <= 1) || (g_sim_slow_tick == 0);
+            /* The fast-forward test runner wants one sim tick per call. */
+            interpOn = (div > 1) && g_sim_interp && !gfx_test_uncapped;
+
+            gfx_slowmo_div = interpOn ? div : 1;
+            gfx_slowmo_phase = g_sim_slow_tick;
+            gfx_slowmo_present_t1 = g_sim_present_t1;
+            /* Camera-derived FX vectors span a whole sim step; per-vertex
+             * vectors compare consecutive presented frames and are already
+             * 1/N. */
+            gfx_cam_vel_scale = interpOn ? 1.0f / (float) div : 1.0f;
+            if (interpOn) {
+                extern float gfx_render_alpha;
+                extern float gfx_slowmo_alpha_tick(void);
+                gfx_render_alpha = gfx_slowmo_alpha_tick();
+            } else if (g_sim_present_t1) {
+                extern float gfx_render_alpha;
+                gfx_render_alpha = 1.0f;
+            }
+
+            if (!g_hard_paused || g_step_ticks > 0) {
+                if (g_hard_paused && g_step_ticks > 0) {
+                    g_step_ticks--;
+                }
+                if (simNow) {
+                    levelCommandAddr = level_script_execute(levelCommandAddr);
+                }
+            }
+            /* A frozen tick must not rebuild the display list: the matrices
+             * would be identical to the previous tick's and the interpolation
+             * (and the motion vectors) would collapse. Re-present the last one
+             * at the sub-frame alpha instead. */
+            display_present(simNow || !interpOn);
         }
-        display_and_vsync();
 
         // when debug info is enabled, print the "BUF %d" information.
         if (gShowDebugText) {

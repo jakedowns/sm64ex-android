@@ -204,6 +204,8 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     /** Cycle the panel refresh rate: default -> 60 -> 120 Hz. */
     private int fpsMode = 2;   // 120 Hz render rate by default
     private boolean interpOn = true;
+    // Slow-motion debug controls (fx 241-243).
+    private boolean simInterpOn = true;
     // Debug panel: slider drag mode, tab styling, changelog.
     private LinearLayout tuningPanelView;
     private LinearLayout topTabBar;
@@ -1751,6 +1753,25 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         });
         enhParent().addView(interp);
 
+        /* Slow motion: sim speed divisor + sub-frame interpolation. The sim
+         * advances once every N presented ticks; with interpolation on the
+         * frozen ticks re-present the last display list at k/N of the step. */
+        TextView simInterp = new TextView(this);
+        simInterp.setText(simInterpOn ? "SIM INTERP ON" : "SIM INTERP OFF");
+        simInterp.setTextSize(16);
+        simInterp.setTextColor(simInterpOn ? 0xFF66FF99 : 0xFF888888);
+        simInterp.setPadding(dp(4), dp(8), dp(4), dp(8));
+        simInterp.setOnClickListener(v -> {
+            simInterpOn = !simInterpOn;
+            debugFx(242, simInterpOn ? 1 : 0);
+            simInterp.setText(simInterpOn ? "SIM INTERP ON" : "SIM INTERP OFF");
+            simInterp.setTextColor(simInterpOn ? 0xFF66FF99 : 0xFF888888);
+            Log.i(TAG, "SIM INTERP " + simInterpOn);
+        });
+        enhParent().addView(simInterp);
+        addEnhSlider("Sim speed 1/n", 1, 8, 1, v -> debugFx(241, v));
+        addEnhSlider("Present at t=1 (diag)", 0, 1, 0, v -> debugFx(243, v));
+
         final TextView stayToggle = new TextView(this);
         stayToggle.setText("STAY IN LEVEL: " + (stayOn ? "ON" : "OFF"));
         stayToggle.setTextSize(16);
@@ -2955,6 +2976,31 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addPressFeedback(b);
         addCompact(enhParent(), b);
         return b;
+    }
+
+    /** Compact label + bar row for the ENH/DEBUG page (the FX grid helpers are
+     * bound to the FX tab's grid, so they cannot be reused there). */
+    private void addEnhSlider(String name, int min, int max, int initial,
+                              final java.util.function.IntConsumer sink) {
+        final TextView label = new TextView(this);
+        label.setTextColor(Color.WHITE);
+        label.setTextSize(14);
+        label.setText(name + ": " + initial);
+        SeekBar bar = new SeekBar(this);
+        bar.setMax(max - min);
+        bar.setProgress(initial - min);
+        bar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar sb, int progress, boolean fromUser) {
+                int value = progress + min;
+                label.setText(name + ": " + value);
+                sink.accept(value);
+            }
+            @Override public void onStartTrackingTouch(SeekBar sb) {}
+            @Override public void onStopTrackingTouch(SeekBar sb) {}
+        });
+        enhParent().addView(label);
+        enhParent().addView(bar);
+        sink.accept(initial);
     }
 
     /** Section header for the ENH tab, so long lists stay readable. */
@@ -4414,6 +4460,8 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                     + " perf=" + perfOn + " swap=" + swapOn + " same=" + sameOn
                     + " nocull=" + nocullOn
                         + " hfr=" + nativeGetHfrMtxCount() + "/" + nativeGetHfrInterp()
+                    + " sim=" + nativeGetSSFX(241) + "/" + nativeGetSSFX(242)
+                        + "/" + nativeGetSSFX(243)
                     + " mxao=" + nativeGetSSFX(1) + " cdof=" + nativeGetSSFX(11)
                     + " ssgi=" + nativeGetSSFX(21) + " fxdbg=" + nativeGetSSFX(31)
                     + " ssrtx=" + nativeGetSSFX(70) + "/" + nativeGetSSFX(71)

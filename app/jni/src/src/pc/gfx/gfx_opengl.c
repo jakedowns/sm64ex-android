@@ -937,6 +937,7 @@ static const char *s_fx_fs =
     "uniform float uMBSamples;\n"
     "uniform sampler2D uVelocity;\n"
     "uniform float uVelOn;\n"
+    "uniform float uVelScale;\n"
     "uniform float uMBShutter;\n"
     "uniform float uMBSubSteps;\n"
     "uniform float uMBMaxPx;\n"
@@ -1200,6 +1201,7 @@ static const char *s_fx_fs =
     "  } else {\n"
     "    vec3 pvn = worldToViewM(Pw, uPrevCamInv);\n"
     "    mvPx = (viewToNdc(worldToView(Pw)) - viewToNdc(pvn)) * 0.5 * uRes;\n"
+    "    mvPx *= uVelScale;\n"
     "  }\n"
     "  float mvLen = length(mvPx);\n"
     "  if (uVelMaxOn > 0.5) {\n"
@@ -1584,6 +1586,7 @@ static struct {
     GLint ssrtx_rays, ssrtx_thick, ssrtx_rough, ssrtx_fade;
     GLint mb_on, mb_strength, mb_samples, cur_vp, prev_vp, prev_cam_inv;
     GLint velocity, vel_on, mb_shutter, mb_substeps, mb_maxpx, mb_jitter;
+    GLint vel_scale;
     GLint vel_max, vel_max_on, vel_max_grid;
     GLint mb_depth_reject, mb_clamp_px, vec_style, velmax_mode;
     GLint light_count, light_pos, light_pos_view, light_color, light_radius;
@@ -1705,6 +1708,22 @@ void gfx_opengl_ssfx_set(int which, int value) {
         case 148: s_mb_clamp_px = value < 4 ? 4 : (value > 300 ? 300 : value); break;
         case 240: s_velmax_mode = value < 0 ? 0 : (value > 2 ? 2 : value); break;
         case 149: s_vec_style = value < 0 ? 0 : (value > 2 ? 2 : value); break;
+        /* Slow-motion debug controls (sim speed, sub-frame interpolation). */
+        case 241: {
+            extern int g_sim_slow_div;
+            g_sim_slow_div = value < 1 ? 1 : (value > 8 ? 8 : value);
+            break;
+        }
+        case 242: {
+            extern int g_sim_interp;
+            g_sim_interp = value ? 1 : 0;
+            break;
+        }
+        case 243: {
+            extern int g_sim_present_t1;
+            g_sim_present_t1 = value ? 1 : 0;
+            break;
+        }
         /* Lens bokeh kernel. */
         case 160: s_fx_bokeh_on = value ? 1 : 0; break;
         case 161: s_fx_bokeh_aspect = value < 25 ? 25 : (value > 400 ? 400 : value); break;
@@ -1822,6 +1841,9 @@ int gfx_opengl_ssfx_get(int which) {
         case 148: return s_mb_clamp_px;
         case 240: return s_velmax_mode;
         case 149: return s_vec_style;
+        case 241: { extern int g_sim_slow_div; return g_sim_slow_div; }
+        case 242: { extern int g_sim_interp; return g_sim_interp; }
+        case 243: { extern int g_sim_present_t1; return g_sim_present_t1; }
         case 160: return s_fx_bokeh_on;
         case 161: return s_fx_bokeh_aspect;
         case 162: return s_fx_bokeh_blades;
@@ -1950,6 +1972,7 @@ static void stereo_fx_init(void) {
     s_fx_u.mb_samples = glGetUniformLocation(s_fx_prog, "uMBSamples");
     s_fx_u.velocity = glGetUniformLocation(s_fx_prog, "uVelocity");
     s_fx_u.vel_on = glGetUniformLocation(s_fx_prog, "uVelOn");
+    s_fx_u.vel_scale = glGetUniformLocation(s_fx_prog, "uVelScale");
     s_fx_u.mb_shutter = glGetUniformLocation(s_fx_prog, "uMBShutter");
     s_fx_u.mb_substeps = glGetUniformLocation(s_fx_prog, "uMBSubSteps");
     s_fx_u.mb_maxpx = glGetUniformLocation(s_fx_prog, "uMBMaxPx");
@@ -2911,6 +2934,14 @@ static int stereo_fx_pass(void) {
         glUniform1f(s_fx_u.mb_samples, (float)s_fx_mb_samples);
         glUniform1f(s_fx_u.vel_on,
                     (s_vel_tex_valid && s_vel_source && gfx_vel_enabled) ? 1.0f : 0.0f);
+        {
+            /* Per-vertex vectors already describe the presented sub-frame
+             * step; only the camera-only fallback spans a whole sim step. */
+            extern float gfx_cam_vel_scale;
+            glUniform1f(s_fx_u.vel_scale,
+                        (s_vel_tex_valid && s_vel_source && gfx_vel_enabled)
+                        ? 1.0f : gfx_cam_vel_scale);
+        }
         glUniform1f(s_fx_u.mb_shutter, (float)s_mb_shutter);
         glUniform1f(s_fx_u.mb_substeps, (float)s_mb_substeps);
         glUniform1f(s_fx_u.mb_maxpx, (float)s_mb_maxpx);

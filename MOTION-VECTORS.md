@@ -163,3 +163,28 @@ per step with the sweep label, the frame time and the measured motion:
 python3 scripts/contact-sheet.py test-artifacts/blursweep-<stamp> sheet.png 5
 ```
 
+## Slow motion and blur
+
+Simulation slow motion (`fx 241`, sim speed `1/n`) is compatible with the blur
+because the renderer interpolates: only tick 0 of each group of `n` rebuilds the
+display list, and the frozen ticks re-present it at `k/n` of the step through
+the HFR matrix table, so every presented frame carries a `1/n` share of the
+motion. Without that (`fx 242 0`, the old behaviour) two of every three frames
+at `n = 3` were the same picture: velocity zero, blur off, then one frame with
+three steps of motion — the blur/still/blur cadence.
+
+Measured on the blur showcase (`/media/share/tmp/artifacts/sm64/slowmo-interp/`):
+
+| config | still frames (tblend YAVG < 0.03) | presents with zero motion |
+| --- | --- | --- |
+| `n = 1` | 3.0 % (recorder floor) | 0 / 120 |
+| `n = 2`, interp | 4.9 % | 0 / 120 |
+| `n = 3`, interp | 5.1 % | 0 / 120 |
+| `n = 3`, no interp | 53.1 % | 110 / 120 |
+
+Per-vertex vectors are stamped once per *presented* frame, so they already
+describe the sub-frame step and must not be scaled again; only the camera-only
+fallback vectors (built from a matrix refreshed per sim step) get `1/n`
+(`uVelScale`). Limb animation still steps at the sim rate: the root transform
+and the camera interpolate, the animation frame does not.
+
