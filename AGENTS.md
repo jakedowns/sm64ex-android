@@ -68,6 +68,13 @@ The NDK toolchain runs under qemu here and occasionally crashes with a spurious
 `python3: Syntax error` or header corruption. Re-run the build; it is not
 usually a code error.
 
+## Backlog
+
+Open threads (unfinished effects, known bugs, environment gotchas such as the
+stubbed `osGetTime()` and the `rate=` metric trap) are tracked in
+[`BACKLOG.md`](BACKLOG.md). Read it before starting new work and update it in the
+same commit as the change that makes a line stale.
+
 ## Debug channel
 
 ```bash

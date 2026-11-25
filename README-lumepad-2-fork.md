@@ -586,6 +586,11 @@ temporarily hidden from both the mode pills and the header CAM switcher.
 
 ## Known gaps / roadmap
 
+The maintained list of open work — crepuscular rays, emissive particles and
+bloom, known bugs, and the environment facts that are easy to lose — lives in
+[`BACKLOG.md`](BACKLOG.md). This section is the long-form version of the
+user-visible gaps.
+
 - HUD, dialogs, menus and screen transitions still step at 30 Hz (UI-after-post
   keeps them out of the FX but they are not interpolated yet).
 - Skybox rotation, particles and paintings are not interpolated yet.
