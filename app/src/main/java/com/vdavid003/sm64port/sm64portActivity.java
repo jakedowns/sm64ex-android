@@ -2207,7 +2207,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
 
         // --- Dynamic light / blur / probes / lens / views (second-tier tabs) ---
         beginTab();
-        final String[] lightNames = { "BLUR", "LIGHTS", "PROBES", "LENS", "RATE/DN" };
+        final String[] lightNames = { "BLUR", "LIGHTS", "PROBES", "LENS", "RATE/DN", "GLOW" };
         LinearLayout lightBar = new LinearLayout(this);
         lightBar.setOrientation(LinearLayout.HORIZONTAL);
         lightBar.setPadding(dp(4), dp(2), dp(4), dp(2));
@@ -2386,6 +2386,36 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addIntSlider("Start jitter %", 0, 100, 100, v -> debugFx(258, v));
         addIntSlider("Occlusion bias %", 0, 50, 10, v -> debugFx(260, v));
         addIntSlider("Debug 0=off 1=shafts 2=vis", 0, 2, 0, v -> debugFx(259, v));
+        // GLOW (fx 261-273): emissive materials + bloom. The bloom input is the
+        // half-res EMISSIVE buffer, so only geometry tagged as emitting glows;
+        // a bright white wall does not. Everything is off until BLOOM is on.
+        controls = lightPages[5];
+        grid = new android.widget.GridLayout(this);
+        grid.setColumnCount(2);
+        controls.addView(grid);
+        {
+            LinearLayout r = addRow();
+            addToggleCell(r, "BLOOM", 261, false);
+            addToggleCell(r, "EMISSIVE", 269, true);
+            addToggleCell(r, "JETPACK LIGHT", 271, true);
+        }
+        moveGridLast();
+        addIntSlider("Bloom threshold", 0, 255, 48, v -> debugFx(262, v));
+        addIntSlider("Bloom intensity %", 0, 400, 120, v -> debugFx(263, v));
+        addIntSlider("Bloom radius", 1, 8, 3, v -> debugFx(264, v));
+        addIntSlider("Bloom passes", 1, 3, 2, v -> debugFx(265, v));
+        addIntSlider("Bloom taps", 5, 9, 9, v -> debugFx(266, v));
+        addIntSlider("Emissive gain %", 0, 400, 100, v -> debugFx(267, v));
+        addIntSlider("Jetpack light %", 0, 400, 150, v -> debugFx(272, v));
+        addIntSlider("Jetpack light radius", 60, 600, 220, v -> debugFx(273, v));
+        // Debug views prove the glow source: 1 = raw emissive buffer (world
+        // space, no lighting), 2 = the blurred bloom buffer, 0 = normal frame.
+        {
+            LinearLayout r = addRow();
+            addActionCell(r, "VIEW EMISSIVE", () -> debugFx(268, 1));
+            addActionCell(r, "VIEW BLOOM", () -> debugFx(268, 2));
+            addActionCell(r, "VIEW OFF", () -> debugFx(268, 0));
+        }
     }
 
     private String buildBranch() {

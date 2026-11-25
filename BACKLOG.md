@@ -76,37 +76,22 @@ see README "Crepuscular rays"). Still open:
   stills are subtle. A `ptc` action that parks one light low behind a pillar
   would show the shafts off better than the free-look orbit.
 
-### Emissive particles + bloom
-Investigated 2026-11-25 at the user's question "can we make jetpack particles
-emissive?" — **nothing was implemented**.
+### Emissive particles + bloom — **implemented** (2026-11-25)
+Emissive draw-batch tag (`GFX_OP_EMISSIVE_MARKER`, display-list marker), a
+per-eye half-res emissive buffer, a threshold/blur/additive-upsample bloom chain
+that reads only that buffer, and a per-frame world-space light registry (jetpack
+nozzle + nearby flames). Dial it from the FX > LIGHT > **GLOW** tab (`fx`
+261-273); debug views `268 1` (emissive buffer) and `268 2` (bloom buffer).
+Bloom is off by default. See `README-lumepad-2-fork.md` for the key table and
+measured cost. The god-ray pass below should now shaft from this buffer.
 
-State of the renderer:
-- **No bloom pass and no emissive concept** (`grep -i 'bloom\|emissive'` finds
-  nothing in `gfx_opengl.c`).
-- The jetpack nozzle "flame" is five camera-facing quads with vertex colours,
-  rebuilt per tick (`app/jni/src/src/game/movekit.c`, "Nozzle flame" ~line 764).
-  It emits no light.
-- Four dynamic lights exist in the FX shader but **no gameplay object registers
-  one**; only `ptc.c` lightshow uses them.
-
-Candidates already in the tree (behaviours directory):
-`sparkle_spawn.inc.c` (1-up, coin sparkles), `sparkle_spawn_star.inc.c` (star
-sparkle), `water_mist.inc.c`, `flame.inc.c`, `lll_volcano_flames.inc.c`,
-`lll_rotating_hex_flame.inc.c`, plus the movekit jetpack cone.
-
-Three tiers:
-1. **Emissive tag** — a per-batch emissive strength plus a small glow list so
-   chosen draw batches write into a half-res emissive buffer instead of the
-   plain colour path.
-2. **Bloom** — threshold, downsample, blur, additive upsample, using the
-   denoiser's prepass pattern. Budget: ~1–2 ms at 1/2 res; measure with
-   A/B MEASURE before shipping.
-3. **Feed the rays** — the god-ray pass should shaft from the same bright
-   sources, which is why these two threads are adjacent.
-
-Cheap taste (minutes, no bloom): register the nozzle as one of the four lights
-so the floor around Mario lights up and the light path is proven on a gameplay
-object.
+**Still to confirm on hardware:** the bloom glow and the nozzle light were
+measured (frame cost) and light registration is confirmed from the status line
+(`glow=...,1` while thrusting), but the visual before/after stills were not
+captured. The later investigation showed the "black 3D layer" was the tablet
+being locked/asleep (see Known bugs), not the renderer — re-run
+`scripts/emissive-glow-test.sh` on an unlocked panel and compare `a_baseline`
+vs `f_light_on` / `c_bloom`.
 
 ---
 

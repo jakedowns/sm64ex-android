@@ -62,6 +62,10 @@ extern int gfx_splat_opacity;
 extern int gfx_splat_softness;
 extern int gfx_splat_density;
 extern int gfx_splat_shape;
+// Emissive tag state (gfx_pc.c, driven by GFX_OP_EMISSIVE_MARKER).
+extern int gfx_emissive_active;
+extern int gfx_emissive_rgb[3];
+extern int gfx_emissive_strength;
 
 struct ShaderProgram {
     uint32_t shader_id;
@@ -801,6 +805,7 @@ static int s_fx_mb_on = 0;
 static int s_fx_mb_strength = 60;    // percent of the velocity vector
 static int s_fx_mb_samples = 8;
 static int s_light_count = 0;
+static int s_light_manual = 0;   // PTC lightshow owns the slots (legacy API)
 static int s_light_shadows = 0;
 static int s_light_intensity = 120;  // percent
 static int s_light_shadow_steps = 6;
@@ -833,6 +838,24 @@ static uint32_t s_fx_vp_frame = 0xFFFFFFFFu;
 
 static int s_fx_debug = 0;            // 0 off, 1 AO, 2 CoC, 3 GI
 static int s_fx_normal_flip = 0;
+
+/* Emissive materials + bloom dials (FX GLOW tab; declared here because
+ * stereo_fx_any() above the implementation needs s_glow_on). */
+int gfx_emissive_on = 1;      // FX_EMISSIVE_ON: master switch for tags
+static int s_glow_on = 0;          // FX_GLOW_ON: bloom chain
+static int s_glow_debug = 0;       // 0 off, 1 emissive buffer, 2 bloom buffer
+static int s_glow_threshold = 48;  // 0..255 -> 0..2.0 luma threshold
+static int s_glow_intensity = 120; // percent added back to the frame
+static int s_glow_radius = 3;      // tap spacing in 1/2-res texels
+static int s_glow_passes = 2;      // 1..3 blur iterations
+static int s_glow_taps = 9;        // 5 or 9 gaussian taps
+static int s_glow_gain = 100;      // emissive strength multiplier (percent)
+static int s_glow_scene = 0;       // also bloom scene pixels above threshold
+
+/* Jetpack nozzle light dials (movekit.c reads these through gfx_pc.h). */
+int gfx_jet_light_on = 1;
+int gfx_jet_light_intensity = 150;   // percent
+int gfx_jet_light_radius = 220;      // world units at full thrust
 
 // Realtime dynamic shadow map state (owned by gfx_pc.c / rendering_graph_node.c).
 extern int gfx_shadow_enabled;
@@ -1747,6 +1770,7 @@ static int stereo_fx_any(void) {
     return s_fx_ao_on || s_fx_dof_on || s_fx_gi_on || s_fx_debug != 0
         || (gfx_shadow_enabled && s_shadow_map_valid)
         || s_fx_ssrtx_on || s_fx_mb_on || s_light_count > 0 || s_probe_vis
+        || s_glow_on            /* bloom needs the FX pass output as its base */
         || s_ray_on
         || (s_denoise_path && s_denoise_on);   /* denoise needs the FX pass */
 }
@@ -1914,6 +1938,21 @@ void gfx_opengl_ssfx_set(int which, int value) {
             }
             break;
         }
+        /* Emissive materials + bloom (GLOW tab, fx 261-270). */
+        case 261: s_glow_on = value ? 1 : 0; break;
+        case 262: s_glow_threshold = value < 0 ? 0 : (value > 255 ? 255 : value); break;
+        case 263: s_glow_intensity = value < 0 ? 0 : (value > 400 ? 400 : value); break;
+        case 264: s_glow_radius = value < 1 ? 1 : (value > 8 ? 8 : value); break;
+        case 265: s_glow_passes = value < 1 ? 1 : (value > 3 ? 3 : value); break;
+        case 266: s_glow_taps = value >= 9 ? 9 : 5; break;
+        case 267: s_glow_gain = value < 0 ? 0 : (value > 400 ? 400 : value); break;
+        case 268: s_glow_debug = value < 0 ? 0 : (value > 2 ? 2 : value); break;
+        case 269: gfx_emissive_on = value ? 1 : 0; break;
+        case 270: s_glow_scene = value ? 1 : 0; break;
+        /* Jetpack nozzle light (registered through the light registry). */
+        case 271: gfx_jet_light_on = value ? 1 : 0; break;
+        case 272: gfx_jet_light_intensity = value < 0 ? 0 : (value > 400 ? 400 : value); break;
+        case 273: gfx_jet_light_radius = value < 60 ? 60 : (value > 600 ? 600 : value); break;
         default: return;
     }
     __android_log_print(ANDROID_LOG_INFO, "SM64FX",
@@ -2025,6 +2064,19 @@ int gfx_opengl_ssfx_get(int which) {
         case 200: { extern int gfx_rate_enabled; return gfx_rate_enabled; }
         case 201: { extern int gfx_rate_target_fps; return gfx_rate_target_fps; }
         case 202: { extern int gfx_rate_adaptive; return gfx_rate_adaptive; }
+        case 261: return s_glow_on;
+        case 262: return s_glow_threshold;
+        case 263: return s_glow_intensity;
+        case 264: return s_glow_radius;
+        case 265: return s_glow_passes;
+        case 266: return s_glow_taps;
+        case 267: return s_glow_gain;
+        case 268: return s_glow_debug;
+        case 269: return gfx_emissive_on;
+        case 270: return s_glow_scene;
+        case 271: return gfx_jet_light_on;
+        case 272: return gfx_jet_light_intensity;
+        case 273: return gfx_jet_light_radius;
     }
     return -1;
 }
@@ -2223,6 +2275,20 @@ void gfx_opengl_light_pos(int index, float x, float y, float z) {
 
 void gfx_opengl_light_count(int count) {
     s_light_count = count < 0 ? 0 : (count > 4 ? 4 : count);
+    // A direct caller (the PTC lightshow) takes ownership of all four slots.
+    // The per-frame gameplay light registry then leaves them alone; count 0
+    // hands them back.
+    s_light_manual = s_light_count > 0;
+}
+
+/* Used by the gameplay light registry in gfx_pc.c: applies the frame's lights
+ * without claiming ownership of the slots. */
+void gfx_opengl_light_count_auto(int count) {
+    s_light_count = count < 0 ? 0 : (count > 4 ? 4 : count);
+}
+
+int gfx_opengl_lights_manual(void) {
+    return s_light_manual;
 }
 
 void gfx_opengl_light_shadows(int on) {
@@ -2992,6 +3058,447 @@ static void stereo_denoise_prepass(int div) {
     glBindTexture(GL_TEXTURE_2D, 0);
 }
 
+/* ---------------- Emissive materials + bloom ----------------
+ * Tagged draw batches (see GFX_OP_EMISSIVE_MARKER in gfx_pc.h) are copied at
+ * draw time and re-drawn into a half-resolution per-eye EMISSIVE buffer. That
+ * buffer is the only input to the bloom chain, so a bright white wall does not
+ * bloom but a jetpack flame does: the glow source is world-space geometry, not
+ * "whatever pixel happens to be bright" in the finished image.
+ *
+ * Chain (per eye, all off unless s_glow_on):
+ *   emissive (1/2 res) -> threshold/downsample (1/2) -> blur H -> blur V
+ *   -> additive upsample into the FX pass output (own pass: doing the upsample
+ *   inside the big FX shader cost ~30 ms, see BACKLOG).
+ */
+/* Captured emissive batches for the eye currently being rendered. */
+typedef struct {
+    size_t first;      // vertex offset in s_em_verts
+    size_t nverts;
+    int rgb[3];
+    int strength;
+} EmissiveBatch;
+
+#define EM_MAX_BATCHES 96
+#define EM_MAX_VERTS 65536
+
+static float *s_em_verts = NULL;
+static size_t s_em_verts_n = 0, s_em_verts_cap = 0;
+static EmissiveBatch s_em_batches[EM_MAX_BATCHES];
+static int s_em_batch_n = 0;
+static int s_em_capture_eye = -1;  // >=0 while an eye's scene range is running
+
+static GLuint s_em_prog = 0;
+static int    s_em_prog_state = 0;
+static GLint  s_em_apos = -1, s_em_col = -1;
+static GLuint s_em_tex[2] = {0, 0}, s_em_fbo[2] = {0, 0};
+static int    s_em_w = 0, s_em_h = 0;
+
+static GLuint s_bl_prog = 0;
+static int    s_bl_prog_state = 0;
+static GLint  s_bl_apos = -1, s_bl_auv = -1;
+static struct {
+    GLint mode, src, scene, texel, dir, threshold, gain, intensity, scene_on, taps;
+} s_bl_u;
+static GLuint s_bl_a[2] = {0, 0}, s_bl_b[2] = {0, 0};
+static GLuint s_bl_afbo[2] = {0, 0}, s_bl_bfbo[2] = {0, 0};
+static int    s_bl_w = 0, s_bl_h = 0;
+
+static const char *s_em_vs =
+    "attribute vec4 aPos;\n"
+    "void main() { gl_Position = aPos; }\n";
+
+static const char *s_em_fs =
+    "precision mediump float;\n"
+    "uniform vec4 uCol;\n"
+    "void main() { gl_FragColor = vec4(uCol.rgb * uCol.a, 1.0); }\n";
+
+static const char *s_bl_vs =
+    "attribute vec2 aPos;\n"
+    "attribute vec2 aUV;\n"
+    "varying vec2 vUV;\n"
+    "void main() { vUV = aUV; gl_Position = vec4(aPos, 0.0, 1.0); }\n";
+
+static const char *s_bl_fs =
+    "precision mediump float;\n"
+    "varying vec2 vUV;\n"
+    "uniform float uMode;\n"        // 0 threshold, 1 blur, 2 additive upsample
+    "uniform sampler2D uSrc;\n"
+    "uniform sampler2D uScene;\n"
+    "uniform vec2 uTexel;\n"
+    "uniform vec2 uDir;\n"
+    "uniform float uThreshold;\n"
+    "uniform float uGain;\n"
+    "uniform float uIntensity;\n"
+    "uniform float uSceneOn;\n"
+    "uniform float uTaps;\n"
+    "float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }\n"
+    "void main() {\n"
+    "  if (uMode < 0.5) {\n"
+    "    vec3 c = texture2D(uSrc, vUV).rgb * uGain;\n"
+    "    float l = luma(c);\n"
+    "    vec3 bright = l > uThreshold ? c * (1.0 - uThreshold / max(l, 0.0001)) : vec3(0.0);\n"
+    "    if (uSceneOn > 0.5) {\n"
+    "      vec3 sc = texture2D(uScene, vUV).rgb;\n"
+    "      float sl = luma(sc);\n"
+    "      if (sl > uThreshold * 1.6) bright += sc * 0.25;\n"
+    "    }\n"
+    "    gl_FragColor = vec4(bright, 1.0);\n"
+    "  } else if (uMode < 1.5) {\n"
+    "    // 5- or 9-tap separable gaussian; spacing scales with uDir*uTexel*radius.\n"
+    "    vec2 st = uDir * uTexel;\n"
+    "    vec3 acc = texture2D(uSrc, vUV).rgb * 0.2270270270;\n"
+    "    acc += (texture2D(uSrc, vUV + st * 1.0).rgb + texture2D(uSrc, vUV - st * 1.0).rgb) * 0.1945945946;\n"
+    "    acc += (texture2D(uSrc, vUV + st * 2.0).rgb + texture2D(uSrc, vUV - st * 2.0).rgb) * 0.1216216216;\n"
+    "    acc += (texture2D(uSrc, vUV + st * 3.0).rgb + texture2D(uSrc, vUV - st * 3.0).rgb) * 0.0540540541;\n"
+    "    if (uTaps > 7.5) acc += (texture2D(uSrc, vUV + st * 4.0).rgb + texture2D(uSrc, vUV - st * 4.0).rgb) * 0.0162162162;\n"
+    "    gl_FragColor = vec4(acc, 1.0);\n"
+    "  } else {\n"
+    "    gl_FragColor = vec4(texture2D(uSrc, vUV).rgb * uIntensity, 1.0);\n"
+    "  }\n"
+    "}\n";
+
+/* Emissive capture target: half of the eye buffer, RGBA8. */
+static void em_ensure_targets(void) {
+    int w = s_eye_w / 2;
+    int h = s_eye_h / 2;
+    if (w < 1) w = 1;
+    if (h < 1) h = 1;
+    if (w == s_em_w && h == s_em_h && s_em_fbo[0] != 0) return;
+    for (int eye = 0; eye < 2; eye++) {
+        if (s_em_fbo[eye]) glDeleteFramebuffers(1, &s_em_fbo[eye]);
+        if (s_em_tex[eye]) glDeleteTextures(1, &s_em_tex[eye]);
+        glGenTextures(1, &s_em_tex[eye]);
+        glBindTexture(GL_TEXTURE_2D, s_em_tex[eye]);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA,
+                     GL_UNSIGNED_BYTE, NULL);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glGenFramebuffers(1, &s_em_fbo[eye]);
+        glBindFramebuffer(GL_FRAMEBUFFER, s_em_fbo[eye]);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                               GL_TEXTURE_2D, s_em_tex[eye], 0);
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    s_em_w = w;
+    s_em_h = h;
+}
+
+/* Bloom ping-pong targets, same resolution as the emissive buffer. */
+static void bloom_ensure_targets(void) {
+    int w = s_em_w > 0 ? s_em_w : (s_eye_w / 2 > 0 ? s_eye_w / 2 : 1);
+    int h = s_em_h > 0 ? s_em_h : (s_eye_h / 2 > 0 ? s_eye_h / 2 : 1);
+    if (w == s_bl_w && h == s_bl_h && s_bl_afbo[0] != 0) return;
+    for (int eye = 0; eye < 2; eye++) {
+        GLuint *texs[2] = { &s_bl_a[eye], &s_bl_b[eye] };
+        GLuint *fbos[2] = { &s_bl_afbo[eye], &s_bl_bfbo[eye] };
+        for (int t = 0; t < 2; t++) {
+            if (*fbos[t]) glDeleteFramebuffers(1, fbos[t]);
+            if (*texs[t]) glDeleteTextures(1, texs[t]);
+            glGenTextures(1, texs[t]);
+            glBindTexture(GL_TEXTURE_2D, *texs[t]);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA,
+                         GL_UNSIGNED_BYTE, NULL);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glGenFramebuffers(1, fbos[t]);
+            glBindFramebuffer(GL_FRAMEBUFFER, *fbos[t]);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                   GL_TEXTURE_2D, *texs[t], 0);
+        }
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    s_bl_w = w;
+    s_bl_h = h;
+}
+
+static int em_ensure_program(void) {
+    if (s_em_prog_state != 0) return s_em_prog_state == 1;
+    GLuint vs = compile_shader_checked(GL_VERTEX_SHADER, s_em_vs, "emissive vertex");
+    GLuint fs = compile_shader_checked(GL_FRAGMENT_SHADER, s_em_fs, "emissive fragment");
+    if (!vs || !fs) {
+        s_em_prog_state = -1;
+        if (vs) glDeleteShader(vs);
+        if (fs) glDeleteShader(fs);
+        return 0;
+    }
+    s_em_prog = glCreateProgram();
+    glAttachShader(s_em_prog, vs);
+    glAttachShader(s_em_prog, fs);
+    glLinkProgram(s_em_prog);
+    GLint ok = 0;
+    glGetProgramiv(s_em_prog, GL_LINK_STATUS, &ok);
+    glDeleteShader(vs);
+    glDeleteShader(fs);
+    if (!ok) {
+        s_em_prog = 0;
+        s_em_prog_state = -1;
+        return 0;
+    }
+    s_em_apos = glGetAttribLocation(s_em_prog, "aPos");
+    s_em_col = glGetUniformLocation(s_em_prog, "uCol");
+    s_em_prog_state = 1;
+    return 1;
+}
+
+static int bloom_ensure_program(void) {
+    if (s_bl_prog_state != 0) return s_bl_prog_state == 1;
+    GLuint vs = compile_shader_checked(GL_VERTEX_SHADER, s_bl_vs, "bloom vertex");
+    GLuint fs = compile_shader_checked(GL_FRAGMENT_SHADER, s_bl_fs, "bloom fragment");
+    if (!vs || !fs) {
+        s_bl_prog_state = -1;
+        if (vs) glDeleteShader(vs);
+        if (fs) glDeleteShader(fs);
+        return 0;
+    }
+    s_bl_prog = glCreateProgram();
+    glAttachShader(s_bl_prog, vs);
+    glAttachShader(s_bl_prog, fs);
+    glLinkProgram(s_bl_prog);
+    GLint ok = 0;
+    glGetProgramiv(s_bl_prog, GL_LINK_STATUS, &ok);
+    glDeleteShader(vs);
+    glDeleteShader(fs);
+    if (!ok) {
+        s_bl_prog = 0;
+        s_bl_prog_state = -1;
+        return 0;
+    }
+    s_bl_apos = glGetAttribLocation(s_bl_prog, "aPos");
+    s_bl_auv = glGetAttribLocation(s_bl_prog, "aUV");
+    s_bl_u.mode = glGetUniformLocation(s_bl_prog, "uMode");
+    s_bl_u.src = glGetUniformLocation(s_bl_prog, "uSrc");
+    s_bl_u.scene = glGetUniformLocation(s_bl_prog, "uScene");
+    s_bl_u.texel = glGetUniformLocation(s_bl_prog, "uTexel");
+    s_bl_u.dir = glGetUniformLocation(s_bl_prog, "uDir");
+    s_bl_u.threshold = glGetUniformLocation(s_bl_prog, "uThreshold");
+    s_bl_u.gain = glGetUniformLocation(s_bl_prog, "uGain");
+    s_bl_u.intensity = glGetUniformLocation(s_bl_prog, "uIntensity");
+    s_bl_u.scene_on = glGetUniformLocation(s_bl_prog, "uSceneOn");
+    s_bl_u.taps = glGetUniformLocation(s_bl_prog, "uTaps");
+    s_bl_prog_state = 1;
+    return 1;
+}
+
+/* Append the batch draw_triangles() was just handed. Only the 4 clip-space
+ * position floats per vertex are kept; the emission colour comes from the
+ * tag, so this does not depend on the combiner that was active. */
+static void emissive_capture(const float *vbo, size_t nfloats, size_t stride,
+                             size_t ntris, const int rgb[3], int strength) {
+    if (s_em_batch_n >= EM_MAX_BATCHES) return;
+    size_t nverts = ntris * 3;
+    if (nverts == 0) return;
+    if (s_em_verts_n + nverts > EM_MAX_VERTS) return;
+    if (s_em_verts_n + nverts > s_em_verts_cap) {
+        size_t cap = s_em_verts_cap ? s_em_verts_cap : 4096;
+        while (cap < s_em_verts_n + nverts) cap *= 2;
+        float *p = (float *)realloc(s_em_verts, cap * 4 * sizeof(float));
+        if (p == NULL) return;
+        s_em_verts = p;
+        s_em_verts_cap = cap;
+    }
+    EmissiveBatch *b = &s_em_batches[s_em_batch_n++];
+    b->first = s_em_verts_n;
+    b->nverts = nverts;
+    for (int i = 0; i < 3; i++) b->rgb[i] = rgb[i];
+    b->strength = strength;
+    for (size_t v = 0; v < nverts; v++) {
+        const float *src = vbo + v * stride;
+        float *dst = s_em_verts + (s_em_verts_n + v) * 4;
+        dst[0] = src[0];
+        dst[1] = src[1];
+        dst[2] = src[2];
+        dst[3] = src[3];
+    }
+    s_em_verts_n += nverts;
+}
+
+/* End of an eye's scene range: re-draw the tagged batches into that eye's
+ * half-res emissive buffer. Runs even when bloom is off (the buffer is then
+ * only used by the debug view) but is skipped entirely when tags are off. */
+void gfx_opengl_emissive_flush(int eye) {
+    s_em_capture_eye = -1;
+    if (s_em_batch_n == 0) {
+        if (s_em_tex[eye & 1] == 0) return;
+        // Still clear so the debug view / bloom input cannot show last frame.
+        if (!gfx_emissive_on) return;
+    }
+    if (!gfx_emissive_on) {
+        s_em_batch_n = 0;
+        s_em_verts_n = 0;
+        return;
+    }
+    em_ensure_targets();
+    if (!em_ensure_program() || s_em_tex[eye & 1] == 0) {
+        s_em_batch_n = 0;
+        s_em_verts_n = 0;
+        return;
+    }
+    if (s_em_batch_n == 0 && !s_glow_on && !s_glow_debug) {
+        return;
+    }
+
+    /* Mid-frame pass: snapshot the GL state the pipeline's caches believe in,
+     * because the rest of this eye (UI when UIPOST is off) keeps drawing. */
+    GLint vp[4] = { 0, 0, 1, 1 };
+    glGetIntegerv(GL_VIEWPORT, vp);
+    GLboolean depth_was = glIsEnabled(GL_DEPTH_TEST);
+    GLboolean blend_was = glIsEnabled(GL_BLEND);
+    GLboolean scissor_was = glIsEnabled(GL_SCISSOR_TEST);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, s_em_fbo[eye & 1]);
+    glViewport(0, 0, s_em_w, s_em_h);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
+    glDisable(GL_SCISSOR_TEST);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glUseProgram(s_em_prog);
+    glEnableVertexAttribArray(s_em_apos);
+
+    float gain = (float)s_glow_gain / 100.0f;
+    for (int i = 0; i < s_em_batch_n; i++) {
+        EmissiveBatch *b = &s_em_batches[i];
+        glUniform4f(s_em_col, (float)b->rgb[0] / 255.0f, (float)b->rgb[1] / 255.0f,
+                    (float)b->rgb[2] / 255.0f,
+                    gain * (float)b->strength / 255.0f);
+        if (!s_comp_vbo) glGenBuffers(1, &s_comp_vbo);
+        glBindBuffer(GL_ARRAY_BUFFER, s_comp_vbo);
+        glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(b->nverts * 4 * sizeof(float)),
+                     s_em_verts + b->first * 4, GL_STREAM_DRAW);
+        glVertexAttribPointer(s_em_apos, 4, GL_FLOAT, GL_FALSE, 4 * sizeof(float),
+                              (void *)0);
+        glDrawArrays(GL_TRIANGLES, 0, (GLsizei)b->nverts);
+    }
+
+    glDisableVertexAttribArray(s_em_apos);
+    /* Restore the eye target and the state the pipeline caches expect. */
+    glBindFramebuffer(GL_FRAMEBUFFER, s_eye_fbo[eye & 1]);
+    glViewport(vp[0], vp[1], vp[2], vp[3]);
+    if (depth_was) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
+    if (blend_was) glEnable(GL_BLEND); else glDisable(GL_BLEND);
+    if (scissor_was) glEnable(GL_SCISSOR_TEST); else glDisable(GL_SCISSOR_TEST);
+    glUseProgram(0);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    /* draw_triangles() buffers into whatever VBO is bound; hand opengl_vbo
+     * back so the next frame's scene does not land in our scratch buffer. */
+    if (opengl_vbo) glBindBuffer(GL_ARRAY_BUFFER, opengl_vbo);
+    s_em_batch_n = 0;
+    s_em_verts_n = 0;
+}
+
+/* Threshold -> blur -> additive upsample. Each stage is its own pass; the
+ * additive upsample writes into the FX pass output (s_pp_tex) for this eye. */
+static void stereo_bloom_pass(void) {
+    if (!s_glow_on || s_glow_debug != 0) return;
+    if (!bloom_ensure_program()) return;
+    em_ensure_targets();
+    bloom_ensure_targets();
+    if (s_bl_afbo[0] == 0) return;
+
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
+    glDisable(GL_SCISSOR_TEST);
+    glUseProgram(s_bl_prog);
+    glUniform1i(s_bl_u.src, 0);
+    glUniform1i(s_bl_u.scene, 1);
+    glUniform2f(s_bl_u.texel, 1.0f / (float)s_bl_w, 1.0f / (float)s_bl_h);
+    glUniform1f(s_bl_u.threshold, (float)s_glow_threshold / 255.0f * 1.6f);
+    glUniform1f(s_bl_u.gain, (float)s_glow_gain / 100.0f);
+    glUniform1f(s_bl_u.intensity, (float)s_glow_intensity / 100.0f);
+    glUniform1f(s_bl_u.scene_on, s_glow_scene ? 1.0f : 0.0f);
+    glUniform1f(s_bl_u.taps, (float)(s_glow_taps >= 9 ? 9 : 5));
+
+    static const float quad[] = {
+        -1.0f, -1.0f, 0.0f, 0.0f,
+         1.0f, -1.0f, 1.0f, 0.0f,
+        -1.0f,  1.0f, 0.0f, 1.0f,
+         1.0f,  1.0f, 1.0f, 1.0f,
+    };
+    if (!s_comp_vbo) glGenBuffers(1, &s_comp_vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, s_comp_vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(quad), quad, GL_STREAM_DRAW);
+    glEnableVertexAttribArray(s_bl_apos);
+    glVertexAttribPointer(s_bl_apos, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float),
+                          (void *)0);
+    if (s_bl_auv >= 0) {
+        glEnableVertexAttribArray(s_bl_auv);
+        glVertexAttribPointer(s_bl_auv, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float),
+                              (void *)(2 * sizeof(float)));
+    }
+
+    float spacing = (float)(s_glow_radius < 1 ? 1 : s_glow_radius);
+    int passes = s_glow_passes < 1 ? 1 : (s_glow_passes > 3 ? 3 : s_glow_passes);
+
+    for (int eye = 0; eye < 2; eye++) {
+        if (gfx_single_eye >= 0 && eye != gfx_single_eye) continue;
+        if (s_em_tex[eye] == 0 || s_pp_tex[eye] == 0) continue;
+
+        glViewport(0, 0, s_bl_w, s_bl_h);
+
+        // 1. threshold + downsample of the emissive buffer
+        glBindFramebuffer(GL_FRAMEBUFFER, s_bl_afbo[eye]);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, s_em_tex[eye]);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, s_eye_tex[eye]);
+        glUniform1f(s_bl_u.mode, 0.0f);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+
+        // 2. separable gaussian, N passes with growing spacing
+        int src = 0;
+        float step = spacing;
+        for (int p = 0; p < passes; p++) {
+            // horizontal: src -> other
+            glBindFramebuffer(GL_FRAMEBUFFER, src == 0 ? s_bl_bfbo[eye] : s_bl_afbo[eye]);
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, src == 0 ? s_bl_a[eye] : s_bl_b[eye]);
+            glUniform1f(s_bl_u.mode, 1.0f);
+            glUniform2f(s_bl_u.dir, step, 0.0f);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            src = 1 - src;
+
+            // vertical
+            glBindFramebuffer(GL_FRAMEBUFFER, src == 0 ? s_bl_bfbo[eye] : s_bl_afbo[eye]);
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, src == 0 ? s_bl_a[eye] : s_bl_b[eye]);
+            glUniform2f(s_bl_u.dir, 0.0f, step);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            src = 1 - src;
+            step *= 1.8f;
+        }
+
+        // 3. additive bilinear upsample into the FX result (own pass)
+        glBindFramebuffer(GL_FRAMEBUFFER, s_pp_fbo[eye]);
+        glViewport(0, 0, s_eye_w, s_eye_h);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_ONE, GL_ONE);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, s_bl_a[eye]);   // passes end on stage 0
+        glUniform1f(s_bl_u.mode, 2.0f);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glDisable(GL_BLEND);
+    }
+
+    glDisableVertexAttribArray(s_bl_apos);
+    if (s_bl_auv >= 0) glDisableVertexAttribArray(s_bl_auv);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glActiveTexture(GL_TEXTURE0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glUseProgram(0);
+    if (opengl_vbo) glBindBuffer(GL_ARRAY_BUFFER, opengl_vbo);
+}
+
+/* Runs the post pass for both eyes. Returns 1 if s_pp_tex is valid to composite. */
+
+
 /* ---------------- Crepuscular rays: quarter-res prepass ---------------- */
 
 static int ray_ensure_program(void) {
@@ -3231,6 +3738,7 @@ static void stereo_rays_prepass(void) {
 }
 
 /* Runs the post pass for both eyes. Returns 1 if s_pp_tex is valid to composite. */
+
 static int stereo_fx_pass(void) {
     if (!stereo_fx_any()) return 0;
     if (!s_depth_tex_mode) {
@@ -3720,6 +4228,11 @@ void gfx_opengl_stereo_begin(int eye, int w, int h, int cx, int cy, int cw, int 
     stereo_ensure_resources(w, h);
     s_fbo_mode = 1;
     glBindFramebuffer(GL_FRAMEBUFFER, s_eye_fbo[eye & 1]);
+    // Emissive capture for this eye starts empty and ends in
+    // gfx_opengl_emissive_flush(), which gfx_pc.c calls after the scene range.
+    s_em_batch_n = 0;
+    s_em_verts_n = 0;
+    s_em_capture_eye = eye & 1;
     glDisable(GL_SCISSOR_TEST);
     glDepthMask(GL_TRUE);
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
@@ -3754,6 +4267,9 @@ void gfx_opengl_stereo_composite(int w, int h, int full_w, int full_h, int has_u
     // Post-process each eye (MXAO / CinematicDOF / SSGI-lite) before weaving.
     // ZBUF is a raw debug view, so it bypasses the FX chain.
     int fx_ready = gfx_stereo_zbuf ? 0 : stereo_fx_pass();
+    // Bloom: additive upsample of the blurred emissive buffer into the FX
+    // output. Skipped entirely when the chain is off (default).
+    if (fx_ready) stereo_bloom_pass();
 
     s_fbo_mode = 0;
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -3794,6 +4310,14 @@ void gfx_opengl_stereo_composite(int w, int h, int full_w, int full_h, int has_u
         int src = gfx_single_eye >= 0 ? gfx_single_eye : eye;
         GLuint scene_tex = zview ? s_eye_depth[src]
                                  : (fx_ready ? s_pp_tex[src] : s_eye_tex[src]);
+        // GLOW debug view: show the emissive buffer (or the blurred bloom
+        // buffer) on its own, so it is obvious the glow comes from world-space
+        // geometry and not from a screen-space blur of the final image.
+        if (!zview && s_glow_debug == 1 && s_em_tex[src] != 0) {
+            scene_tex = s_em_tex[src];
+        } else if (!zview && s_glow_debug == 2 && s_bl_a[src] != 0) {
+            scene_tex = s_bl_a[src];
+        }
         glViewport(eye * (full_w / 2), 0, full_w / 2, full_h);
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, scene_tex);
@@ -3886,6 +4410,15 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
     bool wire_now = gfx_stereo_wire;
 #ifdef __ANDROID__
     wire_now = wire_now && !s_shadow_rendering;
+    // Emissive tag: keep a copy of this batch for the half-res emissive buffer.
+    // Only during an eye's colour pass -- the shadow and velocity replays would
+    // otherwise record the same geometry twice.
+    if (s_em_capture_eye >= 0 && gfx_emissive_on && gfx_emissive_strength > 0
+            && opengl_prg != NULL && !s_shadow_rendering && !s_vel_rendering
+            && !gfx_splat_active) {
+        emissive_capture(buf_vbo, buf_vbo_len, opengl_prg->num_floats,
+                         buf_vbo_num_tris, gfx_emissive_rgb, gfx_emissive_strength);
+    }
 #endif
     if (gfx_splat_active && opengl_prg != NULL) {
         // Splat pass: one point sprite per triangle, plus interpolated points on

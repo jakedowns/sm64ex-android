@@ -14,6 +14,9 @@
 #include "game_init.h"
 #include "rendering_graph_node.h"
 #include "behavior_data.h"
+#include "camera.h"
+#include "model_ids.h"
+#include "object_helpers.h"
 #include "mario.h"
 #include "memory.h"
 #include "../pc/gfx/gfx_pc.h"
@@ -239,6 +242,12 @@ u16 gAreaUpdateCounter = 0;
 // onto each DisplayListNode and emitted as a marker when the list is drawn.
 static u8 gSplatCurrentObject = 0;
 
+// Emissive slice: packed glow tag for the object whose display lists are being
+// appended. Like gSplatCurrentObject it is copied onto every DisplayListNode
+// and turned into a marker command when the master list is drawn, so it
+// survives the deferred, per-eye display-list model.
+static u32 gGlowCurrentObject = 0;
+
 #ifdef F3DEX_GBI_2
 LookAt lookAt;
 #endif
@@ -271,9 +280,11 @@ static void geo_process_master_list_sub(struct GraphNodeMasterList *node) {
             gDPSetRenderMode(gDisplayListHead++, modeList->modes[i], mode2List->modes[i]);
             while (currList != NULL) {
                 if (currList->splat) gfx_sp_splat_marker(1);
+                if (currList->glow) gfx_sp_emissive_marker(currList->glow);
                 gSPMatrix(gDisplayListHead++, VIRTUAL_TO_PHYSICAL(currList->transform),
                           G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);
                 gSPDisplayList(gDisplayListHead++, currList->displayList);
+                if (currList->glow) gfx_sp_emissive_marker(0);
                 if (currList->splat) gfx_sp_splat_marker(0);
                 currList = currList->next;
             }
@@ -305,6 +316,7 @@ static void geo_append_display_list(void *displayList, s16 layer) {
         hfr_record(listNode->transform, gMatStackPrev[gMatStackIndex]);
         listNode->displayList = displayList;
         listNode->splat = gSplatCurrentObject || (gfx_splat_target == 3);
+        listNode->glow = gGlowCurrentObject;
         listNode->next = 0;
         if (gCurGraphNodeMasterList->listHeads[layer] == 0) {
             gCurGraphNodeMasterList->listHeads[layer] = listNode;
@@ -1197,6 +1209,44 @@ static int splat_object_selected(struct Object *node) {
     }
 }
 
+/* Emissive tag for objects that actually emit: sparkles (coins, 1-ups, stars)
+ * and the level flames. Returning 0 leaves the object on the normal path.
+ * Flames also register a world-space light for the FX shader when they are
+ * close to the camera (nearest-first, through the per-frame light registry, so
+ * a flame that goes out or out of range stops lighting the room). */
+static u32 glow_tag_for_object(struct Object *node) {
+    struct GraphNode *model = node->header.gfx.sharedChild;
+
+    if (!gfx_emissive_on || model == NULL || gLoadedGraphNodes == NULL) {
+        return 0;
+    }
+    if (model == gLoadedGraphNodes[MODEL_SPARKLES]
+        || model == gLoadedGraphNodes[MODEL_SPARKLES_ANIMATION]) {
+        return GFX_EMISSIVE_PACK(255, 245, 200, 210);
+    }
+    if (model == gLoadedGraphNodes[MODEL_RED_FLAME]
+        || model == gLoadedGraphNodes[MODEL_BLUE_FLAME]) {
+        float d2;
+        if (model == gLoadedGraphNodes[MODEL_BLUE_FLAME]) {
+            // Cool flame: cyan-white glow, slightly weaker.
+            return GFX_EMISSIVE_PACK(150, 200, 255, 190);
+        }
+        d2 = 0.0f;
+        {
+            float dx = node->header.gfx.pos[0] - gLakituState.pos[0];
+            float dy = node->header.gfx.pos[1] - gLakituState.pos[1];
+            float dz = node->header.gfx.pos[2] - gLakituState.pos[2];
+            d2 = dx * dx + dy * dy + dz * dz;
+        }
+        if (d2 < 1400.0f * 1400.0f) {
+            float rgb[3] = { 0.95f, 0.45f, 0.15f };
+            gfx_light_request_auto(node->header.gfx.pos, rgb, 260.0f);
+        }
+        return GFX_EMISSIVE_PACK(255, 150, 60, 215);
+    }
+    return 0;
+}
+
 static void geo_process_object(struct Object *node) {
     Mat4 mtxf;
     s32 hasAnimation = (node->header.gfx.node.flags & GRAPH_RENDER_HAS_ANIMATION) != 0;
@@ -1281,10 +1331,14 @@ static void geo_process_object(struct Object *node) {
             if (node->header.gfx.sharedChild != NULL) {
                 int splat = splat_object_selected(node);
                 u8 prevSplat = gSplatCurrentObject;
+                u32 glow = glow_tag_for_object(node);
+                u32 prevGlow = gGlowCurrentObject;
                 gCurGraphNodeObject = (struct GraphNodeObject *) node;
                 node->header.gfx.sharedChild->parent = &node->header.gfx.node;
                 if (splat) gSplatCurrentObject = 1;
+                gGlowCurrentObject = glow;
                 geo_process_node_and_siblings(node->header.gfx.sharedChild);
+                gGlowCurrentObject = prevGlow;
                 gSplatCurrentObject = prevSplat;
                 node->header.gfx.sharedChild->parent = NULL;
                 gCurGraphNodeObject = NULL;
