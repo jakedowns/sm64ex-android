@@ -38,6 +38,22 @@ shader, restricted to fragments nearer than Mario, with a per-eye centre and
 depth so it lands correctly in 3D. Controls: OCCLUSION group in the panel
 (mode, radius, feather, dither, depth bias), `fx 27x`.
 
+### Merge queue for the parallel worktrees
+Rays landed in the main checkout (`6c55b1e`). Three worktrees are in flight and
+all of them touch `gfx_opengl.c` and the Java panel, so merge order matters:
+
+1. `emissive-bloom` — light registry, emissive batches + buffer, bloom, GLOW tab
+2. `occlusion-fade` — discard-based punch-through in the generated scene shader,
+   OCCLUSION panel group
+3. `bowser-scale` — HFR/held-object analysis (smallest diff; mostly
+   `rendering_graph_node.c`, which `emissive-bloom` also edits)
+
+Conflict hotspots to expect: the `s_fx_u` uniform table and `stereo_fx_*` pass
+wiring, the FX page list in `sm64portActivity.java` (page order/index bugs —
+the RAYS page had to be appended last for exactly this reason), the README FX
+key table, and this file. Resolve by keeping each feature's block contiguous,
+then rebuild and re-run the device checks for all four features together.
+
 ---
 
 ## Planned, not started
