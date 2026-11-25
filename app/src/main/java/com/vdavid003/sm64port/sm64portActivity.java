@@ -140,10 +140,10 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     /* Top-level tabs and their page groups. Pages keep their historical
      * indices: 0 stereo, 1 views, 2 MXAO, 3 C.DOF, 4 SSGI, 5 SSRTX,
      * 6 camera settings, 7 debug, 8 shadow, 9 splat, 10 changelog,
-     * 11 logs, 12 about general, 13 light. */
-    private static final int[] FX_PAGES = {0, 2, 3, 4, 5, 8, 9, 13, 1, 6};
+     * 11 logs, 12 about general, 13 light, 14 crepuscular rays. */
+    private static final int[] FX_PAGES = {0, 2, 3, 4, 5, 14, 8, 9, 13, 1, 6};
     private static final String[] FX_LABELS =
-            {"CAMERA", "MXAO", "C.DOF", "SSGI", "SSRTX", "SHADOW", "SPLAT", "LIGHT", "VIEWS"};
+            {"CAMERA", "MXAO", "C.DOF", "SSGI", "SSRTX", "RAYS", "SHADOW", "SPLAT", "LIGHT", "VIEWS"};
     private static final int[] CAMERA_PAGES = {6, 0};
     private static final String[] CAMERA_LABELS = {"SETTINGS", "STEREO"};
     private static final int[] ABOUT_PAGES = {12, 10};
@@ -162,7 +162,8 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     private int fxDebug = 0;
     // SSRTX screen-space ray-traced reflections (opt-in: expensive).
     private boolean ssrtxOn = false;
-    private TextView ssrtxToggle;
+    private boolean raysOn = false;
+    private TextView ssrtxToggle, raysToggle;
     // Gameplay enhancements (default on; toggled from the ENH tab).
     private boolean ragdollOn = true, hitRagdollOn = true, ppcamOn = true;
     private TextView ragdollToggle, hitRagdollToggle, ppcamToggle;
@@ -1413,6 +1414,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             case 3: return dofOn;
             case 4: return giOn;
             case 5: return ssrtxOn;
+            case 14: return raysOn;
             case 8: return shadowOn;
             case 9: return splatMode != 0;
             case 13: return mbOn || lightCountOn || probeOn;
@@ -2292,6 +2294,36 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addIntSlider("Denoise bounces", 1, 4, 1, v -> debugFx(216, v));
         // 1 = full-res (legacy), 2-4 = filter at scene_res/n then upsample.
         addIntSlider("Denoise res 1/n", 1, 4, 4, v -> debugFx(220, v));
+
+        // --- Crepuscular rays: quarter-res screen-space light shafts ---
+        // Built last so the existing FX page indices (see FX_PAGES) do not
+        // shift; it is its own top-level strip tab because the page index is
+        // just the tabViews position.
+        beginTab();
+        addPerfRow("RAYS", () -> nativeSetSSFX(250, 0), () -> nativeSetSSFX(250, 1),
+                   () -> raysOn);
+        raysToggle = addFxToggle("CREPUSCULAR RAYS", 250, raysOn);
+        {
+            TextView hint = new TextView(this);
+            hint.setTextSize(12);
+            hint.setTextColor(0xFFAACCFF);
+            hint.setPadding(dp(4), 0, dp(4), dp(6));
+            hint.setText("Additive light shafts from a bright source. Source 4 is a"
+                    + " synthetic sun above-left; 0-3 follow the dynamic lights"
+                    + " (use LIGHT LOOP or LIGHT TEST first). A light behind the"
+                    + " camera falls back to the sun.");
+            controls.addView(hint);
+        }
+        addIntSlider("Shaft intensity %", 0, 400, 100, v -> debugFx(251, v));
+        addIntSlider("March length %", 10, 200, 100, v -> debugFx(252, v));
+        addIntSlider("Falloff per step %", 50, 100, 96, v -> debugFx(253, v));
+        addIntSlider("Sample weight %", 0, 300, 60, v -> debugFx(254, v));
+        addIntSlider("March samples 8-32", 8, 32, 16, v -> debugFx(255, v));
+        addIntSlider("Brightness gate %", 0, 100, 20, v -> debugFx(256, v));
+        addIntSlider("Source light 0-3, 4=sun", 0, 4, 4, v -> debugFx(257, v));
+        addIntSlider("Start jitter %", 0, 100, 100, v -> debugFx(258, v));
+        addIntSlider("Occlusion bias %", 0, 50, 10, v -> debugFx(260, v));
+        addIntSlider("Debug 0=off 1=shafts 2=vis", 0, 2, 0, v -> debugFx(259, v));
     }
 
     private String buildBranch() {
@@ -3393,6 +3425,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         else if (key == 11) dofOn = on;
         else if (key == 21) giOn = on;
         else if (key == 70) ssrtxOn = on;
+        else if (key == 250) raysOn = on;
         refreshTabStyles();
         Log.i(TAG, "FX toggle " + name + "=" + (on ? 1 : 0));
     }
@@ -4204,6 +4237,13 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                     else nativeSetSSFX(70, ssrtxOn ? 1 : 0);
                 });
                 break;
+            case "RAYS":
+                runOnUiThread(() -> {
+                    raysOn = !raysOn;
+                    if (raysToggle != null) applyFxToggle(raysToggle, "CREPUSCULAR RAYS", 250, raysOn);
+                    else nativeSetSSFX(250, raysOn ? 1 : 0);
+                });
+                break;
             case "FXDBG":
                 runOnUiThread(() -> {
                     fxDebug = (fxDebug + 1) % 5;
@@ -4439,6 +4479,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             if (dofToggle != null) applyFxToggle(dofToggle, "CINEMATIC DOF", 11, false);
             if (giToggle != null) applyFxToggle(giToggle, "SSGI ENABLE", 21, false);
             if (ssrtxToggle != null) applyFxToggle(ssrtxToggle, "SSRTX ENABLE", 70, false);
+            if (raysToggle != null) applyFxToggle(raysToggle, "CREPUSCULAR RAYS", 250, false);
             wireOn = false;
             zbufOn = false;
             nativeSetStereoInt(16, 0);

@@ -151,7 +151,7 @@ uncapped** (default **120 Hz**, panel refresh matched on resume).
 ## Screen-space effects
 
 A per-eye post pass runs after the scene is rendered (options tabs **MXAO**,
-**C.DOF**, **SSGI**, **SSRTX**):
+**C.DOF**, **SSGI**, **SSRTX**, **RAYS**):
 
 - **MXAO-style ambient occlusion** — intensity, radius, samples, bias, power.
 - **Cinematic DOF** — focus, aperture, max blur, samples, CoC debug view.
@@ -163,7 +163,8 @@ A per-eye post pass runs after the scene is rendered (options tabs **MXAO**,
   intensity, max ray distance, steps, rays, depth thickness, roughness cone,
   edge fade, and a reflection debug view. Opt-in (off by default) because it is
   the most expensive post effect.
-- Debug views: AO buffer, CoC, GI, SSRTX reflections.
+- **Crepuscular rays** — quarter-resolution screen-space light shafts (below).
+- Debug views: AO buffer, CoC, GI, SSRTX reflections, ray shafts/visibility.
 
 ### SSRTX controls (SSRTX tab)
 
@@ -189,6 +190,50 @@ keys are `cmd fx` `70`–`77` (`70` enable, `71` intensity, `72` distance,
 SSRTX cost scales with `Steps × Rays × pixels × eyes`; at 200 % intensity and
 24 steps the 120 Hz cap dropped to ~56 fps in the castle grounds, so leave it
 off unless you want the effect and tune down from the defaults.
+
+### Crepuscular rays (RAYS tab)
+
+Screen-space light shafts: for every pixel the pass marches N samples toward the
+light's screen position (depth buffer only), accumulates visibility with a
+per-step `decay`, and adds the result to the scene colour. Occlusion is "a
+sample closer than `z0 · (1 − bias)` blocks"; depth at the far plane (sky) never
+occludes. Only bright pixels shaft (luminance gate), and the contribution fades
+with screen distance from the source. The march runs at `scene_res/4` per eye,
+followed by a 9-tap separable blur; the FX pass samples it bilinearly. Off by
+default: no FBO is allocated and no pass runs until you enable it.
+
+Source light `0`-`3` follows the active dynamic lights (`ptc lightshow` /
+`ptc lighttest`, or `fx 103`), `4` is a synthetic sun above-left of the camera.
+An unavailable index, or a light behind the camera, falls back to that sun.
+
+The additive term is applied in the FX pass next to the dynamic lights (after
+AO/DOF/shadow shape the base colour, before the probe-visualisation overlay);
+that pass has no tonemap or colour grade, so this is the last point where light
+is added. Alpha is untouched.
+
+| Control | Effect |
+|---|---|
+| `CREPUSCULAR RAYS` | master toggle (default **off**) |
+| `Shaft intensity %` | additive contribution to the scene |
+| `March length %` | how far of the way to the light the samples reach |
+| `Falloff per step %` | per-sample accumulation decay (100 = flat) |
+| `Sample weight %` | per-sample weight before the intensity |
+| `March samples 8-32` | quality/cost dial |
+| `Brightness gate %` | minimum scene luminance that shows shafts |
+| `Source light 0-3, 4=sun` | which light casts the shafts |
+| `Start jitter %` | interleaved start offset (kills banding) |
+| `Occlusion bias %` | depth tolerance before a sample counts as blocked |
+| `Debug 0=off 1=shafts 2=vis` | shafts with the composite ramp, or raw visibility |
+
+Headless keys `250`-`260`; `cmd toggle --es name RAYS` flips the master switch
+and `cmd dump` reports `rays=on,intensity,samples`. Measured on the PTC light
+scene at 2D (`fps=` in `cmd dump`): 10.5 ms with rays off, 11.6 ms at 8 samples,
+11.7 at 16, 11.8 at 24, 12.1 at 32; in 3D the chain adds ~4.7 ms for both eyes
+(112 -> 74 fps in the same scene). The march itself is cheap at 1/4 res; the
+fixed part is the extra FX-pass sampler and the two blur passes. A build with
+the feature removed measured 10.1 ms off, so the extra sampler/branch costs
+~0.4 ms **only when another FX effect is already running the post pass**; with
+every effect off the FX pass is skipped entirely and the cost is zero.
 
 - Everything is a live knob (panel sliders or `cmd fx`), defaults off so the
   base look is unchanged.
@@ -296,6 +341,7 @@ while the UI range is replayed so the HUD does not sway.
 | Puppycam+ wall margin + Mario fade | **on** | ENH tab / `cmd toggle --es name PPCAM` |
 | Realtime dynamic shadows | **on** | SHADOW tab / `cmd toggle --es name SHADOW` |
 | SSRTX reflections | **off** (opt-in) | SSRTX tab / `cmd toggle --es name SSRTX` |
+| Crepuscular rays | **off** (opt-in) | RAYS tab / `cmd toggle --es name RAYS` |
 | MXAO / C.DOF / SSGI | off | their tabs |
 
 - **Stay in level after a star** (default on): normal stars take the vanilla
@@ -503,7 +549,8 @@ in-scale %, `15` ZBUF, `16` wireframe, `17` toe %, `18` aspect %, `19` no cull,
 `44` gyro strength %, `45` gyro pivot height.
 
 FX knobs (`cmd fx`): AO `1`-`6`, DOF `11`-`15` (`16` auto focus, `17` reports
-the auto distance), SSGI `21`-`25`, SSRTX `70`-`77`, normal flip `32`.
+the auto distance), SSGI `21`-`25`, SSRTX `70`-`77`, crepuscular rays
+`250`-`260`, normal flip `32`.
 
 | group | keys |
 | --- | --- |
@@ -511,6 +558,7 @@ the auto distance), SSGI `21`-`25`, SSRTX `70`-`77`, normal flip `32`.
 | motion blur | `100` on, `101` strength, `102` samples (legacy), `118` heatmap gain (px = full scale) |
 | motion vectors | `140` source (1 = per-vertex, 0 = camera only), `141` shutter deg, `142` sub-steps (1-16), `143` max blur px (0-128), `144` velocity res 1/n, `145` update every N frames, `146` sub-step jitter %, `147` depth reject %, `148` velocity clamp px (4-300), `149` heatmap style (0 magnitude, 1 direction, 2 segments), `240` vector-bound mode (0 off, 1 one sample, 2 3x3) |
 | dynamic lights | `103` count, `104` shadows, `105` intensity, `106` shadow steps, `120`-`122` / `124`-`126` light 0/1 RGB |
+| crepuscular rays | `250` on, `251` intensity %, `252` march length %, `253` decay per step %, `254` sample weight %, `255` samples (8-32), `256` brightness gate %, `257` source light (0-3, 4 = sun), `258` start jitter %, `259` debug (1 shafts, 2 visibility), `260` occlusion bias % |
 | light probes | `110` show, `111` spacing, `113` radius, `114` resolution, `115` grid cols (X), `116` grid rows (Y), `117` grid repeats (Z); `112` sets all three axes at once |
 | bokeh / DOF | `160` kernel, `161` aspect %, `162` blades, `163` rotation, `164` anamorphic %, `165` highlight %, `166` cat eye % |
 | rate limit | `200` on, `201` target fps, `202` adaptive, `203` reset stats |
@@ -540,8 +588,10 @@ the header (`[caret]` then `3D|2D`, `FPS`, `CAM` on the right) and the tab row
 (`FX` `DEBUG` `ABOUT` left, `RESET` right).
 
 Tabs:
-- **FX** — second-level strip: MXAO / C.DOF / SSGI / SSRTX / SHADOW / SPLAT /
-  LIGHT / VIEWS / CAMERA.
+- **FX** — second-level strip: MXAO / C.DOF / SSGI / SSRTX / RAYS / SHADOW /
+  SPLAT / LIGHT / VIEWS / CAMERA.
+  - RAYS: crepuscular-ray toggle, intensity, march length, decay, weight,
+    samples, brightness gate, source light, jitter, occlusion bias, debug view.
   - LIGHT: BLUR / LIGHTS / PROBES / LENS / RATE-DN.
   - VIEWS: all debug views (OFF, AO, CoC, GI, SSRTX, LIGHTS, L-ACCUM,
     PROBE VIS, L-DIST, MOTION VECTORS) plus a small reorderable layer stack

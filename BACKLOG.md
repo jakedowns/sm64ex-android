@@ -11,31 +11,27 @@ that is finished gets deleted here, not ticked.
 
 ## In progress
 
-### Crepuscular rays (god rays)
-Started 2026-11-25. No code yet; design stage.
-
-- **Approach chosen:** half-resolution screen-space radial light shafts,
-  occlusion sampled from the existing shadow map, composited additively.
-  Rejected: raymarched world-space shafts (cost on Adreno 660) and shaft
-  geometry (level authoring, breaks with moving lights).
-- **Infrastructure that already exists and should be reused, not rebuilt:**
-  - shadow map: `uShadowMap`, `uShadowVP`, `unpackDepth()` in the FX shader,
-    `shadowLookup()` for the 3x3 soft path (`gfx_opengl.c`);
-  - four dynamic lights: `uLightPos/uLightPosView/uLightColor/uLightRadius`,
-    `fx 103` light count — note only the PTC lightshow drives these today;
-  - the half-res prepass + bilateral upsample pattern from the denoiser
-    (`stereo_denoise_prepass()`, `s_dn_*`) is the template for a ray buffer;
-  - the FX tab system and the A/B MEASURE tool for proving cost.
-- **Plan:** probe one half-res radial-blur pass and measure it before building
-  the UI; then uniforms for intensity, density, decay, weight, samples,
-  threshold, source light and jitter (`fx 250+`); then a RAYS tab under FX;
-  then a debug view.
-- **Open question:** shafts from the sun/one of the 4 lights, or from bright
-  *objects* (star, 1-up, jetpack) — the latter needs the emissive work below.
+Nothing active.
 
 ---
 
 ## Planned, not started
+
+### Crepuscular rays: quality follow-ups
+Shipped 2026-11-25 (quarter-res screen-space shafts, RAYS tab, `fx 250`-`260`;
+see README "Crepuscular rays"). Still open:
+
+- **Shadow-map occlusion as a quality dial.** Today the march only tests the
+  depth buffer against the pixel's own depth plane, so shafts need a visible
+  silhouette and thin/off-screen occluders contribute nothing. Sampling
+  `uShadowMap` at each march step would let geometry outside the view block the
+  light; keep it behind a dial and measure before making it the default.
+- **Emissive sources.** Shafts from the star, a 1-up or the jetpack nozzle need
+  the emissive/bloom work below; the current `threshold` dial only gates on
+  scene brightness, it does not identify a source object.
+- **Hero demos.** The PTC lightshow lights sit above the frame, so the demo
+  stills are subtle. A `ptc` action that parks one light low behind a pillar
+  would show the shafts off better than the free-look orbit.
 
 ### Emissive particles + bloom
 Investigated 2026-11-25 at the user's question "can we make jetpack particles

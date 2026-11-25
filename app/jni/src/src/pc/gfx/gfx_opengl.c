@@ -980,6 +980,12 @@ static const char *s_fx_fs =
     "uniform float uDenoiseRadius;\n"
     "uniform float uDenoiseFrames;\n"
     "uniform float uDenoiseBounces;\n"
+    "uniform sampler2D uRayTex;\n"
+    "uniform float uRayOn;\n"
+    "uniform float uRayIntensity;\n"
+    "uniform float uRayDebug;\n"
+    "uniform vec3 uRayColor;\n"
+    "uniform vec2 uRayLightUV;\n"
     "float unpackDepth(vec4 rgba) {\n"
     "  return dot(rgba, vec4(1.0, 1.0/255.0, 1.0/65025.0, 1.0/16581375.0));\n"
     "}\n"
@@ -1365,7 +1371,13 @@ static const char *s_fx_fs =
     "    }\n"
     "    gi = ws > 0.0 ? gi / ws : vec3(0.0);\n"
     "  }\n"
-    "  if (uShadowDebug > 1.5) gl_FragColor = vec4(vec3(unpackDepth(texture2D(uShadowMap, clamp(cuv, 0.0, 1.0)))), 1.0);\n"
+    "  if (uRayOn > 0.5 && uRayDebug > 1.5) gl_FragColor = vec4(vec3(texture2D(uRayTex, vUV).r), 1.0);\n"
+    "  else if (uRayOn > 0.5 && uRayDebug > 0.5) {\n"
+    "    vec2 rd = (vUV - uRayLightUV) * vec2(uAspect, 1.0);\n"
+    "    float ramp = 1.0 / (1.0 + 4.0 * dot(rd, rd));\n"
+    "    gl_FragColor = vec4(texture2D(uRayTex, vUV).rgb * uRayColor * ramp * 3.0, 1.0);\n"
+    "  }\n"
+    "  else if (uShadowDebug > 1.5) gl_FragColor = vec4(vec3(unpackDepth(texture2D(uShadowMap, clamp(cuv, 0.0, 1.0)))), 1.0);\n"
     "  else if (uShadowDebug > 0.5) gl_FragColor = vec4(vec3(shadow), 1.0);\n"
     "  else if (uDebug > 8.5) {\n"
     "    float tcol = sqrt(clamp(mvLen / max(uVecGain, 1.0), 0.0, 1.0));\n"
@@ -1403,6 +1415,14 @@ static const char *s_fx_fs =
     "    vec3 outc = dofColor * ao * shadow + gi * (uGIIntensity / 100.0) * 0.6\n"
     "              + refl * mix(0.35, 1.0, ao);\n"
     "    outc += (lightAcc + specAcc * 0.6) * (uLightIntensity / 100.0);\n"
+    // Crepuscular rays: additive light, like the dynamic lights above, after
+    // AO/DOF/shadow have shaped the base colour.  There is no tonemap or colour
+    // grade in this pass, so this is the last point where light is added.
+    "    if (uRayOn > 0.5) {\n"
+    "      vec2 rd = (vUV - uRayLightUV) * vec2(uAspect, 1.0);\n"
+    "      float ramp = 1.0 / (1.0 + 4.0 * dot(rd, rd));\n"
+    "      outc += texture2D(uRayTex, vUV).rgb * uRayColor * (uRayIntensity / 100.0) * ramp;\n"
+    "    }\n"
     "    if (uProbeVis > 0.5) {\n"
     "      float worldR = max(uProbeRadiusW, 1.0);\n"
     "      for (int pi = 0; pi < 16; pi++) {\n"
@@ -1550,6 +1570,123 @@ static const char *s_dn_fs =
     "  }\n"
     "}\n";
 
+/* ---------------- Crepuscular rays (screen-space light shafts) -----------
+ * Quarter-resolution, per eye, additive.  Runs as its own small program
+ * before the FX pass and hands the FX shader a blurred visibility buffer:
+ *
+ *   mode 0  march from this pixel toward the light's screen position, reading
+ *           the eye depth buffer; depth == far (sky) counts as unoccluded,
+ *           an occluder is anything closer than z0 * (1 - bias)
+ *   mode 1  horizontal 9-tap gaussian at quarter res
+ *   mode 2  vertical 9-tap gaussian at quarter res
+ *
+ * The FX pass samples the result bilinearly and adds it as light.  Nothing is
+ * allocated or executed when the effect is off, so the main path is untouched.
+ */
+static const char *s_ray_fs =
+    "precision highp float;\n"
+    "varying vec2 vUV;\n"
+    "uniform sampler2D uSrcDepth;\n"
+    "uniform sampler2D uSrcCol;\n"
+    "uniform sampler2D uSrcRay;\n"
+    "uniform float uMode;\n"
+    "uniform vec2 uTexel;\n"
+    "uniform vec2 uDir;\n"
+    "uniform float uNear;\n"
+    "uniform float uFar;\n"
+    "uniform vec2 uLightUV;\n"
+    "uniform float uSamples;\n"
+    "uniform float uDensity;\n"
+    "uniform float uDecay;\n"
+    "uniform float uWeight;\n"
+    "uniform float uThreshold;\n"
+    "uniform float uBias;\n"
+    "uniform float uJitter;\n"
+    "uniform float uFrame;\n"
+    "uniform vec2 uRes;\n"
+    "float linZ(float d) {\n"
+    "  float z = d * 2.0 - 1.0;\n"
+    "  return (2.0 * uNear * uFar) / (uFar + uNear - z * (uFar - uNear));\n"
+    "}\n"
+    /* Interleaved gradient noise: cheap per-pixel start offset against banding. */
+    "float ign(vec2 p) {\n"
+    "  return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));\n"
+    "}\n"
+    "void main() {\n"
+    "  if (uMode < 0.5) {\n"
+    "    float z0 = linZ(texture2D(uSrcDepth, vUV).r);\n"
+    "    vec2 luv = clamp(uLightUV, vec2(0.0), vec2(1.0));\n"
+    "    float n = max(uSamples, 1.0);\n"
+    "    float jit = uJitter * ign(vUV * uRes + vec2(uFrame * 7.31, uFrame * 3.17));\n"
+    "    float w = 1.0;\n"
+    "    float acc = 0.0;\n"
+    "    float ws = 0.0;\n"
+    "    for (int i = 0; i < 32; i++) {\n"
+    "      if (float(i) >= n) break;\n"
+    "      float t = (float(i) + jit) / n;\n"
+    "      t = min(t * uDensity, 1.0);\n"
+    "      vec2 p = mix(vUV, luv, t);\n"
+    "      float zs = linZ(texture2D(uSrcDepth, p).r);\n"
+    /* Sky samples are always unoccluded (far >= z0*(1-bias) even for a sky
+     * pixel); geometry closer than the pixel's own depth plane occludes. */
+    "      float vis = (zs >= z0 * (1.0 - uBias)) ? 1.0 : 0.0;\n"
+    "      acc += vis * w;\n"
+    "      ws += w;\n"
+    "      w *= uDecay;\n"
+    "    }\n"
+    "    float shaft = ws > 0.0001 ? acc / ws : 0.0;\n"
+    "    float lum = dot(texture2D(uSrcCol, vUV).rgb, vec3(0.299, 0.587, 0.114));\n"
+    "    shaft *= smoothstep(uThreshold, uThreshold + 0.20, lum);\n"
+    "    gl_FragColor = vec4(vec3(shaft * uWeight), 1.0);\n"
+    "  } else {\n"
+    "    float w0 = 1.0, w1 = 0.8825, w2 = 0.6065, w3 = 0.3247, w4 = 0.1353;\n"
+    "    float wsum = w0 + 2.0 * (w1 + w2 + w3 + w4);\n"
+    "    vec3 acc = texture2D(uSrcRay, vUV).rgb * w0;\n"
+    "    vec2 d1 = uDir * uTexel;\n"
+    "    acc += texture2D(uSrcRay, vUV + d1).rgb * w1;\n"
+    "    acc += texture2D(uSrcRay, vUV - d1).rgb * w1;\n"
+    "    acc += texture2D(uSrcRay, vUV + d1 * 2.0).rgb * w2;\n"
+    "    acc += texture2D(uSrcRay, vUV - d1 * 2.0).rgb * w2;\n"
+    "    acc += texture2D(uSrcRay, vUV + d1 * 3.0).rgb * w3;\n"
+    "    acc += texture2D(uSrcRay, vUV - d1 * 3.0).rgb * w3;\n"
+    "    acc += texture2D(uSrcRay, vUV + d1 * 4.0).rgb * w4;\n"
+    "    acc += texture2D(uSrcRay, vUV - d1 * 4.0).rgb * w4;\n"
+    "    gl_FragColor = vec4(acc / wsum, 1.0);\n"
+    "  }\n"
+    "}\n";
+
+/* March + blur dials (headless keys 250-260).  Off by default; the defaults
+ * are tuned so `250 1` alone shows shafts from the synthetic sun. */
+static int s_ray_on = 0;            /* 250 */
+static int s_ray_intensity = 100;   /* 251: additive contribution % */
+static int s_ray_density = 100;     /* 252: march length toward the light % */
+static int s_ray_decay = 96;        /* 253: per-sample weight falloff % */
+static int s_ray_weight = 60;       /* 254: per-sample accumulation weight % */
+static int s_ray_samples = 16;      /* 255: 8-32 march samples */
+static int s_ray_threshold = 20;    /* 256: scene-luminance gate % */
+static int s_ray_light = 4;         /* 257: 0-3 dynamic light, 4 = sun */
+static int s_ray_jitter = 100;      /* 258: start-offset jitter % */
+static int s_ray_debug = 0;         /* 259: 0 normal, 1 shafts, 2 visibility */
+static int s_ray_bias = 10;         /* 260: depth-plane occlusion tolerance % */
+
+static GLuint s_ray_prog = 0;
+static int    s_ray_prog_state = 0;   // 0 = untried, 1 = ok, -1 = failed
+static GLint  s_ray_apos = -1, s_ray_auv = -1;
+static struct {
+    GLint mode, src_depth, src_col, src_ray;
+    GLint texel, dir, nearv, farv;
+    GLint light_uv;
+    GLint samples, density, decay, weight, threshold, bias, jitter, frame;
+    GLint res;
+} s_ray_u;
+/* [eye][0 = march/raw, 1 = horizontal blur, 2 = vertical blur] */
+static GLuint s_ray_fbo[2][3] = {{0, 0, 0}, {0, 0, 0}};
+static GLuint s_ray_tex[2][3] = {{0, 0, 0}, {0, 0, 0}};
+static int    s_ray_w = 0, s_ray_h = 0;
+static GLuint s_ray_result[2] = {0, 0};   // per-eye texture for the FX pass
+static int    s_ray_valid[2] = {0, 0};
+static float  s_ray_lightuv[2][2] = {{0.5f, 0.5f}, {0.5f, 0.5f}};
+
 static GLuint s_dn_prog = 0;
 static int    s_dn_prog_state = 0;   // 0 = untried, 1 = ok, -1 = failed
 static GLint  s_dn_apos = -1, s_dn_auv = -1;
@@ -1597,6 +1734,7 @@ static struct {
     GLint denoise_path, denoise_on, denoise_intensity, denoise_passes;
     GLint denoise_radius, denoise_frames, denoise_bounces;
     GLint vec_gain;
+    GLint ray_tex, ray_on, ray_intensity, ray_debug, ray_color, ray_light_uv;
 } s_fx_u;
 
 static GLuint s_fx_prog = 0;
@@ -1609,6 +1747,7 @@ static int stereo_fx_any(void) {
     return s_fx_ao_on || s_fx_dof_on || s_fx_gi_on || s_fx_debug != 0
         || (gfx_shadow_enabled && s_shadow_map_valid)
         || s_fx_ssrtx_on || s_fx_mb_on || s_light_count > 0 || s_probe_vis
+        || s_ray_on
         || (s_denoise_path && s_denoise_on);   /* denoise needs the FX pass */
 }
 
@@ -1743,6 +1882,18 @@ void gfx_opengl_ssfx_set(int which, int value) {
         case 217: s_denoise_caption = value ? 1 : 0; break;
         /* Denoise resolution divisor (1 = full res, 2-4 = scene_res/n). */
         case 220: s_denoise_div = value < 1 ? 1 : (value > 4 ? 4 : value); break;
+        /* Crepuscular rays: quarter-res screen-space light shafts. */
+        case 250: s_ray_on = value ? 1 : 0; break;
+        case 251: s_ray_intensity = value < 0 ? 0 : (value > 400 ? 400 : value); break;
+        case 252: s_ray_density = value < 10 ? 10 : (value > 200 ? 200 : value); break;
+        case 253: s_ray_decay = value < 50 ? 50 : (value > 100 ? 100 : value); break;
+        case 254: s_ray_weight = value < 0 ? 0 : (value > 300 ? 300 : value); break;
+        case 255: s_ray_samples = value < 8 ? 8 : (value > 32 ? 32 : value); break;
+        case 256: s_ray_threshold = value < 0 ? 0 : (value > 100 ? 100 : value); break;
+        case 257: s_ray_light = value < 0 ? 0 : (value > 4 ? 4 : value); break;
+        case 258: s_ray_jitter = value < 0 ? 0 : (value > 100 ? 100 : value); break;
+        case 259: s_ray_debug = value < 0 ? 0 : (value > 2 ? 2 : value); break;
+        case 260: s_ray_bias = value < 0 ? 0 : (value > 50 ? 50 : value); break;
         /* Rate limiter (lives in gfx_sdl2.c). */
         case 200: { extern int gfx_rate_enabled; gfx_rate_enabled = value != 0; break; }
         case 201: { extern int gfx_rate_target_fps; gfx_rate_target_fps = value < 0 ? 0 : (value > 240 ? 240 : value); break; }
@@ -1860,6 +2011,17 @@ int gfx_opengl_ssfx_get(int which) {
         case 216: return s_denoise_bounces;
         case 217: return s_denoise_caption;
         case 220: return s_denoise_div;
+        case 250: return s_ray_on;
+        case 251: return s_ray_intensity;
+        case 252: return s_ray_density;
+        case 253: return s_ray_decay;
+        case 254: return s_ray_weight;
+        case 255: return s_ray_samples;
+        case 256: return s_ray_threshold;
+        case 257: return s_ray_light;
+        case 258: return s_ray_jitter;
+        case 259: return s_ray_debug;
+        case 260: return s_ray_bias;
         case 200: { extern int gfx_rate_enabled; return gfx_rate_enabled; }
         case 201: { extern int gfx_rate_target_fps; return gfx_rate_target_fps; }
         case 202: { extern int gfx_rate_adaptive; return gfx_rate_adaptive; }
@@ -2004,6 +2166,12 @@ static void stereo_fx_init(void) {
     s_fx_u.probe_pos = glGetUniformLocation(s_fx_prog, "uProbePos[0]");
     s_fx_u.probe_col = glGetUniformLocation(s_fx_prog, "uProbeCol[0]");
     s_fx_u.probe_count = glGetUniformLocation(s_fx_prog, "uProbeCount");
+    s_fx_u.ray_tex = glGetUniformLocation(s_fx_prog, "uRayTex");
+    s_fx_u.ray_on = glGetUniformLocation(s_fx_prog, "uRayOn");
+    s_fx_u.ray_intensity = glGetUniformLocation(s_fx_prog, "uRayIntensity");
+    s_fx_u.ray_debug = glGetUniformLocation(s_fx_prog, "uRayDebug");
+    s_fx_u.ray_color = glGetUniformLocation(s_fx_prog, "uRayColor");
+    s_fx_u.ray_light_uv = glGetUniformLocation(s_fx_prog, "uRayLightUV");
     s_fx_u.denoise_path = glGetUniformLocation(s_fx_prog, "uDenoisePath");
     s_fx_u.denoise_on = glGetUniformLocation(s_fx_prog, "uDenoiseOn");
     s_fx_u.denoise_intensity = glGetUniformLocation(s_fx_prog, "uDenoiseIntensity");
@@ -2824,6 +2992,244 @@ static void stereo_denoise_prepass(int div) {
     glBindTexture(GL_TEXTURE_2D, 0);
 }
 
+/* ---------------- Crepuscular rays: quarter-res prepass ---------------- */
+
+static int ray_ensure_program(void) {
+    if (s_ray_prog_state != 0) return s_ray_prog_state == 1;
+    GLuint vs = compile_shader_checked(GL_VERTEX_SHADER, s_dn_vs, "rays vertex");
+    GLuint fs = compile_shader_checked(GL_FRAGMENT_SHADER, s_ray_fs, "rays fragment");
+    if (!vs || !fs) {
+        s_ray_prog_state = -1;
+        if (vs) glDeleteShader(vs);
+        if (fs) glDeleteShader(fs);
+        return 0;
+    }
+    s_ray_prog = glCreateProgram();
+    glAttachShader(s_ray_prog, vs);
+    glAttachShader(s_ray_prog, fs);
+    glLinkProgram(s_ray_prog);
+    GLint ok = 0;
+    glGetProgramiv(s_ray_prog, GL_LINK_STATUS, &ok);
+    glDeleteShader(vs);
+    glDeleteShader(fs);
+    if (!ok) {
+        char log[512];
+        glGetProgramInfoLog(s_ray_prog, sizeof(log), NULL, log);
+        __android_log_print(ANDROID_LOG_WARN, "SM64FX", "rays link failed: %s", log);
+        glDeleteProgram(s_ray_prog);
+        s_ray_prog = 0;
+        s_ray_prog_state = -1;
+        return 0;
+    }
+    s_ray_apos = glGetAttribLocation(s_ray_prog, "aPos");
+    s_ray_auv = glGetAttribLocation(s_ray_prog, "aUV");
+    s_ray_u.mode = glGetUniformLocation(s_ray_prog, "uMode");
+    s_ray_u.src_depth = glGetUniformLocation(s_ray_prog, "uSrcDepth");
+    s_ray_u.src_col = glGetUniformLocation(s_ray_prog, "uSrcCol");
+    s_ray_u.src_ray = glGetUniformLocation(s_ray_prog, "uSrcRay");
+    s_ray_u.texel = glGetUniformLocation(s_ray_prog, "uTexel");
+    s_ray_u.dir = glGetUniformLocation(s_ray_prog, "uDir");
+    s_ray_u.nearv = glGetUniformLocation(s_ray_prog, "uNear");
+    s_ray_u.farv = glGetUniformLocation(s_ray_prog, "uFar");
+    s_ray_u.light_uv = glGetUniformLocation(s_ray_prog, "uLightUV");
+    s_ray_u.samples = glGetUniformLocation(s_ray_prog, "uSamples");
+    s_ray_u.density = glGetUniformLocation(s_ray_prog, "uDensity");
+    s_ray_u.decay = glGetUniformLocation(s_ray_prog, "uDecay");
+    s_ray_u.weight = glGetUniformLocation(s_ray_prog, "uWeight");
+    s_ray_u.threshold = glGetUniformLocation(s_ray_prog, "uThreshold");
+    s_ray_u.bias = glGetUniformLocation(s_ray_prog, "uBias");
+    s_ray_u.jitter = glGetUniformLocation(s_ray_prog, "uJitter");
+    s_ray_u.frame = glGetUniformLocation(s_ray_prog, "uFrame");
+    s_ray_u.res = glGetUniformLocation(s_ray_prog, "uRes");
+    s_ray_prog_state = 1;
+    __android_log_print(ANDROID_LOG_INFO, "SM64FX", "rays program ready (%u)", s_ray_prog);
+    return 1;
+}
+
+/* Raw march + two ping-pong blur targets per eye, all at quarter res. */
+static int ray_ensure_fbo(int w, int h) {
+    if (w == s_ray_w && h == s_ray_h && s_ray_fbo[0][0] != 0) return 1;
+    for (int eye = 0; eye < 2; eye++) {
+        for (int st = 0; st < 3; st++) {
+            if (s_ray_fbo[eye][st]) glDeleteFramebuffers(1, &s_ray_fbo[eye][st]);
+            if (s_ray_tex[eye][st]) glDeleteTextures(1, &s_ray_tex[eye][st]);
+            glGenTextures(1, &s_ray_tex[eye][st]);
+            glBindTexture(GL_TEXTURE_2D, s_ray_tex[eye][st]);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA,
+                         GL_UNSIGNED_BYTE, NULL);
+            GLint filt = (st == 0) ? GL_NEAREST : GL_LINEAR;
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filt);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filt);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glGenFramebuffers(1, &s_ray_fbo[eye][st]);
+            glBindFramebuffer(GL_FRAMEBUFFER, s_ray_fbo[eye][st]);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                   GL_TEXTURE_2D, s_ray_tex[eye][st], 0);
+            GLenum fst = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+            if (fst != GL_FRAMEBUFFER_COMPLETE) {
+                __android_log_print(ANDROID_LOG_WARN, "SM64FX",
+                        "RAY fbo eye=%d st=%d incomplete 0x%x", eye, st, fst);
+            }
+        }
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    s_ray_w = w;
+    s_ray_h = h;
+    __android_log_print(ANDROID_LOG_INFO, "SM64FX",
+            "RAY fbo eye0=%u,%u,%u %dx%d", s_ray_tex[0][0], s_ray_tex[0][1],
+            s_ray_tex[0][2], w, h);
+    return 1;
+}
+
+/* March + blur both eyes; leaves the per-eye shaft buffer in s_ray_result[]. */
+static void stereo_rays_prepass(void) {
+    s_ray_valid[0] = s_ray_valid[1] = 0;
+    int w = s_eye_w / 4;
+    int h = s_eye_h / 4;
+    if (w < 8) w = 8;
+    if (h < 8) h = 8;
+    if (!ray_ensure_program()) return;
+    if (!ray_ensure_fbo(w, h)) return;
+
+    const float (*M)[4] = gfx_cam_inv_mtx;
+    float cam[3] = { M[3][0], M[3][1], M[3][2] };
+    int li = s_ray_light;
+    /* 0-3 use an active dynamic light; 4, an inactive index, or a light behind
+     * the camera falls back to a synthetic sun direction. */
+    int sun = (li < 0 || li > 3 || li >= s_light_count);
+    float lv[3] = { -0.55f, 0.80f, 0.45f };   /* view space, +z is behind */
+    if (!sun) {
+        float p[3] = { s_light_pos[li][0], s_light_pos[li][1], s_light_pos[li][2] };
+        for (int j = 0; j < 3; j++) {
+            lv[j] = (p[0] - cam[0]) * M[j][0]
+                  + (p[1] - cam[1]) * M[j][1]
+                  + (p[2] - cam[2]) * M[j][2];
+        }
+        if (lv[2] > -1.0f) sun = 1;
+    }
+
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
+    glDisable(GL_SCISSOR_TEST);
+    glUseProgram(s_ray_prog);
+
+    static const float quad[] = {
+        -1.0f, -1.0f, 0.0f, 0.0f,
+         1.0f, -1.0f, 1.0f, 0.0f,
+        -1.0f,  1.0f, 0.0f, 1.0f,
+         1.0f,  1.0f, 1.0f, 1.0f,
+    };
+    if (!s_comp_vbo) glGenBuffers(1, &s_comp_vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, s_comp_vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(quad), quad, GL_STREAM_DRAW);
+    glEnableVertexAttribArray(s_ray_apos);
+    glVertexAttribPointer(s_ray_apos, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void *)0);
+    glEnableVertexAttribArray(s_ray_auv);
+    glVertexAttribPointer(s_ray_auv, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float),
+                          (void *)(2 * sizeof(float)));
+
+    glUniform1i(s_ray_u.src_depth, 0);
+    glUniform1i(s_ray_u.src_col, 1);
+    glUniform1i(s_ray_u.src_ray, 2);
+    glUniform2f(s_ray_u.texel, 1.0f / (float)w, 1.0f / (float)h);
+    glUniform1f(s_ray_u.nearv, gfx_cam_near);
+    glUniform1f(s_ray_u.farv, gfx_cam_far);
+    glUniform1f(s_ray_u.samples, (float)s_ray_samples);
+    glUniform1f(s_ray_u.density, (float)s_ray_density / 100.0f);
+    glUniform1f(s_ray_u.decay, (float)s_ray_decay / 100.0f);
+    glUniform1f(s_ray_u.weight, (float)s_ray_weight / 100.0f);
+    glUniform1f(s_ray_u.threshold, (float)s_ray_threshold / 100.0f);
+    glUniform1f(s_ray_u.bias, (float)s_ray_bias / 100.0f);
+    glUniform1f(s_ray_u.jitter, (float)s_ray_jitter / 100.0f);
+    glUniform1f(s_ray_u.frame, (float)(frame_count & 1023));
+    glUniform2f(s_ray_u.res, (float)s_eye_w, (float)s_eye_h);
+
+    /* Sun anchor in eye UV: up-and-behind-left, projected as a direction and
+     * pushed outside the frame so the shafts rake across the screen.  A real
+     * light is projected through the same per-eye shear/toe/flip the FX shader
+     * uses; both cases are clamped to the frame edge afterwards. */
+    float ax = lv[0], ay = lv[1];
+    float al = sqrtf(ax * ax + ay * ay);
+    if (al < 1.0e-4f) { ax = -0.4f; ay = 0.8f; al = 0.8944f; }
+    ax /= al;
+    ay /= al;
+    float ccx = ((float)s_canvas_x + (float)s_canvas_w * 0.5f) / (float)s_eye_w;
+    float ccy = ((float)s_canvas_y + (float)s_canvas_h * 0.5f) / (float)s_eye_h;
+    float aspect = (float)s_canvas_w / (float)(s_canvas_h ? s_canvas_h : 1);
+    float anchors[2][2];
+
+    for (int eye = 0; eye < 2; eye++) {
+        float flip = gfx_eye_flip[eye] ? -1.0f : 1.0f;
+        float uvx, uvy;
+        if (!sun) {
+            float z = -lv[2] > 1.0f ? -lv[2] : 1.0f;
+            float ndcx = lv[0] / (z * gfx_cam_tan_half_fov_y * aspect);
+            float ndcy = lv[1] / (z * gfx_cam_tan_half_fov_y);
+            float ndcz = (gfx_cam_far + gfx_cam_near
+                          - 2.0f * gfx_cam_near * gfx_cam_far / z)
+                         / (gfx_cam_far - gfx_cam_near);
+            ndcx += gfx_eye_shear[eye] + gfx_eye_toe[eye] * ndcz;
+            if (gfx_eye_flip[eye]) ndcy = -ndcy;
+            float cuvx = ndcx * 0.5f + 0.5f;
+            float cuvy = ndcy * 0.5f + 0.5f;
+            uvx = (cuvx * (float)s_canvas_w + (float)s_canvas_x) / (float)s_eye_w;
+            uvy = (cuvy * (float)s_canvas_h + (float)s_canvas_y) / (float)s_eye_h;
+        } else {
+            uvx = ccx + ax * ((float)s_canvas_w / (float)s_eye_w) * 0.95f;
+            uvy = ccy + ay * flip * ((float)s_canvas_h / (float)s_eye_h) * 0.95f;
+        }
+        anchors[eye][0] = uvx;
+        anchors[eye][1] = uvy;
+        s_ray_lightuv[eye][0] = uvx < 0.0f ? 0.0f : (uvx > 1.0f ? 1.0f : uvx);
+        s_ray_lightuv[eye][1] = uvy < 0.0f ? 0.0f : (uvy > 1.0f ? 1.0f : uvy);
+    }
+
+    for (int eye = 0; eye < 2; eye++) {
+        if (gfx_single_eye >= 0 && eye != gfx_single_eye) continue;
+        glUniform2f(s_ray_u.light_uv, anchors[eye][0], anchors[eye][1]);
+
+        glViewport(0, 0, w, h);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, s_eye_depth[eye]);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, s_eye_tex[eye]);
+
+        /* 1. march */
+        glBindFramebuffer(GL_FRAMEBUFFER, s_ray_fbo[eye][0]);
+        glUniform1f(s_ray_u.mode, 0.0f);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+
+        if (s_ray_debug != 2) {
+            /* 2. horizontal blur */
+            glBindFramebuffer(GL_FRAMEBUFFER, s_ray_fbo[eye][1]);
+            glActiveTexture(GL_TEXTURE2);
+            glBindTexture(GL_TEXTURE_2D, s_ray_tex[eye][0]);
+            glUniform2f(s_ray_u.dir, 1.0f, 0.0f);
+            glUniform1f(s_ray_u.mode, 1.0f);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            /* 3. vertical blur */
+            glBindFramebuffer(GL_FRAMEBUFFER, s_ray_fbo[eye][2]);
+            glBindTexture(GL_TEXTURE_2D, s_ray_tex[eye][1]);
+            glUniform2f(s_ray_u.dir, 0.0f, 1.0f);
+            glUniform1f(s_ray_u.mode, 2.0f);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            s_ray_result[eye] = s_ray_tex[eye][2];
+        } else {
+            /* Visibility debug: skip the blur so the raw march is visible. */
+            s_ray_result[eye] = s_ray_tex[eye][0];
+        }
+        s_ray_valid[eye] = 1;
+    }
+
+    glDisableVertexAttribArray(s_ray_apos);
+    glDisableVertexAttribArray(s_ray_auv);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glUseProgram(0);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, 0);
+}
+
 /* Runs the post pass for both eyes. Returns 1 if s_pp_tex is valid to composite. */
 static int stereo_fx_pass(void) {
     if (!stereo_fx_any()) return 0;
@@ -2851,6 +3257,14 @@ static int stereo_fx_pass(void) {
         if (!s_dn_valid[0] && !s_dn_valid[1]) dn_div = 0;
     } else {
         s_dn_valid[0] = s_dn_valid[1] = 0;
+    }
+
+    /* Crepuscular rays: quarter-res march + blur per eye.  Skipped entirely
+     * (no FBO allocation, no draw) when the effect is off. */
+    if (s_ray_on) {
+        stereo_rays_prepass();
+    } else {
+        s_ray_valid[0] = s_ray_valid[1] = 0;
     }
 
     glDisable(GL_DEPTH_TEST);
@@ -3042,6 +3456,20 @@ static int stereo_fx_pass(void) {
     glUniform1f(s_fx_u.ssrtx_rough, (float)s_fx_ssrtx_roughness / 100.0f);
     glUniform1f(s_fx_u.ssrtx_fade, (float)s_fx_ssrtx_fade);
 
+    if (s_fx_u.ray_tex >= 0) glUniform1i(s_fx_u.ray_tex, 5);
+    {
+        /* Shaft tint follows the selected dynamic light when one is active,
+         * otherwise a warm sun. */
+        float rc[3] = { 1.0f, 0.86f, 0.62f };
+        int li = s_ray_light;
+        if (li >= 0 && li < 4 && li < s_light_count) {
+            memcpy(rc, s_light_color[li], sizeof(rc));
+        }
+        glUniform3f(s_fx_u.ray_color, rc[0], rc[1], rc[2]);
+    }
+    glUniform1f(s_fx_u.ray_intensity, (float)s_ray_intensity);
+    glUniform1f(s_fx_u.ray_debug, (float)s_ray_debug);
+
     glUniform2f(s_fx_u.res, (float)s_eye_w, (float)s_eye_h);
     glUniform4f(s_fx_u.canvas, (float)s_canvas_x, (float)s_canvas_y,
                 (float)s_canvas_w, (float)s_canvas_h);
@@ -3105,11 +3533,20 @@ static int stereo_fx_pass(void) {
         glUniform1f(s_fx_u.shear, gfx_eye_shear[eye]);
         glUniform1f(s_fx_u.toe, gfx_eye_toe[eye]);
         glUniform1f(s_fx_u.flipy, gfx_eye_flip[eye] ? 1.0f : 0.0f);
+        glActiveTexture(GL_TEXTURE5);
+        glBindTexture(GL_TEXTURE_2D, s_ray_valid[eye] ? s_ray_result[eye] : 0);
+        glUniform1f(s_fx_u.ray_on, s_ray_valid[eye] ? 1.0f : 0.0f);
+        if (s_fx_u.ray_light_uv >= 0) {
+            glUniform2f(s_fx_u.ray_light_uv, s_ray_lightuv[eye][0],
+                        s_ray_lightuv[eye][1]);
+        }
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     }
 
     glDisableVertexAttribArray(apos);
     glDisableVertexAttribArray(auv);
+    glActiveTexture(GL_TEXTURE5);
+    glBindTexture(GL_TEXTURE_2D, 0);
     glActiveTexture(GL_TEXTURE0);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glUseProgram(0);
