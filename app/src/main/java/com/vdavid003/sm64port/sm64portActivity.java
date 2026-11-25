@@ -164,6 +164,10 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     private boolean ssrtxOn = false;
     private boolean raysOn = false;
     private TextView ssrtxToggle, raysToggle;
+    /* Occluder punch-through mode (fx 274): 0 OFF, 1 DROPOUT, 2 ALPHA,
+     * 3 CUTOUT.  The button also has to survive refreshTabStyles(). */
+    private int occlMode = 0;
+    private TextView occlButton;
     // Gameplay enhancements (default on; toggled from the ENH tab).
     private boolean ragdollOn = true, hitRagdollOn = true, ppcamOn = true;
     private TextView ragdollToggle, hitRagdollToggle, ppcamToggle;
@@ -1646,6 +1650,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
 
         controls.addView(makePinchToggle(), 0);
         addCamToggle("WALL NOCLIP", 52, true);
+        addOcclusionControls();
 
         addCamSlider("Cam distance", 1, 1500, 700, " u", 46);
         addCamSlider("FOV %", 1, 400, 100, " %", 20);
@@ -3415,6 +3420,47 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         return b;
     }
 
+    /* OCCLUSION group on CAMERA > SETTINGS, next to WALL NOCLIP: both decide
+     * what happens to geometry that sits between the camera and Mario.  The
+     * mode button cycles OFF / DROPOUT / ALPHA / CUTOUT (fx key 274). */
+    private void addOcclusionControls() {
+        final String[] names = { "OFF", "DROPOUT", "ALPHA", "CUTOUT" };
+        occlButton = new TextView(this);
+        occlButton.setTextSize(15);
+        occlButton.setGravity(Gravity.CENTER);
+        occlButton.setPadding(dp(4), dp(10), dp(4), dp(10));
+        occlButton.setOnClickListener(v -> {
+            setOcclusionMode((occlMode + 1) % names.length);
+            Log.i(TAG, "OCCLUSION mode=" + occlMode + " " + names[occlMode]);
+        });
+        addCompact(controls, occlButton);
+        setOcclusionMode(occlMode);
+
+        TextView hint = new TextView(this);
+        hint.setTextSize(12);
+        hint.setTextColor(0xFFAACCFF);
+        hint.setPadding(dp(4), 0, dp(4), dp(6));
+        hint.setText("Discards only geometry in front of Mario inside a circle:"
+                + " DROPOUT = hard 100% hole, ALPHA = partial dither, CUTOUT ="
+                + " solid hole with a dithered feather. Mario always stays visible.");
+        controls.addView(hint);
+
+        addFxSlider("Occl radius", 20, 600, 150, " px", 275);
+        addFxSlider("Occl feather", 0, 100, 35, " %", 276);
+        addFxSlider("Occl dither", 0, 100, 50, " %", 277);
+        addFxSlider("Occl depth bias", 0, 100, 5, "", 278);
+    }
+
+    private void setOcclusionMode(int mode) {
+        final String[] names = { "OFF", "DROPOUT", "ALPHA", "CUTOUT" };
+        occlMode = mode & 3;
+        nativeSetSSFX(274, occlMode);
+        if (occlButton != null) {
+            occlButton.setText("OCCLUSION: " + names[occlMode]);
+            occlButton.setTextColor(occlMode == 0 ? 0xFF888888 : 0xFF66CCFF);
+        }
+    }
+
     private void applyFxToggle(TextView b, String name, int key, boolean on) {
         b.setText(name + ": " + (on ? "ON" : "OFF"));
         b.setTextColor(on ? 0xFF66FF99 : 0xFF888888);
@@ -4242,6 +4288,12 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                     raysOn = !raysOn;
                     if (raysToggle != null) applyFxToggle(raysToggle, "CREPUSCULAR RAYS", 250, raysOn);
                     else nativeSetSSFX(250, raysOn ? 1 : 0);
+                });
+                break;
+            case "OCCLUSION":
+                runOnUiThread(() -> {
+                    setOcclusionMode((occlMode + 1) % 4);
+                    Log.i(TAG, "OCCLUSION mode=" + occlMode);
                 });
                 break;
             case "FXDBG":

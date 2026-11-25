@@ -33,6 +33,27 @@ see README "Crepuscular rays"). Still open:
   stills are subtle. A `ptc` action that parks one light low behind a pillar
   would show the shafts off better than the free-look orbit.
 
+### Occluder punch-through: quality follow-ups
+Shipped 2026-11-25 (scene-shader circular discard, CAMERA > SETTINGS
+OCCLUSION group, `fx 274`-`278`; see README "Occluder punch-through"). Limits
+worth revisiting:
+
+- **Radius is in eye pixels, not a fraction of the eye height.** The 2D/3D
+  panel anamorphic stretch is compensated (`eye_width / full_width`), so one
+  value looks the same in both, but it is still absolute: another resolution or
+  panel would need retuning.
+- **Screen-space dither can alias** when the occluder moves fast; it is static
+  per pixel by design (no crawl when still). A 2x2 rotated-grid hash would
+  soften it at the cost of a more visible pattern.
+- **Only the colour scene pass is punched.** The portal relay image and the
+  shadow map still see the occluder, so a portal seen through the hole or a
+  shadow cast through it is not corrected.
+- **PTC per-object ghosting is a separate mechanism.** The wall-hide is
+  suppressed when OCCLUSION is on, but `s_ptc_fade` object ghosting still
+  layers on top in the cube/wall demos.
+- **No per-material opt-out.** Everything nearer than Mario is eligible,
+  including translucent geometry and the skybox if it were ever in front.
+
 ### Emissive particles + bloom
 Investigated 2026-11-25 at the user's question "can we make jetpack particles
 emissive?" — **nothing was implemented**.

@@ -293,6 +293,41 @@ touch overlay:
   tablet's own vibrator). Test with
   `adb shell $B --es cmd ptc --es action rumble`.
 
+### Occluder punch-through (CAMERA > SETTINGS)
+
+Geometry between the camera and Mario normally hides him completely. The
+**OCCLUSION** group on CAMERA > SETTINGS (next to **WALL NOCLIP**, the other
+"what happens to the thing in front of Mario" control) replaces that with an
+optional screen-space hole in the occluder. Mario is never hidden or faded by
+this feature in any mode; only the occluder is affected.
+
+| Mode | Button | Behaviour |
+|---|---|---|
+| 0 | `OFF` | nothing special; occluders render normally and can hide Mario |
+| 1 | `DROPOUT` | occluders are discarded 100 % inside a hard-edged circle around Mario |
+| 2 | `ALPHA` | occluders are partially dithered inside the circle (default 50 %) |
+| 3 | `CUTOUT` | solid hole in the middle, dithered across the radial feather |
+
+The test runs per fragment in the generated scene shader (`gfx_opengl.c`), so
+there is no extra pass and mode 0 costs one coherent branch. With `d` the
+normalised screen distance from Mario, `cov = 1 - smoothstep(1-feather, 1, d)`
+and `hash` a static interleaved-gradient noise on `gl_FragCoord.xy`, mode 2
+discards when `hash < cov * cover` and mode 3 when `hash < cov`. Only fragments
+**nearer than Mario** are touched (`gl_FragCoord.z < depth - bias`), and HUD
+rects (clip z = -1) are excluded, so his own faces, everything behind him, the
+UI and the portal image are untouched. The centre and depth are projected per
+eye from each eye's view-projection (including shear/toe/flip) once per frame;
+on the Leia panel one 1280-wide eye is stretched across the 2560-wide display,
+so `x` is compensated by `eye_width / full_width` and the hole is round in both
+2D and 3D.
+
+Sliders: radius (`fx 275`, target pixels), feather (`276`, % of radius), dither
+coverage (`277`, % for ALPHA) and depth bias (`278`). `ptc_format_status()`
+reports `occl=mode,radius,feather`. With WALL NOCLIP on, the PTC demo's
+whole-wall hide is suppressed while OCCLUSION is on, so the wall stays visible
+and the circular hole is the only mechanism. Proof stills (four modes, stereo
+and camwall) live in `/media/share/tmp/artifacts/sm64/occlusion/`.
+
 ---
 
 ## Controls
@@ -342,6 +377,7 @@ while the UI range is replayed so the HUD does not sway.
 | Realtime dynamic shadows | **on** | SHADOW tab / `cmd toggle --es name SHADOW` |
 | SSRTX reflections | **off** (opt-in) | SSRTX tab / `cmd toggle --es name SSRTX` |
 | Crepuscular rays | **off** (opt-in) | RAYS tab / `cmd toggle --es name RAYS` |
+| Occluder punch-through | **off** (mode 0) | CAMERA > SETTINGS / `fx 274` |
 | MXAO / C.DOF / SSGI | off | their tabs |
 
 - **Stay in level after a star** (default on): normal stars take the vanilla
@@ -559,6 +595,7 @@ the auto distance), SSGI `21`-`25`, SSRTX `70`-`77`, crepuscular rays
 | motion vectors | `140` source (1 = per-vertex, 0 = camera only), `141` shutter deg, `142` sub-steps (1-16), `143` max blur px (0-128), `144` velocity res 1/n, `145` update every N frames, `146` sub-step jitter %, `147` depth reject %, `148` velocity clamp px (4-300), `149` heatmap style (0 magnitude, 1 direction, 2 segments), `240` vector-bound mode (0 off, 1 one sample, 2 3x3) |
 | dynamic lights | `103` count, `104` shadows, `105` intensity, `106` shadow steps, `120`-`122` / `124`-`126` light 0/1 RGB |
 | crepuscular rays | `250` on, `251` intensity %, `252` march length %, `253` decay per step %, `254` sample weight %, `255` samples (8-32), `256` brightness gate %, `257` source light (0-3, 4 = sun), `258` start jitter %, `259` debug (1 shafts, 2 visibility), `260` occlusion bias % |
+| occluder punch-through | `274` mode (0 off, 1 dropout, 2 alpha, 3 cutout), `275` radius px, `276` feather %, `277` dither coverage %, `278` depth bias |
 | light probes | `110` show, `111` spacing, `113` radius, `114` resolution, `115` grid cols (X), `116` grid rows (Y), `117` grid repeats (Z); `112` sets all three axes at once |
 | bokeh / DOF | `160` kernel, `161` aspect %, `162` blades, `163` rotation, `164` anamorphic %, `165` highlight %, `166` cat eye % |
 | rate limit | `200` on, `201` target fps, `202` adaptive, `203` reset stats |
@@ -596,7 +633,9 @@ Tabs:
   - VIEWS: all debug views (OFF, AO, CoC, GI, SSRTX, LIGHTS, L-ACCUM,
     PROBE VIS, L-DIST, MOTION VECTORS) plus a small reorderable layer stack
     (ZBUF, WIRE) with per-layer on/off.
-  - CAMERA opens a third strip: STEREO / SETTINGS.
+  - CAMERA opens a third strip: STEREO / SETTINGS. SETTINGS carries the
+    OCCLUSION group (mode 0-3, radius, feather, dither, depth bias) directly
+    under WALL NOCLIP.
 - **DEBUG** — MOVE / PORTAL / BALL / SYS / LOGS. SYS ends with two sections:
   HUD (GAME HUD, DEBUG CAPTIONS, TOUCH CONTROLS) and PERFORMANCE
   (PERF MONITOR, FRAME GRAPH, FPS COUNTER — all on by default). LOGS is the

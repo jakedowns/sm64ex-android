@@ -36,6 +36,19 @@
 
 #include "game/portal.h"
 
+/* Occluder punch-through (gfx_opengl.c): the scene shader discards fragments
+ * that sit between the camera and Mario inside a screen-space circle.  The
+ * view-projection used for the projection is this frame's camera view (set by
+ * rendering_graph_node.c) times the perspective projection; the per-eye
+ * shear/toe/flip is applied in gfx_opengl.c when the uniforms are uploaded. */
+extern int ptc_occlusion_mario_point(float out[3]);
+#ifdef __ANDROID__
+extern void gfx_opengl_occluder_geo(const float vp[4][4], const float centre[3],
+                                    const float front[3], int valid);
+#endif
+float gfx_occluder_view_mtx[4][4];
+float gfx_occluder_cam_pos[3];
+
 /* Through-portal view: the portal pass is a second execution of the scene
  * display list with a camera-space transform. */
 int gfx_portal_pass = 0;
@@ -1385,6 +1398,39 @@ static void gfx_cam_tracking_apply(float m[4][4]) {
     memcpy(m, out, sizeof(out));
 }
 
+/* Hand the current camera view * projection and Mario's centre/front points to
+ * the scene-shader occluder.  The "front" point is 45 units from his centre
+ * towards the eye, so his own camera-facing polygons are not treated as
+ * occluders.  Called when the perspective projection is loaded, once per
+ * frame (and once per eye pass in stereo). */
+#ifdef __ANDROID__
+static void gfx_occluder_update_geo(void) {
+    float vp[4][4];
+    float w[3], f[3];
+    float dx, dy, dz, len;
+
+    gfx_matrix_mul(vp, gfx_occluder_view_mtx, rsp.P_matrix);
+    if (!ptc_occlusion_mario_point(w)) {
+        gfx_opengl_occluder_geo(vp, w, w, 0);
+        return;
+    }
+    dx = gfx_occluder_cam_pos[0] - w[0];
+    dy = gfx_occluder_cam_pos[1] - w[1];
+    dz = gfx_occluder_cam_pos[2] - w[2];
+    len = sqrtf(dx * dx + dy * dy + dz * dz);
+    if (len > 1.0f) {
+        f[0] = w[0] + dx * (45.0f / len);
+        f[1] = w[1] + dy * (45.0f / len);
+        f[2] = w[2] + dz * (45.0f / len);
+    } else {
+        f[0] = w[0];
+        f[1] = w[1];
+        f[2] = w[2];
+    }
+    gfx_opengl_occluder_geo(vp, w, f, 1);
+}
+#endif
+
 static void gfx_sp_matrix(uint8_t parameters, const int32_t *addr) {
     float matrix[4][4];
 #if 0
@@ -1410,6 +1456,15 @@ static void gfx_sp_matrix(uint8_t parameters, const int32_t *addr) {
                 memcpy(gfx_last_persp_proj, matrix, sizeof(matrix));
                 gfx_portal_apply_near_plane(rsp.P_matrix);
             }
+            /* The scene's perspective projection is loaded once per frame /
+             * eye pass; this is where the occluder circle's projection is
+             * refreshed. */
+#ifdef __ANDROID__
+            if (rsp.proj_is_perspective && !s_vel_pass && !gfx_shadow_pass
+                && !gfx_portal_pass && !gfx_ui_pass) {
+                gfx_occluder_update_geo();
+            }
+#endif
         } else {
             gfx_matrix_mul(rsp.P_matrix, matrix, rsp.P_matrix);
         }
@@ -2787,6 +2842,13 @@ void gfx_run(Gfx *commands) {
     /* Through-portal view: render the scene once from the mirrored camera
      * into a mono FBO before the eye passes.  The portal ellipse is drawn as
      * a textured, depth-tested overlay per eye afterwards. */
+    if (g_portal_view.active || g_portal_view2.active) {
+        /* Drop the bound program so the mirrored pass cannot inherit the main
+         * camera's occluder circle (gfx_opengl forces it off for portal
+         * passes, which only takes effect on a fresh shader load). */
+        gfx_rapi->unload_shader(rendering_state.shader_program);
+        rendering_state.shader_program = NULL;
+    }
     for (int pi = 0; pi < 2; pi++) {
         const PortalViewState *vs = (pi == 0) ? &g_portal_view : &g_portal_view2;
         int pw, ph, eyes;

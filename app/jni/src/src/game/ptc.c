@@ -127,6 +127,20 @@ static const Gfx s_ptc_empty_dl[] = {
     gsSPEndDisplayList(),
 };
 
+/* Occluder punch-through (gfx_opengl.c scene shader): Mario's mid-body point in
+ * world space, projected per eye in gfx_pc.c.  Feet + 90 keeps the circle
+ * centred on his body rather than the floor. */
+int ptc_occlusion_mario_point(float out[3]) {
+    struct MarioState *m = gMarioState;
+    if (m == NULL || out == NULL) {
+        return 0;
+    }
+    out[0] = m->pos[0];
+    out[1] = m->pos[1] + 90.0f;
+    out[2] = m->pos[2];
+    return 1;
+}
+
 /* GEO_ASM entry point: pick the opaque or translucent variant for the object
  * identified by the node parameter. */
 Gfx *ptc_geo_obj(s32 callContext, struct GraphNode *node, UNUSED void *context) {
@@ -168,8 +182,13 @@ Gfx *ptc_geo_obj(s32 callContext, struct GraphNode *node, UNUSED void *context) 
     id -= 17;
     if (id >= 0 && id < 4) {
         extern int gfx_cam_noclip;
-        if (gfx_cam_noclip && (g_ptc_fade_mask & (1u << (10 + id)))) {
-            /* The camera is through this wall: hide it completely. */
+        extern int gfx_opengl_ssfx_get(int which);
+        if (gfx_cam_noclip && gfx_opengl_ssfx_get(261) == 0
+            && (g_ptc_fade_mask & (1u << (10 + id)))) {
+            /* The camera is through this wall: hide it completely.  When the
+             * occluder punch-through is on, keep the wall and let the scene
+             * shader cut a hole around Mario; layering the two mechanisms
+             * would leave nothing to punch through. */
             return (Gfx *) s_ptc_empty_dl;
         }
         return (Gfx *)((g_ptc_fade_mask & (1u << (10 + id)))
@@ -4369,7 +4388,7 @@ void ptc_format_status(char *buf, int len) {
              "chain=%d,%d,0x%x,%d,%d cmode=%d loop=%d "
              "face=%.1f,%.1f,%.1f anim=%d mh=%.1f remap=%d cdbg=%d,%d,%d,%d,%d walk=%d,%d,%d "
              "mpw=%d,%d,%d,%d,%d,%d,%d fc=%d,%d,%d,%d cg=%d,%.0f,%.0f,%.0f,0x%x "
-             "slowmo=%d,%d,%d rays=%d,%d,%d",
+             "slowmo=%d,%d,%d rays=%d,%d,%d occl=%d,%d,%d",
              gCurrLevelNum, gCurrAreaIndex, s_phase, s_testMode, s_testActive, s_failed, s_failReason,
              s_starCollected[0], s_starCollected[1], ptc_star_visible(), portal_count(), s_shotA, s_shotB, g_portal_debug,
              g_portal_view.active, g_portal_view.source, portal_view_enabled(),
@@ -4438,7 +4457,9 @@ void ptc_format_status(char *buf, int len) {
              s_chainGoomba[0] ? (unsigned) s_chainGoomba[0]->header.gfx.node.flags : 0u,
              g_sim_slow_div, g_sim_interp, g_sim_present_t1,
              gfx_opengl_ssfx_get(250), gfx_opengl_ssfx_get(251),
-             gfx_opengl_ssfx_get(255));
+             gfx_opengl_ssfx_get(255),
+             gfx_opengl_ssfx_get(261), gfx_opengl_ssfx_get(262),
+             gfx_opengl_ssfx_get(263));
 
     {
         size_t used = strlen(buf);

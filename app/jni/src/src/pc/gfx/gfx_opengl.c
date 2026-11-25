@@ -9,6 +9,7 @@ extern int gfx_stereo_enabled;
 extern int gfx_stereo_eye;
 extern int gfx_single_eye;
 extern int gfx_stereo_eye_width;
+extern int gfx_stereo_full_w;
 #ifdef __ANDROID__
 #include <android/log.h>
 #endif
@@ -63,6 +64,30 @@ extern int gfx_splat_softness;
 extern int gfx_splat_density;
 extern int gfx_splat_shape;
 
+/* Occluder punch-through.  The scene fragment shader discards occluding
+ * fragments inside a screen-space circle around Mario.  gfx_pc.c supplies the
+ * frame's camera view*projection and Mario's centre/front world points; the
+ * per-eye shear/toe/flip is applied here when the uniforms are uploaded. */
+extern int gfx_ui_pass;
+extern int gfx_portal_pass;
+extern int gfx_stereo_enabled;
+extern int gfx_stereo_2d;
+extern float gfx_eye_shear[2];
+extern float gfx_eye_toe[2];
+extern int gfx_eye_flip[2];
+static float s_occl_vp[4][4];
+static float s_occl_centre[3];
+static float s_occl_front[3];
+static int   s_occl_geo_valid;
+/* Dials (fx keys 274-278). */
+static int   s_occl_mode = 0;        /* 274: 0 off, 1 dropout, 2 partial, 3 cutout */
+static int   s_occl_radius = 150;    /* 275: circle radius, target pixels */
+static int   s_occl_feather = 35;    /* 276: edge feather % of the radius */
+static int   s_occl_cover = 50;      /* 277: dither coverage % (mode 2) */
+static int   s_occl_bias = 5;        /* 278: depth bias 0.0002 per unit */
+/* Flat path: the game's last scene viewport (gl_FragCoord pixels). */
+static int   s_occl_vp_x = 0, s_occl_vp_y = 0, s_occl_vp_w = 1, s_occl_vp_h = 1;
+
 struct ShaderProgram {
     uint32_t shader_id;
     GLuint opengl_program_id;
@@ -76,6 +101,14 @@ struct ShaderProgram {
     GLint splat_opacity_loc;
     GLint splat_softness_loc;
     GLint splat_shape_loc;
+    GLint occl_mode_loc;
+    GLint occl_centre_loc;
+    GLint occl_radius_loc;
+    GLint occl_depth_loc;
+    GLint occl_feather_loc;
+    GLint occl_cover_loc;
+    GLint occl_bias_loc;
+    GLint occl_aspect_loc;
     uint8_t attrib_sizes[7];
     uint8_t num_attribs;
     bool used_noise;
@@ -116,6 +149,8 @@ static void gfx_opengl_vertex_array_set_attribs(struct ShaderProgram *prg) {
     }
 }
 
+static void gfx_opengl_set_occluder_uniforms(struct ShaderProgram *prg);
+
 static inline void gfx_opengl_set_shader_uniforms(struct ShaderProgram *prg) {
     if (prg->used_noise)
         glUniform1f(prg->uniform_locations[4], (float)frame_count);
@@ -129,6 +164,9 @@ static inline void gfx_opengl_set_shader_uniforms(struct ShaderProgram *prg) {
         glUniform1f(prg->splat_softness_loc, gfx_splat_softness / 100.0f);
     if (prg->splat_shape_loc >= 0)
         glUniform1f(prg->splat_shape_loc, gfx_splat_shape ? 1.0f : 0.0f);
+#ifdef __ANDROID__
+    gfx_opengl_set_occluder_uniforms(prg);
+#endif
 }
 
 static inline void gfx_opengl_set_texture_uniforms(struct ShaderProgram *prg, const int tile) {
@@ -281,8 +319,11 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint32_t shad
     bool do_mix[2] = { c[0][1] == c[0][3], c[1][1] == c[1][3] };
     bool color_alpha_same = (shader_id & 0xfff) == ((shader_id >> 12) & 0xfff);
 
-    char vs_buf[1024];
-    char fs_buf[2048];
+    char vs_buf[2048];
+    /* The generated fragment shader (combiner formula + 3-point filtering +
+     * splat block + occluder block) is close to the old 2 KB limit; overflow
+     * here corrupts the stack on the render thread. */
+    char fs_buf[8192];
     size_t vs_len = 0;
     size_t fs_len = 0;
     size_t num_floats = 4;
@@ -338,6 +379,25 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint32_t shad
                                   "uniform float uSplatOpacity;\n"
                                   "uniform float uSplatSoftness;\n"
                                   "uniform float uSplatShape;");
+    /* Occluder punch-through: discards fragments between the camera and Mario
+     * inside a screen-space circle.  Values are per eye; mode 0 makes the
+     * whole block a single coherent branch that is false for every fragment. */
+    append_line(fs_buf, &fs_len, "uniform float uOccludeMode;");
+    append_line(fs_buf, &fs_len, "uniform vec2 uOccludeCentre;");
+    append_line(fs_buf, &fs_len, "uniform float uOccludeRadius;");
+    append_line(fs_buf, &fs_len, "uniform float uOccludeDepth;");
+    append_line(fs_buf, &fs_len, "uniform float uOccludeFeather;");
+    append_line(fs_buf, &fs_len, "uniform float uOccludeCover;");
+    append_line(fs_buf, &fs_len, "uniform float uOccludeBias;");
+    /* x compensation for the panel's single-view stretch (2D mode shows one
+     * 1280-wide eye stretched across the 2560-wide panel). */
+    append_line(fs_buf, &fs_len, "uniform float uOccludeAspect;");
+    /* Interleaved gradient noise: static per pixel (no frame term), so the
+     * dither pattern does not crawl when the scene is still. */
+    append_line(fs_buf, &fs_len,
+            "float occl_hash(vec2 p) {\n"
+            "  return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));\n"
+            "}");
     append_line(fs_buf, &fs_len, "varying float vSplatSeed;");
 
     if (used_textures[0] || used_textures[1]) {
@@ -470,6 +530,31 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint32_t shad
     append_line(fs_buf, &fs_len, "float edge = 1.0 - r2;");
     append_line(fs_buf, &fs_len, "outColor.a = uSplatOpacity * edge * exp(-r2 * (0.5 + 5.0 * uSplatSoftness));");
     append_line(fs_buf, &fs_len, "}");
+    /* Occluder punch-through.  Runs last, on fragments that would reach the
+     * framebuffer.  Only fragments *nearer* than Mario are affected
+     * (gl_FragCoord.z < uOccludeDepth - bias), so Mario's own faces and
+     * everything behind him are untouched.  The z > 0.0001 guard excludes HUD
+     * texture rectangles, which are emitted at clip z = -1. */
+    append_line(fs_buf, &fs_len,
+            "if (uOccludeMode > 0.5 && gl_FragCoord.z > 0.0001 && gl_FragCoord.z < uOccludeDepth - uOccludeBias) {");
+    append_line(fs_buf, &fs_len,
+            "  vec2 occl_q = gl_FragCoord.xy - uOccludeCentre;");
+    append_line(fs_buf, &fs_len,
+            "  occl_q.x /= max(uOccludeAspect, 0.01);");
+    append_line(fs_buf, &fs_len,
+            "  float occl_d = length(occl_q / max(uOccludeRadius, 1.0));");
+    append_line(fs_buf, &fs_len,
+            "  if (uOccludeMode < 1.5) { if (occl_d < 1.0) discard; }");
+    append_line(fs_buf, &fs_len,
+            "  else if (occl_d < 1.0) {");
+    append_line(fs_buf, &fs_len,
+            "    float occl_cov = 1.0 - smoothstep(1.0 - uOccludeFeather, 1.0, occl_d);");
+    append_line(fs_buf, &fs_len,
+            "    float occl_k = uOccludeMode < 2.5 ? occl_cov * uOccludeCover : occl_cov;");
+    append_line(fs_buf, &fs_len,
+            "    if (occl_hash(gl_FragCoord.xy) < occl_k) discard;");
+    append_line(fs_buf, &fs_len, "  }");
+    append_line(fs_buf, &fs_len, "}");
     append_line(fs_buf, &fs_len, "gl_FragColor = outColor;");
     append_line(fs_buf, &fs_len, "}");
 
@@ -558,6 +643,14 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint32_t shad
     prg->splat_opacity_loc = glGetUniformLocation(shader_program, "uSplatOpacity");
     prg->splat_softness_loc = glGetUniformLocation(shader_program, "uSplatSoftness");
     prg->splat_shape_loc = glGetUniformLocation(shader_program, "uSplatShape");
+    prg->occl_mode_loc = glGetUniformLocation(shader_program, "uOccludeMode");
+    prg->occl_centre_loc = glGetUniformLocation(shader_program, "uOccludeCentre");
+    prg->occl_radius_loc = glGetUniformLocation(shader_program, "uOccludeRadius");
+    prg->occl_depth_loc = glGetUniformLocation(shader_program, "uOccludeDepth");
+    prg->occl_feather_loc = glGetUniformLocation(shader_program, "uOccludeFeather");
+    prg->occl_cover_loc = glGetUniformLocation(shader_program, "uOccludeCover");
+    prg->occl_bias_loc = glGetUniformLocation(shader_program, "uOccludeBias");
+    prg->occl_aspect_loc = glGetUniformLocation(shader_program, "uOccludeAspect");
 
     gfx_opengl_load_shader(prg);
 
@@ -718,6 +811,114 @@ static const char *s_comp_fs =
     "  else if (uMode > 0.5) gl_FragColor = uSolid;\n"
     "  else gl_FragColor = vec4(t.rgb * (1.0 - a) + urgb, 1.0);\n"
     "}\n";
+
+/* Project a world point through the frame's view*projection, then apply the
+ * same per-eye shear/toe/flip the scene pass bakes into its projection.
+ * Row-vector convention: v' = v * M. */
+static int occl_project(const float p[3], float out[3], int eye) {
+    const float (*m)[4] = (const float (*)[4]) s_occl_vp;
+    float x = p[0] * m[0][0] + p[1] * m[1][0] + p[2] * m[2][0] + m[3][0];
+    float y = p[0] * m[0][1] + p[1] * m[1][1] + p[2] * m[2][1] + m[3][1];
+    float z = p[0] * m[0][2] + p[1] * m[1][2] + p[2] * m[2][2] + m[3][2];
+    float w = p[0] * m[0][3] + p[1] * m[1][3] + p[2] * m[2][3] + m[3][3];
+
+    if (w <= 1.0e-5f) {
+        return 0;
+    }
+    out[0] = x / w;
+    out[1] = y / w;
+    out[2] = z / w;
+    if (gfx_stereo_enabled && !gfx_stereo_2d) {
+        out[0] += gfx_eye_shear[eye] + gfx_eye_toe[eye] * out[2];
+        if (gfx_eye_flip[eye]) {
+            out[1] = -out[1];
+        }
+    }
+    return 1;
+}
+
+/* Push the per-eye occluder circle into one scene program.  Called on every
+ * shader load and again when the frame's projection is captured, so a program
+ * that stays bound across frames or eyes still gets fresh values. */
+static void gfx_opengl_set_occluder_uniforms(struct ShaderProgram *prg) {
+    int eye;
+    float mode;
+    float c[3], f[3];
+
+    if (prg == NULL || prg->occl_mode_loc < 0) {
+        return;
+    }
+    /* Never punch holes in the HUD, the portal image or the shadow pass. */
+    eye = gfx_stereo_enabled ? (gfx_stereo_eye & 1) : 0;
+    mode = (gfx_ui_pass || gfx_portal_pass) ? 0.0f : (float) s_occl_mode;
+    if (!s_occl_geo_valid
+        || !occl_project(s_occl_centre, c, eye)
+        || !occl_project(s_occl_front, f, eye)) {
+        mode = 0.0f;
+    }
+    glUniform1f(prg->occl_mode_loc, mode);
+    if (mode <= 0.5f) {
+        return;
+    }
+    {
+        float px, py;
+        if (s_fbo_mode) {
+            /* gl_FragCoord lives in the eye FBO; the scene is drawn into the
+             * canvas sub-rect (see gfx_opengl_stereo_begin). */
+            px = (float) s_canvas_x + (c[0] * 0.5f + 0.5f) * (float) s_canvas_w;
+            py = (float) s_canvas_y + (c[1] * 0.5f + 0.5f) * (float) s_canvas_h;
+        } else {
+            px = (float) s_occl_vp_x + (c[0] * 0.5f + 0.5f) * (float) s_occl_vp_w;
+            py = (float) s_occl_vp_y + (c[1] * 0.5f + 0.5f) * (float) s_occl_vp_h;
+        }
+        glUniform2f(prg->occl_centre_loc, px, py);
+        glUniform1f(prg->occl_radius_loc, (float) s_occl_radius);
+        glUniform1f(prg->occl_depth_loc, f[2] * 0.5f + 0.5f);
+        glUniform1f(prg->occl_feather_loc, (float) s_occl_feather / 100.0f);
+        glUniform1f(prg->occl_cover_loc, (float) s_occl_cover / 100.0f);
+        glUniform1f(prg->occl_bias_loc, (float) s_occl_bias * 0.0002f);
+        /* The Leia panel interlaces one 1280-wide eye across the 2560-wide
+         * panel, so a screen-space circle must be narrower in x inside the
+         * eye to look round on the panel.  The flat path is 1:1. */
+        {
+            float aspect = 1.0f;
+            if (gfx_stereo_enabled && gfx_stereo_full_w > 0
+                && gfx_stereo_eye_width > 0) {
+                aspect = (float) gfx_stereo_eye_width / (float) gfx_stereo_full_w;
+            }
+            glUniform1f(prg->occl_aspect_loc, aspect);
+        }
+        /* One-line setup probe for headless verification. */
+        {
+            static int logged;
+            if (logged < 200) {
+                logged++;
+                __android_log_print(ANDROID_LOG_INFO, "SM64OCCL",
+                        "eye=%d mode=%d px=%.1f py=%.1f depth=%.4f r=%d a=%.2f",
+                        eye, s_occl_mode, px, py,
+                        f[2] * 0.5f + 0.5f, s_occl_radius,
+                        gfx_stereo_enabled && gfx_stereo_full_w > 0
+                            ? (float) gfx_stereo_eye_width / (float) gfx_stereo_full_w
+                            : 1.0f);
+            }
+        }
+    }
+}
+
+/* Called from gfx_pc.c when the scene's perspective projection is loaded. */
+void gfx_opengl_occluder_geo(const float vp[4][4], const float centre[3],
+                             const float front[3], int valid) {
+    memcpy(s_occl_vp, vp, sizeof(s_occl_vp));
+    memcpy(s_occl_centre, centre, sizeof(s_occl_centre));
+    memcpy(s_occl_front, front, sizeof(s_occl_front));
+    s_occl_geo_valid = valid;
+    /* Mid-scene a scene program is bound; refresh it now so the uniforms are
+     * never a frame (or an eye) stale when the program is reused. */
+    if (opengl_prg != NULL) {
+        gfx_opengl_set_occluder_uniforms(opengl_prg);
+    }
+}
+
 
 /* ---------------- Screen-space FX (MXAO / CinematicDOF / SSGI-lite) --------
  * A single fullscreen pass runs per eye after the scene is rendered:
@@ -1894,6 +2095,14 @@ void gfx_opengl_ssfx_set(int which, int value) {
         case 258: s_ray_jitter = value < 0 ? 0 : (value > 100 ? 100 : value); break;
         case 259: s_ray_debug = value < 0 ? 0 : (value > 2 ? 2 : value); break;
         case 260: s_ray_bias = value < 0 ? 0 : (value > 50 ? 50 : value); break;
+        /* Occluder punch-through: discard occluders between camera and Mario
+         * inside a screen-space circle.  274 = mode, 275 radius px,
+         * 276 feather %, 277 dither coverage %, 278 depth bias. */
+        case 274: s_occl_mode = value < 0 ? 0 : (value > 3 ? 3 : value); break;
+        case 275: s_occl_radius = value < 20 ? 20 : (value > 600 ? 600 : value); break;
+        case 276: s_occl_feather = value < 0 ? 0 : (value > 100 ? 100 : value); break;
+        case 277: s_occl_cover = value < 0 ? 0 : (value > 100 ? 100 : value); break;
+        case 278: s_occl_bias = value < 0 ? 0 : (value > 100 ? 100 : value); break;
         /* Rate limiter (lives in gfx_sdl2.c). */
         case 200: { extern int gfx_rate_enabled; gfx_rate_enabled = value != 0; break; }
         case 201: { extern int gfx_rate_target_fps; gfx_rate_target_fps = value < 0 ? 0 : (value > 240 ? 240 : value); break; }
@@ -2022,6 +2231,11 @@ int gfx_opengl_ssfx_get(int which) {
         case 258: return s_ray_jitter;
         case 259: return s_ray_debug;
         case 260: return s_ray_bias;
+        case 274: return s_occl_mode;
+        case 275: return s_occl_radius;
+        case 276: return s_occl_feather;
+        case 277: return s_occl_cover;
+        case 278: return s_occl_bias;
         case 200: { extern int gfx_rate_enabled; return gfx_rate_enabled; }
         case 201: { extern int gfx_rate_target_fps; return gfx_rate_target_fps; }
         case 202: { extern int gfx_rate_adaptive; return gfx_rate_adaptive; }
@@ -3856,6 +4070,12 @@ static void gfx_opengl_set_viewport(int x, int y, int width, int height) {
         gfx_stereo_vp[gfx_stereo_eye][0] = ox;
         gfx_stereo_vp[gfx_stereo_eye][1] = width;
     }
+    /* Flat path occluder mapping: remember the scene viewport so NDC can be
+     * turned into gl_FragCoord pixels without a per-frame GL query. */
+    s_occl_vp_x = ox;
+    s_occl_vp_y = y;
+    s_occl_vp_w = width;
+    s_occl_vp_h = height;
     glViewport(ox, y, width, height);
 }
 

@@ -543,7 +543,7 @@ Java_com_vdavid003_sm64port_sm64portActivity_nativePtcCommand(JNIEnv *env, jclas
 
 JNIEXPORT jstring JNICALL
 Java_com_vdavid003_sm64port_sm64portActivity_nativePtcStatus(JNIEnv *env, jclass clazz) {
-    char buf[2048];
+    char buf[4096];
     (void) clazz;
     ptc_format_status(buf, (int) sizeof(buf));
     return (*env)->NewStringUTF(env, buf);
