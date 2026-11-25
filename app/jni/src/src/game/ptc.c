@@ -50,6 +50,14 @@ extern int gfx_splat_target;
 extern int gfx_splat_shape;
 extern int gfx_splat_density;
 
+/* HFR held-object scale telemetry + A/B switch (rendering_graph_node.c). */
+extern int gfx_hfr_scale_debug;
+extern int gfx_hfr_slerp;
+extern int gfx_hfr_force_alpha;
+extern void gfx_hfr_scale_set(int on);
+extern void gfx_hfr_scale_dump(void);
+extern int gfx_hfr_scale_summary(char *buf, int len);
+
 /* Per-object occluder fade.  Bit N = fade object N (0..8 platforms, 9 ramp,
  * 10..13 room walls), set by ptc_occlusion_update(). */
 u32 g_ptc_fade_mask = 0;
@@ -430,6 +438,10 @@ static char s_pendingCommand[24];
 static volatile int s_pendingCommandReady;
 static void ptc_apply_command(const char *action);
 static void ptc_goomba_update(void);
+static void ptc_bowser_start(void);
+static void ptc_bowser_stop(void);
+static struct Object *s_bowserHeld;
+static int s_bowserHeldOn;
 static void ptc_annex_update(void);
 static void ptc_pov_apply(void);
 static int  s_pov_shot;
@@ -1765,6 +1777,29 @@ void ptc_mario_input_override(struct MarioState *m) {
     }
     s_inputHookCalls++;
 
+    if (s_bowserHeldOn) {
+        /* Hold the tail-spin: re-assert the held state and the spin speed every
+         * tick so the action cannot decay or be cancelled by other input. */
+        if (s_bowserHeld == NULL
+            || s_bowserHeld->activeFlags == ACTIVE_FLAGS_DEACTIVATED) {
+            s_bowserHeldOn = 0;
+        } else {
+            if (m->heldObj != s_bowserHeld) {
+                m->heldObj = s_bowserHeld;
+                m->usedObj = s_bowserHeld;
+                s_bowserHeld->oHeldState = HELD_HELD;
+                s_bowserHeld->parentObj = m->marioObj;
+            }
+            m->marioBodyState->grabPos = GRAB_POS_BOWSER;
+            if (m->action != ACT_HOLDING_BOWSER && m->action != ACT_PICKING_UP_BOWSER) {
+                set_mario_action(m, ACT_HOLDING_BOWSER, 0);
+            }
+            m->angleVel[1] = 0x1000; /* 22.5 deg of yaw per 30 Hz tick */
+            m->input &= ~INPUT_B_PRESSED;
+            return;
+        }
+    }
+
     if (s_chainMode != 0) {
         /* The portal-loop phase hands control to the smoke-test rig, which
          * owns both the stick and the camera for its duration. */
@@ -2033,6 +2068,83 @@ static void ptc_goomba_update(void) {
 
     ptc_goomba_place(s_goombaIn, s_goombaX, s_goombaZ,
                      s_goombaDir < 0 ? 0x8000 : 0x0000);
+}
+
+/* ------------------------------------------------ held-Bowser HFR rig */
+/* Deterministic reproduction of the intro's tail-spin: spawn a Bowser on the
+ * open chamber floor and keep Mario in ACT_HOLDING_BOWSER at full spin speed,
+ * so the held-object matrix is rebuilt from a fast-rotating parent every tick.
+ * `ptc bowser` starts it, `ptc bowseroff` stops it.
+ * Paired with `ptc hfron` / `hfrdump` and `ptc hfrslerpoff` this is the A/B rig
+ * for the HFR scale pulse (see HFR-HELD-OBJECTS.md). */
+static void ptc_bowser_stop(void) {
+    struct MarioState *m = gMarioState;
+
+    if (m != NULL && s_bowserHeld != NULL && m->heldObj == s_bowserHeld) {
+        mario_drop_held_object(m);
+    }
+    if (s_bowserHeld != NULL) {
+        obj_mark_for_deletion(s_bowserHeld);
+    }
+    s_bowserHeld = NULL;
+    s_bowserHeldOn = 0;
+}
+
+static void ptc_bowser_start(void) {
+    struct MarioState *m = gMarioState;
+    Vec3f camPos = { 1150.0f, 520.0f, -1750.0f };
+    Vec3f camFocus = { 0.0f, 120.0f, -700.0f };
+    struct Object *b;
+    extern void custom_camera_set_freelook(int on, const Vec3f pos, const Vec3f focus);
+    extern void custom_camera_apply_mode(int mode);
+
+    if (m == NULL || m->marioObj == NULL) {
+        return;
+    }
+    ptc_bowser_stop();
+
+    /* Stop the other scripted rigs: only one may own Mario's input. */
+    s_testActive = 0;
+    s_testMode = 0;
+    s_calActive = 0;
+    s_portalWalk = 0;
+    s_mpw = 0;
+    s_chainMode = 0; /* CH_OFF */
+    s_annexMode = 0;
+
+    m->pos[0] = 0.0f;
+    m->pos[1] = 0.0f;
+    m->pos[2] = -800.0f;
+    m->vel[0] = m->vel[1] = m->vel[2] = 0.0f;
+    m->forwardVel = 0.0f;
+    m->faceAngle[0] = m->faceAngle[1] = m->faceAngle[2] = 0;
+    m->angleVel[1] = 0x1000;
+    vec3f_copy(m->marioObj->header.gfx.pos, m->pos);
+    vec3s_set(m->marioObj->header.gfx.angle, 0, 0, 0);
+
+    b = spawn_object_abs_with_rot(m->marioObj, 0, MODEL_BOWSER, bhvBowser, 0, 50, -800, 0, 0, 0);
+    if (b == NULL) {
+        snprintf(s_failReason, sizeof(s_failReason), "bowser spawn failed");
+        return;
+    }
+    b->oDrawingDistance = 20000.0f;
+    b->header.gfx.node.flags |= GRAPH_RENDER_ACTIVE;
+    vec3f_set(b->header.gfx.scale, 1.0f, 1.0f, 1.0f);
+    b->oBowserUnk10E = 0;
+    b->parentObj = m->marioObj;
+    b->oHeldState = HELD_HELD;
+
+    m->usedObj = b;
+    m->heldObj = b;
+    m->marioBodyState->grabPos = GRAB_POS_BOWSER;
+    set_mario_action(m, ACT_HOLDING_BOWSER, 0);
+
+    s_bowserHeld = b;
+    s_bowserHeldOn = 1;
+
+    custom_camera_apply_mode(3); /* CUSTOM: stable side view for stills */
+    custom_camera_set_freelook(1, camPos, camFocus);
+    gCameraMovementFlags &= ~CAM_MOVE_INIT_CAMERA;
 }
 
 /* --------------------------------------------------- portal POV test */
@@ -4144,6 +4256,32 @@ extern int gfx_cam_mode;
 extern int gfx_cam_mode;
         gfx_set_debug_note("GOOMBA: portal lemming loop (crossings)");
         ptc_goomba_start();
+    } else if (strcmp(action, "bowser") == 0 || strcmp(action, "bowserhold") == 0) {
+        extern void gfx_set_debug_note(const char *s);
+        gfx_set_debug_note("BOWSER: held tail-spin (HFR scale rig)");
+        ptc_bowser_start();
+    } else if (strcmp(action, "bowseroff") == 0) {
+        ptc_bowser_stop();
+    } else if (strcmp(action, "hfron") == 0) {
+        gfx_hfr_scale_set(1);
+    } else if (strcmp(action, "hfroff") == 0) {
+        gfx_hfr_scale_set(0);
+    } else if (strcmp(action, "hfrdump") == 0) {
+        gfx_hfr_scale_dump();
+    } else if (strcmp(action, "hfrslerpon") == 0) {
+        gfx_hfr_slerp = 1;
+    } else if (strcmp(action, "hfrslerpoff") == 0) {
+        gfx_hfr_slerp = 0;
+    } else if (strncmp(action, "hfralpha", 8) == 0) {
+        /* hfralpha = off, hfralpha0..1000 = force that alpha on every present
+         * (deterministic stills of the worst-case mid-tick blend). */
+        if (action[8] == '\0') {
+            gfx_hfr_force_alpha = -1;
+        } else {
+            int v = atoi(action + 8);
+
+            gfx_hfr_force_alpha = v < 0 ? 0 : (v > 1000 ? 1000 : v);
+        }
     } else if (strcmp(action, "scene") == 0) {
         ptc_scene_toggle();
     } else if (strcmp(action, "emptytest") == 0) {
@@ -4445,6 +4583,13 @@ void ptc_format_status(char *buf, int len) {
         if (used + 2 < (size_t)len) {
             buf[used++] = ' ';
             ptc_knob_dump(buf + used, len - (int)used);
+        }
+    }
+    {
+        size_t used = strlen(buf);
+        if (used + 2 < (size_t)len) {
+            buf[used++] = ' ';
+            gfx_hfr_scale_summary(buf + used, len - (int)used);
         }
     }
 }

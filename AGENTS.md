@@ -90,7 +90,9 @@ adb shell $B --es cmd busy --ei v 1         # BUSY/red (device lock does this)
 
 Useful PTC actions: `annex`, `cubetop`, `slam`, `groundslam`, `balltest`,
 `ballreset`, `ballequip`, `resetpad`, `portaltest`, `portalforce`,
-`portalauto`, `portalalign`, `portalblit`, `eyeL`, `eyeR`, `eyeOff`.
+`portalauto`, `portalalign`, `portalblit`, `eyeL`, `eyeR`, `eyeOff`,
+`bowser` (held tail-spin HFR rig), `hfron`/`hfroff`, `hfrdump`,
+`hfrslerpon`/`hfrslerpoff`, `hfralphaNNN`.
 
 ## Portal relay testing
 

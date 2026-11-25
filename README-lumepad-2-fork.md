@@ -141,6 +141,20 @@ uncapped** (default **120 Hz**, panel refresh matched on resume).
 - Snap guards: `gGlobalTimer` discontinuities (warps, area loads),
   object teleports, animation changes and culled frames snap instead of
   streaking.
+- Held objects use the holder's **previous root matrix** for the previous tick
+  (the old code blended against the local hand stack, which carries a 0.25
+  scale in Mario's holding pose, so a held object pulsed 25%→100% every tick).
+- Rotation-aware blend: a matrix that rotates more than ~1.6° per tick is
+  decomposed into translation + rotation + per-row scale, the rotation is
+  slerped and scale/translation are lerped. Blending the 16 floats directly
+  would shrink a fast spin by `cos(delta/2)` every tick (2.6% residual on a
+  held Bowser spun at 22.5°/tick); see
+  [`HFR-HELD-OBJECTS.md`](HFR-HELD-OBJECTS.md).
+- Held-object scale telemetry: `ptc hfron` logs one `SM64HFR` line per
+  presented frame, `ptc hfrdump` prints a window summary, and
+  `ptc hfrslerpoff` restores the old element-wise blend for A/B.
+  `scripts/hfr-bowser-capture.sh` + `scripts/hfr-scale-check.py` reproduce and
+  measure the tail-spin case.
 - HFR modes render one tick behind so frame spacing is even; 30 Hz mode adds no
   latency.
 - `INTERP` toggle for A/B comparison; `hfr=N/1` in the debug dump reports how
