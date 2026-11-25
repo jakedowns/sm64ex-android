@@ -39,8 +39,10 @@ float gfx_cam_height = 110.0f;       // look-at height above Mario's feet
 float gfx_cam_recentre_pct = 50.0f;  // recentre speed while running
 float gfx_cam_sens_pct = 100.0f;     // right-stick orbit sensitivity
 /* Custom camera: do not pull in when a wall is between Mario and the camera.
- * The occluding PTC wall is hidden instead (see ptc.c), so the view stays on
- * Mario.  Toggle in the CAMERA tab / adb key 52. */
+ * With OCCLUSION off the occluding PTC wall is hidden completely (see ptc.c),
+ * so the view stays on Mario; with OCCLUSION on (debug mode 1-3) the wall is
+ * kept and the scene shader punches a circle through it instead, which keeps
+ * the surroundings readable.  Toggle in the CAMERA tab / adb key 52. */
 int gfx_cam_noclip = 1;
 
 static s16 s_yaw;

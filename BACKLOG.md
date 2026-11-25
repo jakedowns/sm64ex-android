@@ -11,27 +11,21 @@ that is finished gets deleted here, not ticked.
 
 ## In progress
 
-### Held-object HFR scale pulse (Bowser tail spin)
-Investigated and fixed 2026-11-25 in worktree `bowser-scale` (not merged).
+### Shipped this wave (merged 2026-11-25)
+Rays (`6c55b1e`), the reduced-res denoiser, slow-motion interpolation, the
+emissive/bloom/GLOW work, the occluded-Mario punch-through and the HFR held-object
+fix are all in the main tree; the per-thread details are below and in the linked
+docs. What is genuinely still open is in "Planned, not started" and
+"Known bugs and limits".
+
+### Held-object HFR scale pulse (Bowser tail spin) — fixed
+Investigated and fixed 2026-11-25 in worktree `bowser-scale`.
 Two defects: the held object's previous matrix came from the local hand stack
 instead of the holder root (0.25 scale in the holding pose → a 25%–100% pulse
 every tick at HFR), and the element-wise 4×4 blend shrinks fast rotations by
 `cos(delta/2)` (2.6% residual). Both are fixed; telemetry and the
 `ptc bowser` / `ptc hfron` rig are described in
 [`HFR-HELD-OBJECTS.md`](HFR-HELD-OBJECTS.md).
-
-### Bowser scale pulses under HFR (held/gripped objects)
-Reported 2026-11-25, investigating in worktree `bowser-scale`.
-
-On the intro sequence, Bowser's model grows/shrinks frame to frame while Mario
-spins him by the tail. Hypothesis: HFR interpolation above 30 Hz, and probably
-any time Mario grips or holds an object (`geo_process_held_object`,
-`gCurrentGraphNodeHeldObject`). Candidates to prove or dismiss with telemetry:
-element-wise lerp of matrices that carry rotation x non-uniform scale; the held
-object's previous matrix coming from a different parent chain; `hfr_prev_valid`
-gaps making `prev := cur` intermittently; a genuine double application of
-`gfx.scale`. Telemetry: `SM64HFR` per-present lines plus a windowed scale
-summary (`ptc hfrdump`), parsed by `scripts/hfr-scale-check.py`.
 
 ### Dithered punch-through for an occluded Mario
 Started 2026-11-25 in worktree `occlusion-fade` (not merged).
@@ -47,33 +41,24 @@ it lands correctly in 3D. **Mario is never hidden by any of these modes:**
 is the hard-edged baseline the dithered modes improve on. Controls: OCCLUSION
 group in the panel (mode, radius, feather, dither, depth bias), `fx 27x`.
 
-### Merge queue for the parallel worktrees
-Rays landed in the main checkout (`6c55b1e`). Three worktrees are in flight and
-all of them touch `gfx_opengl.c` and the Java panel, so merge order matters:
+### Merge notes (2026-11-25)
+Merging the three worktrees into the main tree needed real conflict resolution,
+not a fast-forward, and the lessons are worth keeping:
 
-1. `emissive-bloom` — light registry, emissive batches + buffer, bloom, GLOW tab
-2. `occlusion-fade` — discard-based punch-through in the generated scene shader,
-   OCCLUSION panel group
-3. `bowser-scale` — HFR/held-object analysis (smallest diff; mostly
-   `rendering_graph_node.c`, which `emissive-bloom` also edits)
-
-Conflict hotspots to expect: the `s_fx_u` uniform table and `stereo_fx_*` pass
-wiring, the FX page list in `sm64portActivity.java` (page order/index bugs —
-the RAYS page had to be appended last for exactly this reason), the README FX
-key table, and this file. Resolve by keeping each feature's block contiguous,
-then rebuild and re-run the device checks for all four features together.
-
----
-
-## Planned, not started
-
-- **HFR: held objects interpolate their own scale from the current tick.**
-  `geo_process_held_object()` applies `objNode->header.gfx.scale` to both the
-  previous and the current matrix, so a held object whose `gfx.scale` changes
-  per tick would step instead of interpolating. No Mario-held object animates
-  scale today (Bowser's trophy shrink is un-held), so this is dormant; it needs
-  a per-held-node prev-scale snapshot when something does.
-  See `HFR-HELD-OBJECTS.md`.
+- **Keys collide across worktrees.** Rays took `250`-`260`, the glow work started
+  at `260` (renumbered to `261`-`273`), and the occlusion work independently
+  took `261`-`265` (renumbered to `274`-`278`). Always reserve a range in
+  `BACKLOG.md` before starting a feature with dials.
+- **Interleaved C merges are worse than additive ones.** Both `gfx_opengl.c`
+  additions were self-contained functions, but git aligned their shared tails
+  and produced function definitions inside function bodies. The working fix was
+  to rebuild the region from each side's own copy (glow block, then rays block)
+  rather than patching the conflicted text.
+- **Status-line format strings** (`ptc_format_status`) and the Java page strips
+  conflict every time: append new fields at the end of the format family and
+  build new pages last.
+- **One worktree at a time per file.** The parallel approach still paid for
+  itself, but the merge cost should be budgeted.
 
 ### Crepuscular rays: quality follow-ups
 Shipped 2026-11-25 (quarter-res screen-space shafts, RAYS tab, `fx 250`-`260`;
@@ -99,6 +84,27 @@ nozzle + nearby flames). Dial it from the FX > LIGHT > **GLOW** tab (`fx`
 261-273); debug views `268 1` (emissive buffer) and `268 2` (bloom buffer).
 Bloom is off by default. See `README-lumepad-2-fork.md` for the key table and
 measured cost. The god-ray pass below should now shaft from this buffer.
+
+### Occluder punch-through: quality follow-ups
+Shipped 2026-11-25 (scene-shader circular discard, CAMERA > SETTINGS
+OCCLUSION group, `fx 274`-`278`; see README "Occluder punch-through"). Limits
+worth revisiting:
+
+- **Radius is in eye pixels, not a fraction of the eye height.** The 2D/3D
+  panel anamorphic stretch is compensated (`eye_width / full_width`), so one
+  value looks the same in both, but it is still absolute: another resolution or
+  panel would need retuning.
+- **Screen-space dither can alias** when the occluder moves fast; it is static
+  per pixel by design (no crawl when still). A 2x2 rotated-grid hash would
+  soften it at the cost of a more visible pattern.
+- **Only the colour scene pass is punched.** The portal relay image and the
+  shadow map still see the occluder, so a portal seen through the hole or a
+  shadow cast through it is not corrected.
+- **PTC per-object ghosting is a separate mechanism.** The wall-hide is
+  suppressed when OCCLUSION is on, but `s_ptc_fade` object ghosting still
+  layers on top in the cube/wall demos.
+- **No per-material opt-out.** Everything nearer than Mario is eligible,
+  including translucent geometry and the skybox if it were ever in front.
 
 **Still to confirm on hardware:** the bloom glow and the nozzle light were
 measured (frame cost) and light registration is confirmed from the status line

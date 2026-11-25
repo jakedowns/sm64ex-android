@@ -1113,6 +1113,16 @@ static void geo_process_camera(struct GraphNodeCamera *node) {
         gfx_shadow_matrices_ready = 1;
     }
     mtxf_mul(gMatStack[gMatStackIndex + 1], cameraTransform, gMatStack[gMatStackIndex]);
+    /* Occluder punch-through: the game bakes the view into every object
+     * matrix, so there is no separate camera-view gSPMatrix to hook.  Keep
+     * this frame's view and eye position for the projection in gfx_pc.c. */
+    {
+        extern float gfx_occluder_view_mtx[4][4];
+        extern float gfx_occluder_cam_pos[3];
+        memcpy(gfx_occluder_view_mtx, gMatStack[gMatStackIndex + 1],
+               sizeof(gfx_occluder_view_mtx));
+        vec3f_copy(gfx_occluder_cam_pos, node->pos);
+    }
     mtxf_lookat(cameraTransform, prevPos, prevFocus, node->roll);
     mtxf_mul(gMatStackPrev[gMatStackIndex + 1], cameraTransform, gMatStackPrev[gMatStackIndex]);
     gMatStackIndex++;
