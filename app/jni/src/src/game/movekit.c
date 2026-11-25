@@ -20,6 +20,7 @@
 #include "game/memory.h"
 #include "game/game_init.h"
 #include "game/rendering_graph_node.h"
+#include "../pc/gfx/gfx_pc.h"   /* emissive tag + per-frame light registry */
 
 #define WALLRUN_TICKS       52      // ~1.75 s at 30 Hz
 #define WALLRUN_MIN_SPEED   30.0f
@@ -610,7 +611,8 @@ static void mk_flush(void) {
         i += q;
     }
     s_mk_quads = 0;
-    s_mk_vtx = NULL;
+    /* Keep s_mk_vtx: callers flush mid-object (e.g. around the emissive flame
+     * batch) and keep adding quads afterwards. */
 }
 
 void movekit_render(void) {
@@ -764,6 +766,12 @@ void movekit_render(void) {
         /* Nozzle flame: a bright, anchored cone below the pack, drawn long
          * enough to clear Mario's legs from any camera angle. */
         if (s_thrusting) {
+            /* Emissive tag (GLOW): flush either side so only the cone lands in
+             * the emissive buffer, and tag it warm white-orange at full
+             * strength. Short and cyclic because this batch is rebuilt per tick
+             * and replayed once per eye. */
+            mk_flush();
+            gfx_sp_emissive_marker(GFX_EMISSIVE_PACK(255, 168, 72, 235));
             for (int i = 0; i < 5; i++) {
                 f32 jitter = (f32) ((s_fx_tick * (i + 2)) % 9) - 4.0f;
                 f32 w = 13.0f + (f32) i * 4.0f;
@@ -790,6 +798,31 @@ void movekit_render(void) {
                 D[2] = o[2] - camR[2] * w;
                 mk_quad(A, B, C, D, r, g, bl, al);
             }
+            mk_flush();
+            gfx_sp_emissive_marker(0);
+
+            /* World-space light at the nozzle: same point as the first flame
+             * quad, a touch below the pack, so the floor and walls around Mario
+             * pick up warm light. Rebuilt every frame by the registry, so it
+             * disappears the moment the thrust stops. */
+            if (gfx_jet_light_on) {
+                float pos[3];
+                float rgb[3];
+                float k = (float)gfx_jet_light_intensity / 100.0f;
+                /* Small deterministic flicker, ~+/-15%. */
+                float flick = 0.85f + 0.15f * (float)((s_fx_tick * 37) % 7) / 6.0f;
+                pos[0] = c[0] + fwd[0] * 14.0f;
+                pos[1] = c[1] - 38.0f;
+                pos[2] = c[2] + fwd[2] * 14.0f;
+                rgb[0] = 1.00f * k * flick;
+                rgb[1] = 0.62f * k * flick;
+                rgb[2] = 0.26f * k * flick;
+                gfx_light_request(0, pos, rgb, (float)gfx_jet_light_radius);
+            } else {
+                gfx_light_clear(0);
+            }
+        } else {
+            gfx_light_clear(0);
         }
 
         /* Exhaust trail: puffs left in the air, growing and fading with age. */

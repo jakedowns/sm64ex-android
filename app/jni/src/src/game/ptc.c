@@ -3859,6 +3859,13 @@ static void ptc_annex_update(void) {
     if (s_annexMode == 0) {
         return;
     }
+    if (s_annexMode == 4) {
+        /* jetshot: hold the trigger indefinitely (no pass/fail bookkeeping).
+         * Used by scripts/emissive-glow-test.sh to keep the nozzle flame and
+         * its registered light on screen for a reproducible capture. */
+        movekit_force_trigger(1);
+        return;
+    }
     s_annexTimer++;
     if (s_annexMode == 2) {
         /* Only hold the trigger: movekit_set_flag(2,1) refills the tank, so
@@ -3972,7 +3979,11 @@ static void ptc_apply_command(const char *action) {
     } else if (strcmp(action, "blurshowstop") == 0) {
         ptc_blurshow_stop();
     } else if (strcmp(action, "lightshowstop") == 0) {
+        extern void gfx_opengl_light_count(int count);
         s_showOn = 0;
+        /* Release the light slots so gameplay lights (jetpack, flames) come
+         * back instead of the show's last frame staying frozen on. */
+        gfx_opengl_light_count(0);
     } else if (strcmp(action, "lighttest") == 0) {
         /* Smoke test: two coloured lights around Mario, shadows on, motion
          * blur on, and a 3x3x3 probe grid with the reflective-sphere debug. */
@@ -4288,6 +4299,22 @@ extern int gfx_cam_mode;
         ptc_annex_wallrun();
     } else if (strcmp(action, "jetpack") == 0) {
         ptc_annex_jetpack();
+    } else if (strcmp(action, "jetshot") == 0) {
+        /* Emissive/bloom capture helper (scripts/emissive-glow-test.sh): stand
+         * Mario on the open floor by the pyramid facing the chase camera and
+         * hold the trigger, so the nozzle flame and the world-space light it
+         * registers are both on screen for a fixed window. */
+        extern void gfx_set_debug_note(const char *text);
+        ptc_annex_reset();
+        movekit_set_flag(2, 1);                     /* equip + refill */
+        /* PTC spawn: the chase camera settles behind-left of Mario with the
+         * floor and the coloured platforms in frame (no warp into a wall). */
+        ptc_annex_place(-600.0f, 0.0f, -950.0f, 0x0000);
+        s_annexStartY = 0.0f;
+        s_annexMode = 4;
+        gfx_set_debug_note("JET SHOT: nozzle flame + light, open floor");
+    } else if (strcmp(action, "jetshotstop") == 0) {
+        ptc_annex_reset();                          /* release the trigger */
     } else if (strcmp(action, "grapple") == 0) {
         ptc_annex_grapple();
     } else if (strncmp(action, "povcam", 6) == 0) {
@@ -4332,6 +4359,7 @@ void ptc_format_status(char *buf, int len) {
     extern void portal_last_camera_jump(float *dist, float *angleDeg);
     extern int gfx_opengl_light_state(int which);
     extern int gfx_opengl_denoise_state(int which);
+    extern int gfx_opengl_ssfx_get(int which);
     extern int gfx_rate_state(int which);
     extern float gfx_stereo_fps;
     extern int g_sim_slow_div;
@@ -4367,7 +4395,7 @@ void ptc_format_status(char *buf, int len) {
              "chain=%d,%d,0x%x,%d,%d cmode=%d loop=%d "
              "face=%.1f,%.1f,%.1f anim=%d mh=%.1f remap=%d cdbg=%d,%d,%d,%d,%d walk=%d,%d,%d "
              "mpw=%d,%d,%d,%d,%d,%d,%d fc=%d,%d,%d,%d cg=%d,%.0f,%.0f,%.0f,0x%x "
-             "slowmo=%d,%d,%d",
+             "slowmo=%d,%d,%d glow=%d,%d,%d,%d,%d",
              gCurrLevelNum, gCurrAreaIndex, s_phase, s_testMode, s_testActive, s_failed, s_failReason,
              s_starCollected[0], s_starCollected[1], ptc_star_visible(), portal_count(), s_shotA, s_shotB, g_portal_debug,
              g_portal_view.active, g_portal_view.source, portal_view_enabled(),
@@ -4434,7 +4462,10 @@ void ptc_format_status(char *buf, int len) {
              s_chainGoomba[0] ? s_chainGoomba[0]->oPosY : 0.0f,
              s_chainGoomba[0] ? s_chainGoomba[0]->oPosZ : 0.0f,
              s_chainGoomba[0] ? (unsigned) s_chainGoomba[0]->header.gfx.node.flags : 0u,
-             g_sim_slow_div, g_sim_interp, g_sim_present_t1);
+             g_sim_slow_div, g_sim_interp, g_sim_present_t1,
+             gfx_opengl_ssfx_get(260), gfx_opengl_ssfx_get(261),
+             gfx_opengl_ssfx_get(262), gfx_opengl_ssfx_get(267),
+             gfx_opengl_light_state(0));
 
     {
         size_t used = strlen(buf);

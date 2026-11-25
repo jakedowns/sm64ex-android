@@ -140,6 +140,7 @@ struct DisplayListNode
     void *displayList;
     struct DisplayListNode *next;
     u8 splat;  /* draw this list as point-sprite splats (first-slice prototype) */
+    u32 glow;  /* packed emissive tag (GFX_EMISSIVE_PACK), 0 = not emissive */
 };
 
 /** GraphNode that manages the 8 top-level display lists that will be drawn

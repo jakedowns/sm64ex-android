@@ -516,6 +516,8 @@ the auto distance), SSGI `21`-`25`, SSRTX `70`-`77`, normal flip `32`.
 | rate limit | `200` on, `201` target fps, `202` adaptive, `203` reset stats |
 | slow motion | `241` sim speed `1/n` (1-8, 1 = normal), `242` sub-frame interpolation (1 = re-present the last display list at k/n of the step; 0 = old stop-motion), `243` diagnostic: always present `t=1` (step end) while still re-presenting |
 | denoiser | `210` alternative path, `211` on, `212` intensity, `213` passes, `214` radius, `215` frames, `216` bounces, `217` test captions, `220` resolution `1/n` (1 = full res, 2-4 = reduced; default 4) |
+| emissive + bloom (GLOW) | `261` bloom on (default **off**), `262` threshold 0-255 (default 48), `263` intensity % (default 120), `264` blur radius (default 3), `265` blur passes 1-3 (default 2), `266` taps 5/9 (default 9), `267` emissive gain % (default 100), `268` debug view (0 off, 1 emissive buffer, 2 bloom buffer), `269` emissive tags on (default on), `270` also bloom scene pixels above threshold (default off) |
+| jetpack light | `271` on (default on), `272` intensity % (default 150), `273` radius in world units (default 220) |
 
 The denoiser runs at 1/4 resolution by default: the scene colour and depth are
 downsampled to `scene_res/4`, 1-3 edge-aware à-trous passes run there, and a
@@ -528,6 +530,55 @@ in-shader filter for A/B. Measured on the light-test scene: 38.0 ms/frame at
 The probe grid is a `cols x rows x repeats` lattice around the probe centre,
 capped at 16 probes (4x4x1, 2x2x2, 2x2x4, ...). It is only used for the probe
 visualisation/reflection debug view.
+
+### Emissive materials, bloom and the light registry
+
+Two mechanisms, both rebuilt from scratch every frame so nothing leaks:
+
+1. **World-space lights.** Gameplay registers up to four lights (`gfx_light_request`
+   in `gfx_pc.c`; flames use the nearest-first auto pool). `gfx_run()` pushes them
+   into the FX shader's existing `uLightPos/uLightColor/uLightRadius` slots and
+   empties the registry afterwards. The PTC lightshow still calls the legacy
+   `gfx_opengl_light_count()` path directly and **wins the slots** while it is
+   running (`lightshowstop` releases them again).
+   - The jetpack nozzle registers a warm white-orange light at the first flame
+     quad (`movekit.c`), radius `273` world units at `272` intensity, with a
+     small per-tick flicker, only while thrusting.
+   - Level flames (`MODEL_RED_FLAME` / `MODEL_BLUE_FLAME`) register a light when
+     they are within 1400 units of the camera; the four nearest win.
+
+2. **Emissive draw batches.** An object or draw range is tagged with a
+   renderer-local display-list marker (`GFX_OP_EMISSIVE_MARKER`, opcode `0x3e`,
+   mirroring the existing splat marker). The tag carries colour + strength.
+   Because it lives *in* the display list it survives the deferred, per-eye
+   replay, which a "current object" global would not. `gfx_opengl_draw_triangles`
+   copies the tagged vertices, and `gfx_opengl_emissive_flush()` re-draws them
+   into a per-eye half-resolution **emissive buffer**. Tagged today: the jetpack
+   cone, sparkles (`MODEL_SPARKLES*`), red/blue flames.
+
+**Bloom** (GLOW tab, off by default) reads that emissive buffer only: threshold
+→ separable blur (H/V, 5 or 9 taps, 1-3 passes) → additive bilinear upsample as
+its own pass into the FX output (the recorded lesson: folding the upsample into
+the big FX shader cost ~30 ms). A bright white wall therefore does **not** bloom
+unless `270` opts scene brightness in. `268 1` shows the raw emissive buffer and
+`268 2` the blurred buffer, which is the proof the source is world-space
+geometry and not a screen-space blur of the final image.
+
+Cost on the Lume Pad 2 (level 38, jetpack thrusting, 2D flat presentation so a
+still is one image, rate limiter off so `fps=` is a real frame time):
+
+| config | ms/frame (`1000/fps`) |
+| --- | --- |
+| emissive off, bloom off, no other FX | 2.84 |
+| emissive tags on, bloom off | 2.87 |
+| bloom on, no other FX (forces the FX pass to run) | 6.29 |
+| MXAO on, bloom off | 11.03 |
+| MXAO on, bloom on | 12.05 |
+
+So the bloom chain itself is **~+1.0 ms** at half resolution when the FX pass is
+already running; the ~3 ms jump from "no FX at all" is the full-screen FX pass
+being switched on, not the bloom stages. Emissive capture (one half-res clear +
+a handful of tiny draws) is below the run-to-run noise.
 
 `cmd pad` injects raw overlay input for headless menu/gameplay driving:
 `--ei sx/-127..127 --ei sy/-127..127 --ei buttons <N64 pad bits> --ei ms <hold>`.
@@ -542,7 +593,8 @@ the header (`[caret]` then `3D|2D`, `FPS`, `CAM` on the right) and the tab row
 Tabs:
 - **FX** — second-level strip: MXAO / C.DOF / SSGI / SSRTX / SHADOW / SPLAT /
   LIGHT / VIEWS / CAMERA.
-  - LIGHT: BLUR / LIGHTS / PROBES / LENS / RATE-DN.
+  - LIGHT: BLUR / LIGHTS / PROBES / LENS / RATE-DN / **GLOW**.
+    GLOW holds the emissive/bloom dials and the jetpack nozzle light.
   - VIEWS: all debug views (OFF, AO, CoC, GI, SSRTX, LIGHTS, L-ACCUM,
     PROBE VIS, L-DIST, MOTION VECTORS) plus a small reorderable layer stack
     (ZBUF, WIRE) with per-layer on/off.

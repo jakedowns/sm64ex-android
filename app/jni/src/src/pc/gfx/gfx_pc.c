@@ -252,6 +252,12 @@ float gfx_cam_tan_half_fov_y = 0.41421356f;
 // scene range from a directional sun, then sampled in the per-eye post pass.
 // All knobs are runtime-tuneable from the SHADOW debug tab.
 extern float gfx_cam_inv_mtx[4][4];
+
+#ifdef __ANDROID__
+// Emissive-buffer flush for one eye (gfx_opengl.c). Never used with the
+// FLAT/half-res paths: they are already non-stereo and skip the FX chain.
+extern void gfx_opengl_emissive_flush(int eye);
+#endif
 extern float gfx_shadow_light_vp[4][4];
 extern float gfx_shadow_light_dir[3];
 extern int gfx_shadow_matrices_ready;
@@ -294,6 +300,131 @@ void gfx_sp_splat_marker(int on) {
     cmd = gDisplayListHead++;
     cmd->words.w0 = ((uint32_t)GFX_OP_SPLAT_MARKER) << 24;
     cmd->words.w1 = on ? 1u : 0u;
+}
+
+// --- Emissive materials ----------------------------------------------------
+// Renderer-visible state while a tagged batch is being turned into triangles.
+// gfx_opengl_draw_triangles() copies the tagged vertices into its emissive list;
+// gfx_opengl_emissive_flush() re-draws them into the half-res emissive buffer.
+int gfx_emissive_active = 0;
+int gfx_emissive_rgb[3] = { 255, 255, 255 };
+int gfx_emissive_strength = 0;
+
+void gfx_sp_emissive_marker(uint32_t packed) {
+    extern Gfx *gDisplayListHead;
+    Gfx *cmd;
+
+    if (gDisplayListHead == NULL) {
+        // Not inside display-list generation (e.g. a debug path): apply the
+        // tag immediately so direct calls still work.
+        gfx_emissive_strength = (int)(packed & 0xFF);
+        gfx_emissive_active = gfx_emissive_strength;
+        gfx_emissive_rgb[0] = (int)((packed >> 24) & 0xFF);
+        gfx_emissive_rgb[1] = (int)((packed >> 16) & 0xFF);
+        gfx_emissive_rgb[2] = (int)((packed >> 8) & 0xFF);
+        return;
+    }
+    cmd = gDisplayListHead++;
+    cmd->words.w0 = ((uint32_t)GFX_OP_EMISSIVE_MARKER) << 24;
+    cmd->words.w1 = packed;
+}
+
+// --- Per-frame world-space light registry ---------------------------------
+// Gameplay (jetpack, flames) registers lights during display-list generation.
+// gfx_run() pushes them into the FX shader's four light slots at the start of
+// the frame and empties the registry at the end, so lights are rebuilt from
+// scratch every frame and can never leak when an emitter disappears.
+static uint8_t s_lr_used[GFX_LIGHT_SLOTS];
+static float   s_lr_pos[GFX_LIGHT_SLOTS][3];
+static float   s_lr_rgb[GFX_LIGHT_SLOTS][3];
+static float   s_lr_rad[GFX_LIGHT_SLOTS];
+
+static int   s_lr_auto_n;
+static float s_lr_auto_pos[GFX_LIGHT_AUTO_MAX][3];
+static float s_lr_auto_rgb[GFX_LIGHT_AUTO_MAX][3];
+static float s_lr_auto_rad[GFX_LIGHT_AUTO_MAX];
+
+void gfx_light_request(int slot, const float pos[3], const float rgb[3], float radius) {
+    if (slot < 0 || slot >= GFX_LIGHT_SLOTS) return;
+    s_lr_used[slot] = 1;
+    for (int i = 0; i < 3; i++) {
+        s_lr_pos[slot][i] = pos[i];
+        s_lr_rgb[slot][i] = rgb[i];
+    }
+    s_lr_rad[slot] = radius;
+}
+
+void gfx_light_clear(int slot) {
+    if (slot < 0 || slot >= GFX_LIGHT_SLOTS) return;
+    s_lr_used[slot] = 0;
+}
+
+/* Candidate light that competes for whatever slots are left over. Sorted
+ * nearest-first against the camera when the frame is applied. */
+void gfx_light_request_auto(const float pos[3], const float rgb[3], float radius) {
+    if (s_lr_auto_n >= GFX_LIGHT_AUTO_MAX) return;
+    int i = s_lr_auto_n++;
+    for (int k = 0; k < 3; k++) {
+        s_lr_auto_pos[i][k] = pos[k];
+        s_lr_auto_rgb[i][k] = rgb[k];
+    }
+    s_lr_auto_rad[i] = radius;
+}
+
+static void gfx_light_registry_apply(void) {
+    extern void gfx_opengl_light_count_auto(int count);
+    extern void gfx_opengl_light_set(int index, float x, float y, float z,
+                                     float r, float g, float b, float radius);
+    extern int gfx_opengl_lights_manual(void);
+
+    // The PTC lightshow drives the legacy API directly; let it win the slots.
+    if (gfx_opengl_lights_manual()) return;
+
+    int n = 0;
+    for (int i = 0; i < GFX_LIGHT_SLOTS && n < GFX_LIGHT_SLOTS; i++) {
+        if (!s_lr_used[i]) continue;
+        gfx_opengl_light_set(n++, s_lr_pos[i][0], s_lr_pos[i][1], s_lr_pos[i][2],
+                             s_lr_rgb[i][0], s_lr_rgb[i][1], s_lr_rgb[i][2],
+                             s_lr_rad[i]);
+    }
+
+    int remaining = GFX_LIGHT_SLOTS - n;
+    int auto_n = s_lr_auto_n < remaining ? s_lr_auto_n : remaining;
+    if (auto_n > 0) {
+        // Selection sort by squared distance to the camera; at most 8 entries.
+        float cx = gfx_cam_inv_mtx[3][0];
+        float cy = gfx_cam_inv_mtx[3][1];
+        float cz = gfx_cam_inv_mtx[3][2];
+        int order[GFX_LIGHT_AUTO_MAX];
+        float d2[GFX_LIGHT_AUTO_MAX];
+        for (int i = 0; i < s_lr_auto_n; i++) {
+            order[i] = i;
+            float dx = s_lr_auto_pos[i][0] - cx;
+            float dy = s_lr_auto_pos[i][1] - cy;
+            float dz = s_lr_auto_pos[i][2] - cz;
+            d2[i] = dx * dx + dy * dy + dz * dz;
+        }
+        for (int a = 0; a < s_lr_auto_n; a++) {
+            for (int b = a + 1; b < s_lr_auto_n; b++) {
+                if (d2[order[b]] < d2[order[a]]) {
+                    int t = order[a]; order[a] = order[b]; order[b] = t;
+                }
+            }
+        }
+        for (int a = 0; a < auto_n; a++) {
+            int i = order[a];
+            gfx_opengl_light_set(n++, s_lr_auto_pos[i][0], s_lr_auto_pos[i][1],
+                                 s_lr_auto_pos[i][2], s_lr_auto_rgb[i][0],
+                                 s_lr_auto_rgb[i][1], s_lr_auto_rgb[i][2],
+                                 s_lr_auto_rad[i]);
+        }
+    }
+    gfx_opengl_light_count_auto(n);
+}
+
+static void gfx_light_registry_clear(void) {
+    for (int i = 0; i < GFX_LIGHT_SLOTS; i++) s_lr_used[i] = 0;
+    s_lr_auto_n = 0;
 }
 
 // --- UI after post ----------------------------------------------------------
@@ -2463,6 +2594,26 @@ static void gfx_run_dl_range(Gfx* cmd, Gfx* end) {
                 }
                 break;
             }
+            case GFX_OP_EMISSIVE_MARKER: {
+                // Emissive tag. Flush at the boundary so a batch never mixes
+                // tagged and untagged geometry (the recorded list is a copy of
+                // whatever draw_triangles() was handed).
+                uint32_t packed = cmd->words.w1;
+                int strength = (int)(packed & 0xFF);
+                int r = (int)((packed >> 24) & 0xFF);
+                int g = (int)((packed >> 16) & 0xFF);
+                int b = (int)((packed >> 8) & 0xFF);
+                if (strength != gfx_emissive_strength || r != gfx_emissive_rgb[0]
+                    || g != gfx_emissive_rgb[1] || b != gfx_emissive_rgb[2]) {
+                    gfx_flush();
+                    gfx_emissive_strength = strength;
+                    gfx_emissive_active = strength;
+                    gfx_emissive_rgb[0] = r;
+                    gfx_emissive_rgb[1] = g;
+                    gfx_emissive_rgb[2] = b;
+                }
+                break;
+            }
             case (uint8_t)G_ENDDL:
                 return;
 #ifdef F3DEX_GBI_2
@@ -2759,6 +2910,11 @@ void gfx_run(Gfx *commands) {
     }
     dropped_frame = false;
 
+    // Gameplay-registered lights (jetpack nozzle, nearby flames) feed the FX
+    // shader's four dynamic light slots. The registry is emptied at the end of
+    // gfx_run, so each frame's set is exactly what this frame's gameplay asked.
+    gfx_light_registry_apply();
+
 #ifdef __ANDROID__
     gfx_vel_frame_begin();
 #endif
@@ -2897,6 +3053,11 @@ void gfx_run(Gfx *commands) {
             gfx_run_dl_range(commands, ui_sep ? gGfxUiStart : NULL);
             gfx_flush();
 #ifdef __ANDROID__
+            // Emissive materials: re-draw the batches tagged during this eye's
+            // scene range into the half-res emissive buffer (bloom source).
+            gfx_opengl_emissive_flush(eye);
+#endif
+#ifdef __ANDROID__
             if (g_portal_view.active || g_portal_view2.active) {
                 /* Draw into this eye's FBO, where the viewport/projection match
                  * the portal mesh exactly.  (Post-composite drawing used the
@@ -2934,6 +3095,7 @@ void gfx_run(Gfx *commands) {
 #endif
         gfx_stereo_eye = gfx_single_eye >= 0 ? gfx_single_eye : 0;
         gfx_invalidate_state();
+        gfx_light_registry_clear();
         gfx_wapi->swap_buffers_begin();
         return;
     }
@@ -2971,6 +3133,7 @@ void gfx_run(Gfx *commands) {
         //printf("Process %f %f\n", t1, t1 - t0);
         gfx_wapi->swap_buffers_begin();
     }
+    gfx_light_registry_clear();
 #else
     double t0 = gfx_wapi->get_time();
     gfx_rapi->start_frame();
