@@ -443,6 +443,12 @@ Java_com_vdavid003_sm64port_sm64portActivity_nativeGetPortalGun(JNIEnv *env, jcl
     return portal_gun_has();
 }
 
+/* Wall clock for scripted demos: osGetTime() is stubbed to 0 in this port,
+ * so anything that needs real seconds must use this. */
+double gfx_wall_time_sec(void) {
+    return (double) SDL_GetTicks() / 1000.0;
+}
+
 JNIEXPORT jint JNICALL
 Java_com_vdavid003_sm64port_sm64portActivity_nativeGetRateState(JNIEnv *env, jclass clazz,
                                                                 jint which) {

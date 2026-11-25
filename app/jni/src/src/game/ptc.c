@@ -1495,7 +1495,8 @@ static void ptc_lightshow_update(void) {
         /* Wall-clock phase: the sim frame rate varies (30-40 fps), so a
          * tick-based period would not line up with the video.  20 s wall is
          * exactly one period at any frame rate; 2x playback makes it 10 s. */
-        u32 now = (u32) osGetTime();
+        extern double gfx_wall_time_sec(void);
+        u32 now = (u32) (gfx_wall_time_sec() * 1000.0);
         float sec;
         float ph;
         float camR = 900.0f, camH = 620.0f;
@@ -1612,7 +1613,10 @@ static void ptc_blurshow_update(void) {
     if (!s_blurShow || m == NULL) {
         return;
     }
-    now = (u32) osGetTime();
+    {
+        extern double gfx_wall_time_sec(void);
+        now = (u32) (gfx_wall_time_sec() * 1000.0);
+    }
     if (s_blurStart == 0) {
         s_blurStart = now;
     }
@@ -2745,16 +2749,18 @@ void ptc_chain_hud_text(void) {
         extern void print_caption2_small(s32 x, s32 y, const char *str);
         extern int gfx_opengl_ssfx_get(int which);
         if (gfx_rate_state(1) > 0) {
-            snprintf(line, sizeof(line), "PATH %s | DN %s | I%d P%d F%d B%d | %dFPS%s",
+            snprintf(line, sizeof(line), "PATH %s | DN %s | I%d P%d F%d B%d R%d | %dFPS%s",
                      path ? "ALT" : "MAIN", don ? "ON" : "OFF",
                      gfx_opengl_denoise_state(2), gfx_opengl_denoise_state(3),
                      gfx_opengl_denoise_state(5), gfx_opengl_denoise_state(6),
+                     gfx_opengl_denoise_state(8),
                      gfx_rate_state(1), gfx_rate_state(2) ? " ADAPT" : "");
         } else {
-            snprintf(line, sizeof(line), "PATH %s | DN %s | I%d P%d F%d B%d | MODE FPS%s",
+            snprintf(line, sizeof(line), "PATH %s | DN %s | I%d P%d F%d B%d R%d | MODE FPS%s",
                      path ? "ALT" : "MAIN", don ? "ON" : "OFF",
                      gfx_opengl_denoise_state(2), gfx_opengl_denoise_state(3),
                      gfx_opengl_denoise_state(5), gfx_opengl_denoise_state(6),
+                     gfx_opengl_denoise_state(8),
                      gfx_rate_state(2) ? " ADAPT" : "");
         }
         if (gfx_opengl_ssfx_get(100)) {
@@ -4339,7 +4345,7 @@ void ptc_format_status(char *buf, int len) {
              "wall=%d ceil=%d ledge=%d "
              "coins=%d stars=%d save=%d before=%d/%d "
              "cal=%.1f,%.1f,%.1f ledge_reach=%.1f goomba=%d,%.1f,%.1f gmodel=%d "
-             "gobj=%d,0x%x,%d,%d annex=%d,%d,%d gun=%d,%d,%d tool=%d lgt=%d,%d,%d,%d,%d,%d,%d,%d show=%d,%d dn=%d,%d,%d,%d,%d,%d rate=%d,%d,%d "
+             "gobj=%d,0x%x,%d,%d annex=%d,%d,%d gun=%d,%d,%d tool=%d lgt=%d,%d,%d,%d,%d,%d,%d,%d show=%d,%d dn=%d,%d,%d,%d,%d,%d,%d rate=%d,%d,%d "
              "chain=%d,%d,0x%x,%d,%d cmode=%d loop=%d "
              "face=%.1f,%.1f,%.1f anim=%d mh=%.1f remap=%d cdbg=%d,%d,%d,%d,%d walk=%d,%d,%d "
              "mpw=%d,%d,%d,%d,%d,%d,%d fc=%d,%d,%d,%d cg=%d,%.0f,%.0f,%.0f,0x%x",
@@ -4385,6 +4391,7 @@ void ptc_format_status(char *buf, int len) {
              gfx_opengl_denoise_state(0), gfx_opengl_denoise_state(1),
              gfx_opengl_denoise_state(2), gfx_opengl_denoise_state(5),
              gfx_opengl_denoise_state(6), gfx_opengl_denoise_state(3),
+             gfx_opengl_denoise_state(8),
              gfx_rate_state(1), gfx_rate_state(2), gfx_rate_state(3),
              s_chainMode, s_chainTimer, s_chainFlags,
              s_chainGoombaCross,
