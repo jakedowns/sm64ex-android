@@ -133,3 +133,18 @@ sub-steps 1-16, max blur 0-128 px, velocity clamp 4-300 px.
 At these settings the showcase stays above 80 fps; the 1-tap profile is
 effectively free (8.4 ms). `ptc blurshow` now uses custom camera mode 3 (the
 free-look module), so the orbit actually moves.
+
+## Cost knob: vector bound
+
+`fx 240` (LIGHT -> BLUR, "Vector bound 0/1/2") controls the tile-max bound:
+
+| mode | what | measured fps (2D showcase, quality profile, pacer off) |
+| --- | --- | --- |
+| 2 | 3x3 neighbour max (previous behaviour) | 92-102 |
+| 1 | one tile sample (default) | 97-107 |
+| 0 | off: skips the tile-max pass and all bound samples | 155-160 |
+| blur off | baseline | 357 |
+
+Mode 0 is the cheapest and still clamps the vector at `Velocity clamp px`,
+but loses the neighbour dilation that keeps foreground motion from bleeding
+over background. Mode 1 (default) keeps a bound for one fetch per pixel.

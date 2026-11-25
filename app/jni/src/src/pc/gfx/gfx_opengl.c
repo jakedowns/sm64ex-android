@@ -775,6 +775,9 @@ static int s_vel_stride_ui = 1;     /* 135: replay every N frames */
 static int s_mb_jitter = 100;       /* 136: per-frame sub-step jitter % */
 static int s_mb_depth_reject = 20;  /* 137: depth rejection threshold */
 static int s_mb_clamp_px = 60;      /* 138: velocity clamp, px */
+/* 240: tile-max bound quality. 0 = off (skips the pass and all samples),
+ * 1 = one sample (default, cheapest), 2 = 3x3 neighbour max. */
+static int s_velmax_mode = 1;
 static int s_vec_style = 2;         /* 139: 0 magnitude, 1 direction, 2 segments */
 
 static int s_fx_gi_on = 0;
@@ -940,6 +943,7 @@ static const char *s_fx_fs =
     "uniform float uMBJitter;\n"
     "uniform float uMBDepthReject;\n"
     "uniform float uMBClampPx;\n"
+    "uniform float uVelMaxMode;\n"
     "uniform float uVecStyle;\n"
     "uniform sampler2D uVelMax;\n"
     "uniform float uVelMaxOn;\n"
@@ -1200,12 +1204,15 @@ static const char *s_fx_fs =
     "  float mvLen = length(mvPx);\n"
     "  if (uVelMaxOn > 0.5) {\n"
     "    vec2 base = floor(vUV * uVelMaxGrid);\n"
-    "    float bound = 0.0;\n"
-    "    for (int oy = -1; oy <= 1; oy++) {\n"
-    "      for (int ox = -1; ox <= 1; ox++) {\n"
-    "        vec2 tc = clamp(base + vec2(float(ox), float(oy)), vec2(0.0),\n"
-    "                        uVelMaxGrid - 1.0) + 0.5;\n"
-    "        bound = max(bound, texture2D(uVelMax, tc / uVelMaxGrid).r);\n"
+    "    vec2 tc0 = clamp(base, vec2(0.0), uVelMaxGrid - 1.0) + 0.5;\n"
+    "    float bound = texture2D(uVelMax, tc0 / uVelMaxGrid).r;\n"
+    "    if (uVelMaxMode > 1.5) {\n"
+    "      for (int oy = -1; oy <= 1; oy++) {\n"
+    "        for (int ox = -1; ox <= 1; ox++) {\n"
+    "          vec2 tc = clamp(base + vec2(float(ox), float(oy)), vec2(0.0),\n"
+    "                          uVelMaxGrid - 1.0) + 0.5;\n"
+    "          bound = max(bound, texture2D(uVelMax, tc / uVelMaxGrid).r);\n"
+    "        }\n"
     "      }\n"
     "    }\n"
     "    float boundPx = bound * max(uRes.x, uRes.y);\n"
@@ -1578,7 +1585,7 @@ static struct {
     GLint mb_on, mb_strength, mb_samples, cur_vp, prev_vp, prev_cam_inv;
     GLint velocity, vel_on, mb_shutter, mb_substeps, mb_maxpx, mb_jitter;
     GLint vel_max, vel_max_on, vel_max_grid;
-    GLint mb_depth_reject, mb_clamp_px, vec_style;
+    GLint mb_depth_reject, mb_clamp_px, vec_style, velmax_mode;
     GLint light_count, light_pos, light_pos_view, light_color, light_radius;
     GLint light_intensity, light_shadows, light_shadow_steps;
     GLint probe_vis, probe_center, probe_spacing, probe_dim, probe_radius, probe_res;
@@ -1696,6 +1703,7 @@ void gfx_opengl_ssfx_set(int which, int value) {
         case 146: s_mb_jitter = value < 0 ? 0 : (value > 100 ? 100 : value); break;
         case 147: s_mb_depth_reject = value < 0 ? 0 : (value > 100 ? 100 : value); break;
         case 148: s_mb_clamp_px = value < 4 ? 4 : (value > 300 ? 300 : value); break;
+        case 240: s_velmax_mode = value < 0 ? 0 : (value > 2 ? 2 : value); break;
         case 149: s_vec_style = value < 0 ? 0 : (value > 2 ? 2 : value); break;
         /* Lens bokeh kernel. */
         case 160: s_fx_bokeh_on = value ? 1 : 0; break;
@@ -1812,6 +1820,7 @@ int gfx_opengl_ssfx_get(int which) {
         case 146: return s_mb_jitter;
         case 147: return s_mb_depth_reject;
         case 148: return s_mb_clamp_px;
+        case 240: return s_velmax_mode;
         case 149: return s_vec_style;
         case 160: return s_fx_bokeh_on;
         case 161: return s_fx_bokeh_aspect;
@@ -1947,6 +1956,7 @@ static void stereo_fx_init(void) {
     s_fx_u.mb_jitter = glGetUniformLocation(s_fx_prog, "uMBJitter");
     s_fx_u.mb_depth_reject = glGetUniformLocation(s_fx_prog, "uMBDepthReject");
     s_fx_u.mb_clamp_px = glGetUniformLocation(s_fx_prog, "uMBClampPx");
+    s_fx_u.velmax_mode = glGetUniformLocation(s_fx_prog, "uVelMaxMode");
     s_fx_u.vec_style = glGetUniformLocation(s_fx_prog, "uVecStyle");
     s_fx_u.vel_max = glGetUniformLocation(s_fx_prog, "uVelMax");
     s_fx_u.vel_max_on = glGetUniformLocation(s_fx_prog, "uVelMaxOn");
@@ -2451,6 +2461,10 @@ static int vmax_ensure_fbo(int w, int h) {
 }
 
 static void velocity_tilemax(void) {
+    if (s_velmax_mode == 0) {
+        s_vmax_valid = 0;
+        return;
+    }
     if (!s_vel_tex_valid || !s_vel_tex) return;
     if (!vmax_ensure_program()) return;
     int gw = s_vel_w / 8; if (gw < 1) gw = 1;
@@ -2903,10 +2917,11 @@ static int stereo_fx_pass(void) {
         glUniform1f(s_fx_u.mb_jitter, (float)s_mb_jitter);
         glUniform1f(s_fx_u.mb_depth_reject, (float)s_mb_depth_reject);
         glUniform1f(s_fx_u.mb_clamp_px, (float)s_mb_clamp_px);
+        glUniform1f(s_fx_u.velmax_mode, (float)s_velmax_mode);
         glUniform1f(s_fx_u.vec_style, (float)s_vec_style);
         glUniform1f(s_fx_u.vel_max_on,
-                    (s_vmax_valid && s_vel_tex_valid && s_vel_source && gfx_vel_enabled)
-                        ? 1.0f : 0.0f);
+                    (s_vmax_valid && s_vel_tex_valid && s_vel_source && gfx_vel_enabled
+                     && s_velmax_mode > 0) ? 1.0f : 0.0f);
         glUniform2f(s_fx_u.vel_max_grid,
                     (float)(s_vel_w / 8 > 0 ? s_vel_w / 8 : 1),
                     (float)(s_vel_h / 8 > 0 ? s_vel_h / 8 : 1));

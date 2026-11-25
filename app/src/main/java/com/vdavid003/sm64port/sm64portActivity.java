@@ -2174,6 +2174,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addIntSlider("Velocity res 1/n", 1, 8, 4, v -> debugFx(144, v));
         addIntSlider("Vector update every", 1, 4, 1, v -> debugFx(145, v));
         addIntSlider("Vector heat gain", 20, 500, 120, v -> debugFx(118, v));
+        addIntSlider("Vector bound 0/1/2", 0, 2, 1, v -> debugFx(240, v));
         addIntSlider("Heat style 0/1/2", 0, 2, 2, v -> debugFx(149, v));
 
         // LIGHTS: demo buttons, then count/intensity/shadows, then per-light RGB.

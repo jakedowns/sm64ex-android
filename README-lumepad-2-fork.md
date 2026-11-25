@@ -509,7 +509,7 @@ the auto distance), SSGI `21`-`25`, SSRTX `70`-`77`, normal flip `32`.
 | --- | --- |
 | debug view `31` | 0 off, 1 AO, 2 CoC, 3 GI, 4 SSRTX, 5 light count, 6 light accumulation, 7 probe visibility, 8 light distance, 9 **motion-vector heatmap** |
 | motion blur | `100` on, `101` strength, `102` samples (legacy), `118` heatmap gain (px = full scale) |
-| motion vectors | `140` source (1 = per-vertex, 0 = camera only), `141` shutter deg, `142` sub-steps, `143` max blur px, `144` velocity res 1/n, `145` update every N frames, `146` sub-step jitter %, `147` depth reject %, `148` velocity clamp px, `149` heatmap style (0 magnitude, 1 direction, 2 segments) |
+| motion vectors | `140` source (1 = per-vertex, 0 = camera only), `141` shutter deg, `142` sub-steps (1-16), `143` max blur px (0-128), `144` velocity res 1/n, `145` update every N frames, `146` sub-step jitter %, `147` depth reject %, `148` velocity clamp px (4-300), `149` heatmap style (0 magnitude, 1 direction, 2 segments), `240` vector-bound mode (0 off, 1 one sample, 2 3x3) |
 | dynamic lights | `103` count, `104` shadows, `105` intensity, `106` shadow steps, `120`-`122` / `124`-`126` light 0/1 RGB |
 | light probes | `110` show, `111` spacing, `113` radius, `114` resolution, `115` grid cols (X), `116` grid rows (Y), `117` grid repeats (Z); `112` sets all three axes at once |
 | bokeh / DOF | `160` kernel, `161` aspect %, `162` blades, `163` rotation, `164` anamorphic %, `165` highlight %, `166` cat eye % |
