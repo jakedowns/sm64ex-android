@@ -112,6 +112,12 @@ object.
 
 ## Known bugs and limits
 
+- **"Black 3D layer" screenshots are usually a locked/asleep tablet.**
+  `screencap` on a locked device returns pure black (mean ~1.5/255) with no
+  error, and on the lock screen the HUD is visible while the app's surface is
+  not. Wake and unlock before capturing
+  (`/media/share/lp2-test/scripts/unlock.sh`). If a capture is black, check
+  `dumpsys power | grep mWakefulness` before suspecting the renderer.
 - **The app sometimes "refuses to die" on relaunch.** Dropbox repeatedly logs
   `ProcessRecord{... com.vdavid003.sm64port} <pid> refused to die, but we need to
   launch ...` — the old process does not exit promptly when the activity is

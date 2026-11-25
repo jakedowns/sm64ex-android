@@ -53,6 +53,11 @@ Use it for every adb interaction, even a one-line `dumpsys`.
   `adb shell input keyevent 26`) so the screen is off.
 - Keep the device lock command self-contained; its trap clears BUSY and sleeps
   the tablet even if the command fails.
+- **`screencap` of a locked or sleeping tablet returns an all-black image**, not
+  an error. Wake and unlock first (`/media/share/lp2-test/scripts/unlock.sh`),
+  then capture; a black screenshot is almost always power state, not a
+  rendering bug. Check with `dumpsys power | grep mWakefulness` before blaming
+  the app.
 - **adb is over Wi-Fi (`192.168.1.207:5555`), so sleeping the tablet drops the
   connection.** During a multi-agent session pass `AGENT_NO_SLEEP=1` on
   intermediate device calls and only let the final call sleep it. If `adb
