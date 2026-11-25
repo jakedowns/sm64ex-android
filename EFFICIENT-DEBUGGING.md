@@ -1,0 +1,99 @@
+# Efficient debugging loop
+
+This project builds slowly and shares one tablet between agents. The default
+loop — edit a constant, rebuild, install, boot, look — costs minutes per data
+point. Almost every tuning question can be answered in seconds instead.
+
+Read this before starting a tuning session.
+
+## The rule
+
+**Runtime config beats recompilation. One batch beats many loops.**
+
+- If you are changing a **number**, use an `fx` key (or a panel slider) and
+  measure. No rebuild.
+- If you are changing **behaviour**, change code once, add the key that will let
+  you tune it, and then sweep at runtime.
+- If you are **measuring**, write the whole matrix first and run it in one
+  device-lock hold.
+
+## What a step actually costs here (measured, Lume Pad 2)
+
+| step | cost |
+| --- | --- |
+| `cmd fx --ei k ... --ei v ...` (one dial) | ~0.1 s |
+| one sweep step in `scripts/fx-sweep.sh` (settle + dump + screenshot) | ~3 s |
+| incremental `assembleDebug` (warm, no daemon) | 20–50 s |
+| `adb install -r` | 20–60 s |
+| app start + PTC level load | ~20 s |
+| device-lock default hold limit | 300 s |
+
+So a rebuild-install-look cycle is **2–4 minutes**, while a dial change is
+**0.1 s** — a factor of a thousand. Ten data points by rebuild costs 30 minutes;
+the same ten in one sweep costs 30 seconds.
+
+## Required shape of a new feature
+
+Every new effect or tunable should ship with:
+
+1. an `fx` key (set/get in `gfx_opengl_ssfx_set/get` or equivalent),
+2. a panel control on the relevant page,
+3. a field in `cmd dump` / the PTC status line,
+4. a line in the README FX key table.
+
+That is not bureaucracy — it is what makes the *next* session able to tune
+without a compiler. A feature without dials forces a rebuild for every
+experiment.
+
+## Running a sweep
+
+```bash
+# 1. describe the matrix once (name | fx settings | settle | caption)
+$EDITOR scripts/plans/myfeature.sweep
+
+# 2. check the plan without touching the tablet
+scripts/fx-sweep.sh scripts/plans/myfeature.sweep --dry-run
+
+# 3. run the whole plan in ONE device-lock hold
+AGENT_TABLET_MUTE=1 scripts/agent-lock.sh device --reason "myfeature sweep" -- \
+    scripts/fx-sweep.sh scripts/plans/myfeature.sweep --extract dn
+```
+
+Output: `results.tsv` (fps, ms, requested fields) plus one PNG per step, under
+`/media/share/tmp/artifacts/sm64/sweeps/<stamp>/`. The script refuses to run
+without the device lock unless you pass `--allow-unlocked`.
+
+## Probe before you build
+
+Before implementing a technique, measure the thing it depends on with dials that
+already exist. Two examples from this repo:
+
+- God rays: the quarter-res march turned out to be nearly free (flat from 8 to
+  32 samples); the fixed cost was the blur passes and the extra FX sampler. That
+  changed the tuning target before any UI was written.
+- Denoiser: a temporary `glFinish` probe showed the à-trous chain was 4.3 ms and
+  the composite 2.9 ms, which is why the reduced-resolution default was chosen
+  rather than guessed.
+
+## Anti-patterns (all of these happened here)
+
+- Editing a constant, rebuilding, and repeating for each value of that constant.
+- Looking at the wrong metric: `rate=` in `cmd dump` is a main-loop EMA, not a
+  frame time; use `fps=` (`1000/fps`). Denoiser numbers were misread for days
+  because of it.
+- Trusting a stubbed clock: `osGetTime()` returns 0 in this port, so scripted
+  orbits were frozen at phase 0 and looked like "the effect does nothing".
+- Taking the device lock once per command instead of once per batch, which
+  starves the other agents waiting on it.
+- Running adb unlocked by accident. `fx-sweep.sh` now refuses; write other device
+  scripts the same way (`AGENT_DEVICE_LOCK_HELD=1` is exported by the lock).
+- Re-deriving numbers that are already written down: check `BACKLOG.md`,
+  `MOTION-VECTORS.md`, `DENOISER-RATE-LIMIT.md` and the README tables first.
+
+## Checklist before any rebuild
+
+1. Is there already a dial for this? (Check the FX key table.)
+2. Am I changing a number, or behaviour? Numbers never need a rebuild.
+3. Have I batched all the edits I want in this build?
+4. Have I written the measurement matrix, and does it fit in one lock hold?
+5. Does the change add a dial + status field so the next experiment is free?

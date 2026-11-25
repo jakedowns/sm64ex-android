@@ -68,6 +68,23 @@ The NDK toolchain runs under qemu here and occasionally crashes with a spurious
 `python3: Syntax error` or header corruption. Re-run the build; it is not
 usually a code error.
 
+## Efficient debugging (read before any tuning session)
+
+Runtime dials beat recompiles, and one batched device sweep beats many
+rebuild-install-look loops. A dial change is ~0.1 s, a sweep step ~3 s, and a
+rebuild + install + level load 2-4 minutes.
+
+- Prefer `cmd fx --ei k <key> --ei v <value>` over editing a constant.
+- Every new effect ships with an `fx` key, a panel control, a status field and a
+  README row, so the next session can tune it without a compiler.
+- Write the whole measurement matrix into a plan and run it in ONE device-lock
+  hold with `scripts/fx-sweep.sh <plan>` (it refuses to run unlocked).
+- Check `BACKLOG.md`, `MOTION-VECTORS.md`, `DENOISER-RATE-LIMIT.md` and the
+  README tables before re-deriving a number.
+
+Full rationale, costs, probing examples and anti-patterns:
+[`EFFICIENT-DEBUGGING.md`](EFFICIENT-DEBUGGING.md).
+
 ## Backlog
 
 Open threads (unfinished effects, known bugs, environment gotchas such as the

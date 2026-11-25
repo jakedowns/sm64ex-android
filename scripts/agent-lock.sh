@@ -397,6 +397,15 @@ hold_start_ms="$(now_ms)"
 log_event acquire "$kind" "$lock_file" "${reason:-unspecified}" \
     "$timeout" "$waited_ms" 0 null
 
+# Marker for child scripts so they can prove they are inside the lock (for
+# example fx-sweep.sh refuses to drive the tablet unlocked).
+if [[ "$kind" == "device" ]]; then
+    export AGENT_DEVICE_LOCK_HELD=1
+else
+    export AGENT_BUILD_LOCK_HELD=1
+fi
+export AGENT_LOCK_KIND="$kind"
+
 if [[ "$kind" == "device" ]]; then
     if ! device_mute; then
         echo "agent-lock: refusing to run with tablet audio unmuted" >&2
