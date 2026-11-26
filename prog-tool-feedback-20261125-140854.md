@@ -129,3 +129,31 @@ Counts above are approximate, from this session's own transcript: roughly 15+
 turn-end blocks, 8+ `say` nudges, 6+ long-command hints, 10+ staleness warnings
 over about six hours of wall-clock work with five agents. I did not instrument
 the plugin; the numbers are what appeared in context.
+
+---
+
+## Addendum, same day: the fix works, one gap remains
+
+The maintainer shipped ownership-aware blocks (`N stale/error own tasks …
+(M child-owned, K blocked on children excluded)`) and a session `mute`/`unmute`.
+Both landed while this session was running, and both are the right shape: the
+old false positive is gone, and the mute removed the say/staleness/relay noise
+immediately.
+
+Two observations from using them under load (9 parallel subagents):
+
+- **A `progress_touch` does not reset the staleness clock.** Two "stale own
+  task" blocks fired 12 and 25 minutes apart on parents whose only activity was
+  subagent work, despite a touch in between. If touch is not an activity signal,
+  say so in the nudge; otherwise the only way to silence a legitimately blocked
+  parent is to fake a status change.
+- **A parent cannot be marked `waiting` while children run**, because rollup
+  forces it back to `running`. So the "blocked on children" exclusion can never
+  apply to the parent that most needs it. Suggestion: treat "all running
+  children are in other sessions" as waiting regardless of rollup, or exclude
+  staleness for a parent whose children all updated within the window.
+
+Neither is a regression — they are what shows up once the coarse false positive
+is gone. With those two lines the block would be almost silent in a healthy
+multi-agent session.
+
