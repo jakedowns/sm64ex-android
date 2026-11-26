@@ -63,6 +63,8 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     private static final String BUILD_NAME = "v1.0-alpha3";
     private static final String PREFS_NAME = "sm64port";
     private static final String PREF_OVERLAY_OPACITY = "overlay_opacity";
+    /* Debug panel docking: false = bottom strip (default), true = left half. */
+    private static final String PREF_PANEL_VERTICAL = "panel_vertical";
     /* QUICK DEV: cheap boot for the device loop (DEBUG -> SYS, off by default). */
     private static final String PREF_QUICK_DEV = "quick_dev";
     private static final String PREF_QUICK_DEV_LEVEL = "quick_dev_level";
@@ -231,6 +233,24 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     // Debug panel: slider drag mode, tab styling, changelog.
     private LinearLayout tuningPanelView;
     private LinearLayout topTabBar;
+    /** Debug panel orientation: false = pinned across the bottom, true = left half. */
+    private boolean panelVertical = false;
+    /** Drawer header and its fixed-position children (re-laid out per orientation). */
+    private android.widget.AbsoluteLayout panelHeader;
+    private int lastHeaderWidth = -1;
+    private TextView srcButton;
+    private TextView orientButton;
+    /** Every page ScrollView, so its max height can change with the orientation. */
+    private final java.util.List<PageScroll> pageScrollers = new java.util.ArrayList<>();
+    /** Insertion cursor for toggles that belong above the page's slider grid. */
+    private int aboveGridIndex;
+    /** Page-local tabs (LIGHT sub-pages) exposed to headless UI scripts. */
+    private final java.util.List<Object[]> namedPanelButtons = new java.util.ArrayList<>();
+
+    private void registerPanelButton(String name, TextView v) {
+        namedPanelButtons.add(new Object[] { name, v });
+    }
+
     private final java.util.List<View> sliderRows = new java.util.ArrayList<>();
     private TextView hideButton;
     private int selectedTab = 0;
@@ -412,6 +432,14 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         } catch (Throwable t) {
             Log.w(TAG, "camstick restore failed", t);
         }
+        /* Panel docking is a user preference and must survive a restart. */
+        try {
+            panelVertical = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                    .getBoolean(PREF_PANEL_VERTICAL, false);
+        } catch (Throwable t) {
+            panelVertical = false;
+        }
+        Log.i(TAG, "panel orientation restored: " + (panelVertical ? "V" : "H"));
 
         /* QUICK DEV boots before the SDL thread starts native main(), so this is
          * the safe place to hand the persisted toggle to the engine. */
@@ -593,6 +621,14 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             panelParams.addRule(RelativeLayout.ALIGN_PARENT_BOTTOM);
             layout.addView(buildTuningPanel(), panelParams);
             weaverLog("debug tuning panel attached");
+            tuningPanelView.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, orr, ob) -> {
+                int nw = r - l;
+                if (nw != lastHeaderWidth) {
+                    lastHeaderWidth = nw;
+                    layoutPanelHeader();
+                }
+            });
+            applyPanelOrientation(false);
             // Apply the persisted opacity after both the overlay and its slider
             // exist (SeekBar.setProgress happens before the listener is set).
             applyOverlayAlpha(overlayAlphaPct);
@@ -803,6 +839,107 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         animatePanelHeight(expanded, collapsed, false);
     }
 
+    // ---- panel docking (horizontal strip / vertical left half) --------------
+
+    private void refreshOrientButton() {
+        if (orientButton == null) return;
+        orientButton.setText(panelVertical ? "\u25AF VERT" : "\u25AD HORIZ");
+        orientButton.setTextColor(panelVertical ? 0xFF66FF99 : 0xFFCCDDFF);
+    }
+
+    /** Switch the dock between the bottom strip and the left half (persisted). */
+    void setPanelVertical(boolean vertical) {
+        if (panelVertical == vertical) return;
+        panelVertical = vertical;
+        try {
+            getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                    .putBoolean(PREF_PANEL_VERTICAL, vertical).commit();
+        } catch (Throwable t) {
+            Log.w(TAG, "panel orientation not saved", t);
+        }
+        applyPanelOrientation(true);
+        Log.i(TAG, "PANEL orientation=" + (vertical ? "V" : "H"));
+    }
+
+    private void setHeaderChild(View v, int x, int y, int w, int h) {
+        if (v == null) return;
+        android.view.ViewGroup.LayoutParams raw = v.getLayoutParams();
+        if (!(raw instanceof android.widget.AbsoluteLayout.LayoutParams)) return;
+        android.widget.AbsoluteLayout.LayoutParams lp =
+                (android.widget.AbsoluteLayout.LayoutParams) raw;
+        lp.x = x;
+        lp.y = y;
+        lp.width = w;
+        lp.height = h;
+        v.setLayoutParams(lp);
+    }
+
+    /** Header buttons follow the dock so nothing is clipped in vertical mode. */
+    private void layoutPanelHeader() {
+        if (panelHeader == null || tuningPanelView == null) return;
+        int w = tuningPanelView.getWidth();
+        if (w <= 0) w = getResources().getDisplayMetrics().widthPixels;
+        int inner = w - tuningPanelView.getPaddingLeft()
+                - tuningPanelView.getPaddingRight();
+        if (!panelVertical) {
+            // Historical fixed positions (automation taps these).
+            setHeaderChild(hideButton, 16, 0, 120, 64);
+            setHeaderChild(orientButton, 150, 0, 220, 64);
+            setHeaderChild(modeButton, 1580, 0, 220, 64);
+            setHeaderChild(fpsButton, 1820, 0, 220, 64);
+            setHeaderChild(camCycleButton, 2060, 0, 380, 64);
+        } else {
+            setHeaderChild(hideButton, 16, 0, 120, 64);
+            setHeaderChild(orientButton, 150, 0, 260, 64);
+            int right = Math.max(dp(440), inner);
+            setHeaderChild(camCycleButton, right - 370, 0, 280, 64);
+            setHeaderChild(fpsButton, right - 590, 0, 220, 64);
+            setHeaderChild(modeButton, right - 810, 0, 220, 64);
+        }
+    }
+
+    /** Apply the dock geometry to the panel, its pages and the header. */
+    private void applyPanelOrientation(boolean relayout) {
+        if (tuningPanelView == null) return;
+        int pad = dp(16);
+        tuningPanelView.setPadding(pad, pad / 2, panelVertical ? dp(10) : pad * 3, pad / 2);
+        android.view.ViewGroup.LayoutParams raw = tuningPanelView.getLayoutParams();
+        if (raw instanceof android.widget.RelativeLayout.LayoutParams) {
+            android.widget.RelativeLayout.LayoutParams lp =
+                    (android.widget.RelativeLayout.LayoutParams) raw;
+            lp.removeRule(android.widget.RelativeLayout.ALIGN_PARENT_BOTTOM);
+            lp.removeRule(android.widget.RelativeLayout.ALIGN_PARENT_LEFT);
+            lp.removeRule(android.widget.RelativeLayout.ALIGN_PARENT_TOP);
+            lp.removeRule(android.widget.RelativeLayout.ALIGN_PARENT_RIGHT);
+            if (panelVertical) {
+                lp.width = Math.max(dp(500),
+                        getResources().getDisplayMetrics().widthPixels / 2);
+                // Wrapped height: tall pages still fill the screen, short ones
+                // leave the lower-left corner of the game (and touch stick) free.
+                lp.height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT;
+                lp.addRule(android.widget.RelativeLayout.ALIGN_PARENT_LEFT);
+                lp.addRule(android.widget.RelativeLayout.ALIGN_PARENT_TOP);
+            } else {
+                lp.width = android.view.ViewGroup.LayoutParams.MATCH_PARENT;
+                lp.height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT;
+                lp.addRule(android.widget.RelativeLayout.ALIGN_PARENT_BOTTOM);
+            }
+            tuningPanelView.setLayoutParams(lp);
+        }
+        for (int i = 0; i < pageScrollers.size(); i++) {
+            pageScrollers.get(i).setMaxHeight(pageMaxHeight());
+        }
+        layoutPanelHeader();
+        refreshOrientButton();
+        if (relayout) {
+            tuningPanelView.requestLayout();
+            updateStereoPictogramVisibility();
+        }
+        Log.i(TAG, "PANEL dock=" + (panelVertical ? "V" : "H")
+                + " width=" + (tuningPanelView.getLayoutParams().width)
+                + " pageMax=" + pageMaxHeight());
+    }
+
     /**
      * Panel gestures: a tap outside the open panel collapses it, and a downward
      * swipe started on the panel (but not on a slider) collapses it too.
@@ -998,18 +1135,23 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         label.setText(name + ": press MEASURE");
         label.setTextSize(12);
         label.setTextColor(0xFFAACCFF);
-        label.setPadding(dp(4), dp(2), dp(8), dp(2));
+        label.setPadding(dp(4), dp(1), dp(8), dp(1));
         row.addView(label, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         TextView btn = new TextView(this);
         btn.setText("MEASURE");
         btn.setTextSize(12);
         btn.setTextColor(0xFFFFCC66);
-        btn.setPadding(dp(10), dp(6), dp(10), dp(6));
+        btn.setPadding(dp(8), dp(3), dp(8), dp(3));
         btn.setBackgroundColor(0x22FFFFFF);
         btn.setOnClickListener(v -> measureEffect(name, label, off, on, isOn));
         row.addView(btn);
-        controls.addView(row, 0);
+        /* Behind a disclosure at the bottom: A/B timing is rarely used and it
+         * must not push the page's enable toggle below the sliders. */
+        LinearLayout body = beginSection("PERF (A/B MEASURE)", false);
+        body.addView(row, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        endSection();
     }
 
     private void measureEffect(final String name, final TextView label,
@@ -1063,6 +1205,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
 
         // Fixed pixel positions so automation can tap buttons reliably.
         android.widget.AbsoluteLayout header = new android.widget.AbsoluteLayout(this);
+        panelHeader = header;
 
         // Drawer toggle: a caret that flips when the panel opens/closes.
         TextView title = new TextView(this);
@@ -1079,6 +1222,17 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             }
         });
         header.addView(title, abs(16, 0, 120, 64));
+
+        /* Docking toggle next to the caret: bottom strip (horizontal) or the
+         * left half of the screen (vertical). Persisted across launches. */
+        orientButton = new TextView(this);
+        orientButton.setTextSize(14);
+        orientButton.setTextColor(0xFFCCDDFF);
+        orientButton.setGravity(Gravity.CENTER);
+        orientButton.setPadding(dp(4), 0, dp(4), 0);
+        orientButton.setOnClickListener(v -> setPanelVertical(!panelVertical));
+        header.addView(orientButton, abs(150, 0, 220, 64));
+        refreshOrientButton();
 
         // Right-aligned cluster: [3D|2D] [FPS] [CAM].
         modeButton = new TextView(this);
@@ -1152,19 +1306,19 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                 LinearLayout.LayoutParams.WRAP_CONTENT));
         buildStrips(tabContent);
 
-        // Scrolling container so sliders/buttons never run off screen.
+        // Scrolling container so sliders/buttons never run off screen. It is
+        // only as tall as its content (capped by pageMaxHeight()), so a page
+        // that fits needs no scroll at all.
         controls = new LinearLayout(this);
         controls.setOrientation(LinearLayout.VERTICAL);
-        android.widget.ScrollView scroller = new android.widget.ScrollView(this);
+        PageScroll scroller = new PageScroll();
         scroller.addView(controls, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
-        int maxH = (int) (getResources().getDisplayMetrics().heightPixels * 0.42f);
-        scroller.setFillViewport(false);
         scrollerRef = scroller;
         tabContent.addView(scroller, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
-                Math.min(900, maxH)));
+                LinearLayout.LayoutParams.WRAP_CONTENT));
         tabViews.add(scroller);
         // Collapsed by default: the open panel covers the bottom of the screen
         // and swallowed taps meant for the overlay's START button. HIDE/SHOW
@@ -1172,10 +1326,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         tabContent.setVisibility(android.view.View.GONE);
         if (topTabBar != null) topTabBar.setVisibility(android.view.View.GONE);
 
-        grid = new android.widget.GridLayout(this);
-        grid.setColumnCount(2);
-        grid.setOrientation(android.widget.GridLayout.HORIZONTAL);
-        controls.addView(grid);
+        grid = newGrid(controls);
         addSlider("IPD / baseline", -300, 300, 300, " px", 0);
         addSlider("Zero parallax", -100, 100, 40, " px", 1);
         addSlider("Depth", -200, 200, 50, " %", 2);
@@ -1188,7 +1339,9 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addIntSlider("Ctl opacity", 0, 100, overlayAlphaPct, new java.util.function.IntConsumer() {
             @Override public void accept(int v) { applyOverlayAlpha(v); }
         });
-        controls.addView(makePinchToggle());
+        // Task rule: an enable/show toggle is the first control on the page,
+        // above every slider. GESTURES is the stereo page's enable switch.
+        addAboveGrid(makePinchToggle(), ViewGroup.LayoutParams.WRAP_CONTENT);
         // Hidden for now (kept for later): V%, W-px, H-shift%, V-shift.
         outVal[1] = 100; outVal[3] = 0; outVal[4] = 0;
         startDebugReadout(panel);
@@ -1209,7 +1362,10 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         startFrameSampling();
         buildFeedbackBar();
 
-        android.widget.AbsoluteLayout toggles = new android.widget.AbsoluteLayout(this);
+        /* Stereo toggles: a weighted row (not absolute pixels) so they stay
+         * reachable in the vertical dock as well. */
+        LinearLayout toggles = new LinearLayout(this);
+        toggles.setOrientation(LinearLayout.HORIZONTAL);
         String[][] tgl = {{"SWAP", "4"}, {"SAME", "6"},
                 {"PERF2x", "12"}, {"TOEAUTO", "40"}};
         for (String[] t : tgl) {
@@ -1220,7 +1376,8 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             b.setTextColor((t[0].equals("UIPOST") || t[0].equals("STAY")
                     || t[0].equals("TOEAUTO")) ? 0xFF66FF99 : 0xFF888888);
             b.setTextSize(14);
-            b.setPadding(pad, pad / 2, pad, pad / 2);
+            b.setGravity(Gravity.CENTER);
+            b.setPadding(dp(2), dp(4), dp(2), dp(4));
             final int id = System.identityHashCode(b);
             if (t[1].equals("13")) fitButtons.add(b);
             b.setOnClickListener(new View.OnClickListener() {
@@ -1271,24 +1428,24 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                     }
                 }
             });
-            int bx = 16 + (tglIndex % 7) * 340;
-            int by = (tglIndex / 7) * 64;
-            toggles.addView(b, abs(bx, by, 340, 60));
-            Log.i(TAG, "BTN " + t[0] + " " + bx + " " + by + " 340 60");
+            toggles.addView(b, new LinearLayout.LayoutParams(0, dp(34), 1f));
+            Log.i(TAG, "BTN " + t[0] + " row");
             tglIndex++;
         }
-        controls.addView(toggles, new LinearLayout.LayoutParams(-2, 130));
+        addAboveGrid(toggles, dp(34));
 
         buildFxTabs();
         selectPage(0);
 
-        TextView src = new TextView(this);
-        src.setText("SRC");
-        src.setTextColor(0xFFCCCCCC);
-        src.setTextSize(16);
-        src.setPadding(pad, pad / 2, pad, pad / 2);
-        header.addView(src, abs(2440, 0, 120, 64));
-        src.setOnClickListener(new View.OnClickListener() {
+        /* SRC lives in the tab bar next to RESET: the old header slot at
+         * x=2440 was clipped by the panel's right padding and unreachable. */
+        srcButton = new TextView(this);
+        srcButton.setText("SRC");
+        srcButton.setTextColor(0xFFCCCCCC);
+        srcButton.setTextSize(14);
+        srcButton.setPadding(dp(10), dp(6), dp(10), dp(6));
+        tabBar.addView(srcButton, tabBar.getChildCount() - 1);
+        srcButton.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 srcIndex = (srcIndex + 1) % SRC_SIZES.length;
@@ -1383,16 +1540,14 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         col.setOrientation(LinearLayout.VERTICAL);
         col.setPadding(dp(4), 0, dp(4), dp(2));
 
-        fxStrip = new LinearLayout(this);
-        fxStrip.setOrientation(LinearLayout.HORIZONTAL);
+        fxStrip = new FlowBar();
         for (int i = 0; i < FX_LABELS.length; i++) {
             final int page = "CAMERA".equals(FX_LABELS[i]) ? 6 : FX_PAGES[i];
             addSubTab(fxStrip, FX_LABELS[i], () -> selectPage(page));
         }
         col.addView(fxStrip);
 
-        cameraStrip = new LinearLayout(this);
-        cameraStrip.setOrientation(LinearLayout.HORIZONTAL);
+        cameraStrip = new FlowBar();
         cameraStrip.setPadding(dp(12), 0, 0, 0);
         for (int i = 0; i < CAMERA_LABELS.length; i++) {
             final int page = CAMERA_PAGES[i];
@@ -1400,8 +1555,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         }
         col.addView(cameraStrip);
 
-        debugStripRow = new LinearLayout(this);
-        debugStripRow.setOrientation(LinearLayout.HORIZONTAL);
+        debugStripRow = new FlowBar();
         for (int i = 0; i < 4; i++) {
             final int page = i;
             addSubTab(debugStripRow, new String[]{"MOVE", "PORTAL", "BALL", "SYS"}[i], () -> {
@@ -1412,8 +1566,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addSubTab(debugStripRow, "LOGS", () -> selectPage(11));
         col.addView(debugStripRow);
 
-        aboutStrip = new LinearLayout(this);
-        aboutStrip.setOrientation(LinearLayout.HORIZONTAL);
+        aboutStrip = new FlowBar();
         for (int i = 0; i < ABOUT_LABELS.length; i++) {
             final int page = ABOUT_PAGES[i];
             addSubTab(aboutStrip, ABOUT_LABELS[i], () -> selectPage(page));
@@ -1559,46 +1712,40 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
 
     /** Creates (and appends) a new scrollable tab page and makes it current. */
     private LinearLayout beginTab() {
-        android.widget.ScrollView sc = new android.widget.ScrollView(this);
-        sc.setFillViewport(false);
+        PageScroll sc = new PageScroll();
         LinearLayout content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
         sc.addView(content, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
-        int maxH = (int) (getResources().getDisplayMetrics().heightPixels * 0.42f);
         tabContent.addView(sc, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, Math.min(900, maxH)));
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
         tabViews.add(sc);
         controls = content;
 
-        grid = new android.widget.GridLayout(this);
-        grid.setColumnCount(2);
-        grid.setOrientation(android.widget.GridLayout.HORIZONTAL);
-        content.addView(grid);
+        grid = newGrid(content);
         return content;
     }
 
     private String splatShapeLabel() {
-        return splatShape == 1 ? "SPLAT SHAPE: PAINT STROKES"
-                               : "SPLAT SHAPE: RADIAL";
+        return "\u2248 " + (splatShape == 1 ? "SPLAT SHAPE: PAINT STROKES"
+                                            : "SPLAT SHAPE: RADIAL");
     }
 
     private String splatTargetLabel() {
         switch (splatMode) {
-            case 1: return "SPLAT TARGET: MARIO";
-            case 2: return "SPLAT TARGET: TREES";
-            case 3: return "SPLAT TARGET: ALL OBJECTS";
-            default: return "SPLAT TARGET: OFF";
+            case 1: return "\u25C9 SPLAT TARGET: MARIO";
+            case 2: return "\u25C9 SPLAT TARGET: TREES";
+            case 3: return "\u25C9 SPLAT TARGET: ALL OBJECTS";
+            default: return "\u25C9 SPLAT TARGET: OFF";
         }
     }
 
     private void buildFxTabs() {
         // --- VIEWS: debug view selector + a small reorderable layer stack ---
         beginTab();
-        grid = new android.widget.GridLayout(this);
-        grid.setColumnCount(2);
-        controls.addView(grid);
+        grid = newGrid(controls);
         {
             LinearLayout r = addRow();
             addDebugCell(r, "OFF", 0);
@@ -1631,20 +1778,13 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             layerOrder.add("WIRE");
         }
         rebuildLayerList();
-        {
-            TextView h = new TextView(this);
-            h.setText("PERF (A/B average)");
-            h.setTextSize(13);
-            h.setTextColor(0xFF66CCFF);
-            h.setPadding(dp(4), dp(10), dp(4), dp(2));
-            controls.addView(h);
-        }
+        beginSection("PERF (A/B AVERAGE)", false);
         perfTable = new TextView(this);
         perfTable.setTextSize(12);
         perfTable.setTextColor(0xFFAACCFF);
         perfTable.setTypeface(android.graphics.Typeface.MONOSPACE);
         perfTable.setPadding(dp(4), dp(2), dp(4), dp(4));
-        controls.addView(perfTable);
+        currentParent().addView(perfTable);
         refreshPerfTable();
         {
             LinearLayout r = addRow();
@@ -1655,6 +1795,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                 refreshPerfTable();
             });
         }
+        endSection();
 
         // --- MXAO-style ambient occlusion ---
         beginTab();
@@ -1720,12 +1861,14 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         camTop.addView(recentre, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        controls.addView(camTop, 0);
+        addAboveGrid(camTop, ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.MATCH_PARENT);
 
         controls.addView(makePinchToggle(), 0);
         addCamSensPicker(controls);
+        addAboveGrid(makePinchToggle(), ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.MATCH_PARENT);
         addCamToggle("WALL NOCLIP", 52, true);
-        addOcclusionControls();
 
         addCamSlider("Cam distance", 1, 1500, 700, " u", 46);
         addCamSlider("FOV %", 1, 400, 100, " %", 20);
@@ -1738,6 +1881,13 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addCamSlider("Pivot height", 0, 200, gyroPivot, " cm", 45);
         addCamSlider("Gyro strength", 0, 200, gyroStrength, " %", 44);
         addCamStickControls();
+        addCamSlider("Cam sensitivity", 10, 300, 100, " %", 49);
+        addOcclusionControls();
+        beginSection("TRACKING TUNING", false);
+        addCamSlider("HDT strength", 0, 200, hdtStrength, " %", 43);
+        addCamSlider("Pivot height", 0, 200, gyroPivot, " cm", 45);
+        addCamSlider("Gyro strength", 0, 200, gyroStrength, " %", 44);
+        endSection();
         addCamButton("ASPECT TEST", () -> nativePtcCommand("aspecttest"));
         camStatusView = new TextView(this);
         camStatusView.setTextSize(14);
@@ -1856,7 +2006,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         enhColumnTarget = enhPageColumns[0][1];
         addEnhSection("RENDER / SIM");
         uncappedTestToggle = new TextView(this);
-        uncappedTestToggle.setText("UNCAPPED TEST SIM: " + (uncappedTestOn ? "ON" : "OFF"));
+        uncappedTestToggle.setText(toggleLabel("UNCAPPED TEST SIM", uncappedTestOn));
         uncappedTestToggle.setTextSize(16);
         uncappedTestToggle.setTextColor(uncappedTestOn ? 0xFF66FF99 : 0xFF888888);
         uncappedTestToggle.setPadding(dp(4), dp(8), dp(4), dp(8));
@@ -1864,14 +2014,14 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         enhParent().addView(uncappedTestToggle);
         TextView interp = new TextView(this);
         interpButton = interp;
-        interp.setText(interpOn ? "INTERP ON" : "INTERP OFF");
+        interp.setText(toggleLabel("INTERP", interpOn));
         interp.setTextSize(16);
         interp.setTextColor(interpOn ? 0xFF66FF99 : 0xFF888888);
         interp.setPadding(dp(4), dp(8), dp(4), dp(8));
         interp.setOnClickListener(v -> {
             interpOn = !interpOn;
             nativeSetHfrInterp(interpOn ? 1 : 0);
-            interp.setText(interpOn ? "INTERP ON" : "INTERP OFF");
+            interp.setText(toggleLabel("INTERP", interpOn));
             interp.setTextColor(interpOn ? 0xFF66FF99 : 0xFF888888);
             Log.i(TAG, "INTERP " + interpOn);
         });
@@ -1881,14 +2031,14 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
          * advances once every N presented ticks; with interpolation on the
          * frozen ticks re-present the last display list at k/N of the step. */
         TextView simInterp = new TextView(this);
-        simInterp.setText(simInterpOn ? "SIM INTERP ON" : "SIM INTERP OFF");
+        simInterp.setText(toggleLabel("SIM INTERP", simInterpOn));
         simInterp.setTextSize(16);
         simInterp.setTextColor(simInterpOn ? 0xFF66FF99 : 0xFF888888);
         simInterp.setPadding(dp(4), dp(8), dp(4), dp(8));
         simInterp.setOnClickListener(v -> {
             simInterpOn = !simInterpOn;
             debugFx(242, simInterpOn ? 1 : 0);
-            simInterp.setText(simInterpOn ? "SIM INTERP ON" : "SIM INTERP OFF");
+            simInterp.setText(toggleLabel("SIM INTERP", simInterpOn));
             simInterp.setTextColor(simInterpOn ? 0xFF66FF99 : 0xFF888888);
             Log.i(TAG, "SIM INTERP " + simInterpOn);
         });
@@ -1897,14 +2047,14 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addEnhSlider("Present at t=1 (diag)", 0, 1, 0, v -> debugFx(243, v));
 
         final TextView stayToggle = new TextView(this);
-        stayToggle.setText("STAY IN LEVEL: " + (stayOn ? "ON" : "OFF"));
+        stayToggle.setText(toggleLabel("STAY IN LEVEL", stayOn));
         stayToggle.setTextSize(16);
         stayToggle.setTextColor(stayOn ? 0xFF66FF99 : 0xFF888888);
         stayToggle.setPadding(dp(4), dp(8), dp(4), dp(8));
         stayToggle.setOnClickListener(v -> {
             stayOn = !stayOn;
             nativeSetStereoInt(30, stayOn ? 1 : 0);
-            stayToggle.setText("STAY IN LEVEL: " + (stayOn ? "ON" : "OFF"));
+            stayToggle.setText(toggleLabel("STAY IN LEVEL", stayOn));
             stayToggle.setTextColor(stayOn ? 0xFF66FF99 : 0xFF888888);
             Log.i(TAG, "STAY=" + stayOn);
         });
@@ -1984,14 +2134,14 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         enhColumnTarget = enhPageColumns[3][1];
         addEnhSection("SYSTEM");
         pauseLoopToggle = new TextView(this);
-        pauseLoopToggle.setText("PAUSE GAME LOOP: OFF");
+        pauseLoopToggle.setText(toggleLabel("PAUSE GAME LOOP", false));
         pauseLoopToggle.setTextSize(16);
         pauseLoopToggle.setTextColor(0xFF888888);
         pauseLoopToggle.setPadding(dp(4), dp(10), dp(4), dp(10));
         pauseLoopToggle.setOnClickListener(v -> {
             hardPaused = !hardPaused;
             nativeSetHardPause(hardPaused ? 1 : 0);
-            pauseLoopToggle.setText("PAUSE GAME LOOP: " + (hardPaused ? "ON" : "OFF"));
+            pauseLoopToggle.setText(toggleLabel("PAUSE GAME LOOP", hardPaused));
             pauseLoopToggle.setTextColor(hardPaused ? 0xFF66FF99 : 0xFF888888);
         });
         enhParent().addView(pauseLoopToggle);
@@ -2002,7 +2152,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             nativeSetHardPause(1);
             hardPaused = true;
             if (pauseLoopToggle != null) {
-                pauseLoopToggle.setText("PAUSE GAME LOOP: ON");
+                pauseLoopToggle.setText(toggleLabel("PAUSE GAME LOOP", true));
                 pauseLoopToggle.setTextColor(0xFF66FF99);
             }
             nativeStepTicks(1);
@@ -2011,7 +2161,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addEnhSection("HUD");
         {
             final TextView gh = new TextView(this);
-            gh.setText("GAME HUD: ON");
+            gh.setText(toggleLabel("GAME HUD", true));
             gh.setTextSize(16);
             gh.setTextColor(0xFF66FF99);
             gh.setPadding(dp(4), dp(8), dp(4), dp(8));
@@ -2019,7 +2169,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                 boolean on = gh.getCurrentTextColor() != 0xFF66FF99;
                 gameHudOn = !on;
                 nativeSetGameHudHidden(on ? 0 : 1);
-                gh.setText("GAME HUD: " + (on ? "ON" : "OFF"));
+                gh.setText(toggleLabel("GAME HUD", on));
                 gh.setTextColor(on ? 0xFF66FF99 : 0xFF888888);
                 refreshTabStyles();
             });
@@ -2027,7 +2177,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         }
         {
             final TextView cap = new TextView(this);
-            cap.setText("DEBUG CAPTIONS: ON");
+            cap.setText(toggleLabel("DEBUG CAPTIONS", true));
             cap.setTextSize(16);
             cap.setTextColor(0xFF66FF99);
             cap.setPadding(dp(4), dp(8), dp(4), dp(8));
@@ -2035,7 +2185,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                 boolean on = cap.getCurrentTextColor() != 0xFF66FF99;
                 debugCapsOn = !on;
                 debugFx(217, on ? 1 : 0);
-                cap.setText("DEBUG CAPTIONS: " + (on ? "ON" : "OFF"));
+                cap.setText(toggleLabel("DEBUG CAPTIONS", on));
                 cap.setTextColor(on ? 0xFF66FF99 : 0xFF888888);
                 refreshTabStyles();
             });
@@ -2043,7 +2193,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         }
         {
             final TextView oc = new TextView(this);
-            oc.setText("TOUCH CONTROLS: ON");
+            oc.setText(toggleLabel("TOUCH CONTROLS", true));
             oc.setTextSize(16);
             oc.setTextColor(0xFF66FF99);
             oc.setPadding(dp(4), dp(8), dp(4), dp(8));
@@ -2051,7 +2201,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                 boolean on = oc.getCurrentTextColor() != 0xFF66FF99;
                 touchCtlOn = !on;
                 if (touchOverlay != null) touchOverlay.setControlsHidden(!on);
-                oc.setText("TOUCH CONTROLS: " + (on ? "ON" : "OFF"));
+                oc.setText(toggleLabel("TOUCH CONTROLS", on));
                 oc.setTextColor(on ? 0xFF66FF99 : 0xFF888888);
                 refreshTabStyles();
             });
@@ -2138,20 +2288,20 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addEnhSection("PERFORMANCE");
         {
             final TextView pm = new TextView(this);
-            pm.setText("PERF MONITOR: ON");
+            pm.setText(toggleLabel("PERF MONITOR", true));
             pm.setTextSize(16);
             pm.setTextColor(0xFF66FF99);
             pm.setPadding(dp(4), dp(8), dp(4), dp(8));
             pm.setOnClickListener(v -> {
                 boolean on = pm.getCurrentTextColor() != 0xFF66FF99;
                 perfMonitorOn = on;
-                pm.setText("PERF MONITOR: " + (on ? "ON" : "OFF"));
+                pm.setText(toggleLabel("PERF MONITOR", on));
                 pm.setTextColor(on ? 0xFF66FF99 : 0xFF888888);
             });
             addCompact(enhParent(), pm);
 
             final TextView fg = new TextView(this);
-            fg.setText("FRAME GRAPH: ON");
+            fg.setText(toggleLabel("FRAME GRAPH", true));
             fg.setTextSize(16);
             fg.setTextColor(0xFF66FF99);
             fg.setPadding(dp(4), dp(8), dp(4), dp(8));
@@ -2162,13 +2312,13 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                     frameGraph.setVisibility(on ? View.VISIBLE : View.GONE);
                     frameGraph.invalidate();
                 }
-                fg.setText("FRAME GRAPH: " + (on ? "ON" : "OFF"));
+                fg.setText(toggleLabel("FRAME GRAPH", on));
                 fg.setTextColor(on ? 0xFF66FF99 : 0xFF888888);
             });
             addCompact(enhParent(), fg);
 
             final TextView fc = new TextView(this);
-            fc.setText("FPS COUNTER: ON");
+            fc.setText(toggleLabel("FPS COUNTER", true));
             fc.setTextSize(16);
             fc.setTextColor(0xFF66FF99);
             fc.setPadding(dp(4), dp(8), dp(4), dp(8));
@@ -2176,7 +2326,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                 boolean on = fc.getCurrentTextColor() != 0xFF66FF99;
                 fpsCounterOn = on;
                 if (fpsView != null) fpsView.setVisibility(on ? View.VISIBLE : View.GONE);
-                fc.setText("FPS COUNTER: " + (on ? "ON" : "OFF"));
+                fc.setText(toggleLabel("FPS COUNTER", on));
                 fc.setTextColor(on ? 0xFF66FF99 : 0xFF888888);
             });
             addCompact(enhParent(), fc);
@@ -2207,10 +2357,12 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addShadowSlider("Normal bias", 0, 300, 45, " u", 5);
         addShadowSlider("Softness", 0, 8, 2, " tx", 6);
         addShadowSlider("PCF taps", 1, 16, 9, "", 7);
+        beginSection("SUN / ADVANCED", false);
         addShadowSlider("Range", 1500, 9000, 4500, " u", 8);
         addShadowSlider("Sun yaw", 0, 359, 45, "deg", 9);
         addShadowSlider("Sun pitch", 5, 89, 52, "deg", 10);
         addShadowSlider("Update every", 1, 4, 1, " fr", 2);
+        endSection();
         // Push the current values once so the native defaults match the labels.
         nativeSetShadow(1, shadowRes);
 
@@ -2231,7 +2383,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             refreshTabStyles();
             Log.i(TAG, "SPLAT target=" + splatMode);
         });
-        controls.addView(splatTargetButton);
+        addAboveGrid(splatTargetButton, 0);
         splatShapeButton = new TextView(this);
         splatShapeButton.setText(splatShapeLabel());
         splatShapeButton.setTextSize(16);
@@ -2244,7 +2396,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             splatShapeButton.setTextColor(splatShape != 0 ? 0xFF66FF99 : 0xFF888888);
             Log.i(TAG, "SPLAT shape=" + splatShape);
         });
-        controls.addView(splatShapeButton);
+        addAboveGrid(splatShapeButton, 0);
         addSlider("Splat size", 1, 64, 14, " px", 61);
         addSlider("Opacity", 0, 100, 100, " %", 62);
         addSlider("Softness", 0, 100, 70, " %", 63);
@@ -2304,7 +2456,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addEnhButton("REFRESH INFO", this::refreshDebugLogInfo);
         {
             final TextView vb = new TextView(this);
-            vb.setText("LEIA VERBOSE: " + (DebugLog.isVerbose(this) ? "ON" : "OFF")
+            vb.setText("\u25C9 LEIA VERBOSE: " + (DebugLog.isVerbose(this) ? "ON" : "OFF")
                     + "  (tap to switch + restart)");
             vb.setTextSize(16);
             vb.setTextColor(0xFF66CCFF);
@@ -2345,8 +2497,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         // --- Dynamic light / blur / probes / lens / views (second-tier tabs) ---
         beginTab();
         final String[] lightNames = { "BLUR", "LIGHTS", "PROBES", "LENS", "RATE/DN", "GLOW" };
-        LinearLayout lightBar = new LinearLayout(this);
-        lightBar.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout lightBar = new FlowBar();
         lightBar.setPadding(dp(4), dp(2), dp(4), dp(2));
         controls.addView(lightBar);
         final LinearLayout[] lightPages = new LinearLayout[lightNames.length];
@@ -2366,6 +2517,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             });
             lightBar.addView(tab);
             lightTabs[i] = tab;
+            registerPanelButton("LIGHT_" + lightNames[i], tab);
 
             LinearLayout lp = new LinearLayout(this);
             lp.setOrientation(LinearLayout.VERTICAL);
@@ -2376,9 +2528,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
 
         // BLUR: one toggle row, then the two blur sliders side by side.
         controls = lightPages[0];
-        grid = new android.widget.GridLayout(this);
-        grid.setColumnCount(2);
-        controls.addView(grid);
+        grid = newGrid(controls);
         {
             LinearLayout r = addRow();
             addToggleCell(r, "MOTION BLUR", 100, false);
@@ -2391,6 +2541,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addIntSlider("Max blur px", 0, 128, 16, v -> debugFx(143, v));
         addIntSlider("Shutter deg", 0, 360, 180, v -> debugFx(141, v));
         addIntSlider("Sub-step jitter %", 0, 100, 100, v -> debugFx(146, v));
+        beginSection("VECTORS & DIAGNOSTICS", false);
         addIntSlider("Depth reject %", 0, 100, 20, v -> debugFx(147, v));
         addIntSlider("Velocity clamp px", 4, 300, 60, v -> debugFx(148, v));
         addIntSlider("Velocity res 1/n", 1, 8, 4, v -> debugFx(144, v));
@@ -2398,12 +2549,16 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addIntSlider("Vector heat gain", 20, 500, 120, v -> debugFx(118, v));
         addIntSlider("Vector bound 0/1/2", 0, 2, 1, v -> debugFx(240, v));
         addIntSlider("Heat style 0/1/2", 0, 2, 2, v -> debugFx(149, v));
+        endSection();
 
         // LIGHTS: demo buttons, then count/intensity/shadows, then per-light RGB.
         controls = lightPages[1];
-        grid = new android.widget.GridLayout(this);
-        grid.setColumnCount(2);
-        controls.addView(grid);
+        grid = newGrid(controls);
+        /* Enable toggle first, demo actions after it (Task B). */
+        {
+            LinearLayout r = addRow();
+            addToggleCell(r, "LIGHT SHADOWS", 104, false);
+        }
         {
             LinearLayout r = addRow();
             addActionCell(r, "LIGHT TEST", () -> debugPtc("lighttest"));
@@ -2414,10 +2569,6 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             });
             addActionCell(r, "STOP LOOP", () -> debugPtc("lightshowstop"));
         }
-        {
-            LinearLayout r = addRow();
-            addToggleCell(r, "LIGHT SHADOWS", 104, false);
-        }
         moveGridLast();
         addIntSlider("Light count", 0, 4, 0, v -> {
             lightCountOn = v > 0;
@@ -2426,18 +2577,18 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         });
         addIntSlider("Light intensity", 0, 300, 120, v -> debugFx(105, v));
         addIntSlider("Shadow steps", 0, 8, 6, v -> debugFx(106, v));
+        beginSection("PER-LIGHT COLOR", false);
         addIntSlider("Light 0 R", 0, 255, 255, v -> debugFx(120, v));
         addIntSlider("Light 0 G", 0, 255, 140, v -> debugFx(121, v));
         addIntSlider("Light 0 B", 0, 255, 64, v -> debugFx(122, v));
         addIntSlider("Light 1 R", 0, 255, 64, v -> debugFx(124, v));
         addIntSlider("Light 1 G", 0, 255, 140, v -> debugFx(125, v));
         addIntSlider("Light 1 B", 0, 255, 255, v -> debugFx(126, v));
+        endSection();
 
         // PROBES: grid shape (cols/rows/repeats), then spacing/size/quality.
         controls = lightPages[2];
-        grid = new android.widget.GridLayout(this);
-        grid.setColumnCount(2);
-        controls.addView(grid);
+        grid = newGrid(controls);
         {
             LinearLayout r = addRow();
             addToggleCell(r, "SHOW PROBES", 110, false);
@@ -2452,9 +2603,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
 
         // LENS: bokeh kernel + aperture shape.
         controls = lightPages[3];
-        grid = new android.widget.GridLayout(this);
-        grid.setColumnCount(2);
-        controls.addView(grid);
+        grid = newGrid(controls);
         {
             LinearLayout r = addRow();
             addToggleCell(r, "CINEMATIC DOF", 11, false);
@@ -2470,9 +2619,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
 
         // RATE / DENOISE
         controls = lightPages[4];
-        grid = new android.widget.GridLayout(this);
-        grid.setColumnCount(2);
-        controls.addView(grid);
+        grid = newGrid(controls);
         {
             LinearLayout r = addRow();
             addToggleCell(r, "RATE LIMIT", 200, true);
@@ -2486,6 +2633,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         }
         moveGridLast();
         addIntSlider("Target FPS", 0, 120, 60, v -> debugFx(201, v));
+        beginSection("DENOISER (ADVANCED)", false);
         addIntSlider("Denoise intensity", 0, 100, 60, v -> debugFx(212, v));
         addIntSlider("Denoise passes", 1, 3, 2, v -> debugFx(213, v));
         addIntSlider("Denoise radius", 1, 4, 1, v -> debugFx(214, v));
@@ -2493,6 +2641,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addIntSlider("Denoise bounces", 1, 4, 1, v -> debugFx(216, v));
         // 1 = full-res (legacy), 2-4 = filter at scene_res/n then upsample.
         addIntSlider("Denoise res 1/n", 1, 4, 4, v -> debugFx(220, v));
+        endSection();
 
         // --- Crepuscular rays: quarter-res screen-space light shafts ---
         // Built last so the existing FX page indices (see FX_PAGES) do not
@@ -2519,17 +2668,17 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addIntSlider("Sample weight %", 0, 300, 60, v -> debugFx(254, v));
         addIntSlider("March samples 8-32", 8, 32, 16, v -> debugFx(255, v));
         addIntSlider("Brightness gate %", 0, 100, 20, v -> debugFx(256, v));
+        beginSection("ADVANCED / DEBUG", false);
         addIntSlider("Source light 0-3, 4=sun", 0, 4, 4, v -> debugFx(257, v));
         addIntSlider("Start jitter %", 0, 100, 100, v -> debugFx(258, v));
         addIntSlider("Occlusion bias %", 0, 50, 10, v -> debugFx(260, v));
         addIntSlider("Debug 0=off 1=shafts 2=vis", 0, 2, 0, v -> debugFx(259, v));
+        endSection();
         // GLOW (fx 261-273): emissive materials + bloom. The bloom input is the
         // half-res EMISSIVE buffer, so only geometry tagged as emitting glows;
         // a bright white wall does not. Everything is off until BLOOM is on.
         controls = lightPages[5];
-        grid = new android.widget.GridLayout(this);
-        grid.setColumnCount(2);
-        controls.addView(grid);
+        grid = newGrid(controls);
         {
             LinearLayout r = addRow();
             addToggleCell(r, "BLOOM", 261, false);
@@ -3110,14 +3259,14 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         final TextView label = new TextView(this);
         label.setTextColor(Color.WHITE);
         label.setTextSize(14);
-        label.setText(name + ": " + initial + unit);
-        SeekBar bar = new SeekBar(this);
+        label.setText(glyphLabel(name, ": " + initial + unit));
+        SeekBar bar = new CompactSeekBar();
         bar.setMax(max - min);
         bar.setProgress(initial - min);
         bar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override public void onProgressChanged(SeekBar sb, int progress, boolean fromUser) {
                 int v = progress + min;
-                label.setText(name + ": " + v + unit);
+                label.setText(glyphLabel(name, ": " + v + unit));
                 stereoValues.put(key, v);
                 if (stereoPictogram != null) stereoPictogram.invalidate();
                 nativeSetStereoInt(key, v);
@@ -3170,15 +3319,15 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     /** The two-finger camera gesture enable toggle (also mirrored in CAMERA). */
     private TextView makePinchToggle() {
         final TextView t = new TextView(this);
-        t.setText("CAMERA GESTURES (PINCH/SWIPE): "
+        t.setText("\u25CE CAMERA GESTURES (PINCH/SWIPE): "
                 + (TouchOverlay.camGesturesEnabled ? "ON" : "OFF"));
-        t.setTextSize(15);
+        t.setTextSize(14);
         t.setGravity(Gravity.CENTER);
         t.setPadding(dp(4), dp(8), dp(4), dp(8));
         t.setTextColor(TouchOverlay.camGesturesEnabled ? 0xFF66FF99 : 0xFF888888);
         t.setOnClickListener(v -> {
             TouchOverlay.camGesturesEnabled = !TouchOverlay.camGesturesEnabled;
-            t.setText("CAMERA GESTURES (PINCH/SWIPE): "
+            t.setText("\u25CE CAMERA GESTURES (PINCH/SWIPE): "
                     + (TouchOverlay.camGesturesEnabled ? "ON" : "OFF"));
             t.setTextColor(TouchOverlay.camGesturesEnabled ? 0xFF66FF99 : 0xFF888888);
             Log.i(TAG, "PINCH_CAM=" + TouchOverlay.camGesturesEnabled);
@@ -3188,14 +3337,14 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
 
     private TextView makeCamToggle(String name, final int key, boolean initial) {
         final TextView b = new TextView(this);
-        b.setText(name + ": " + (initial ? "ON" : "OFF"));
-        b.setTextSize(15);
+        b.setText(glyph(name) + " " + name + ": " + (initial ? "ON" : "OFF"));
+        b.setTextSize(14);
         b.setGravity(Gravity.CENTER);
         b.setTextColor(initial ? 0xFF66FF99 : 0xFF888888);
-        b.setPadding(dp(4), dp(8), dp(4), dp(8));
+        b.setPadding(dp(2), dp(3), dp(2), dp(3));
         b.setOnClickListener(v -> {
             boolean on = b.getCurrentTextColor() != 0xFF66FF99;
-            b.setText(name + ": " + (on ? "ON" : "OFF"));
+            b.setText(glyph(name) + " " + name + ": " + (on ? "ON" : "OFF"));
             b.setTextColor(on ? 0xFF66FF99 : 0xFF888888);
             nativeSetStereoInt(key, on ? 1 : 0);
             if (key == 41) hdtOn = on;
@@ -3212,7 +3361,8 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
 
     private TextView addCamToggle(String name, final int key, boolean initial) {
         TextView b = makeCamToggle(name, key, initial);
-        controls.addView(b);
+        b.setGravity(Gravity.LEFT | Gravity.CENTER_VERTICAL);
+        addAboveGrid(b, 0);
         return b;
     }
 
@@ -3326,13 +3476,13 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
 
     private TextView addEnhToggle(String name, final int key, boolean initial) {
         final TextView b = new TextView(this);
-        b.setText(name + ": " + (initial ? "ON" : "OFF"));
-        b.setTextSize(16);
+        b.setText(glyph(name) + " " + name + ": " + (initial ? "ON" : "OFF"));
+        b.setTextSize(15);
         b.setTextColor(initial ? 0xFF66FF99 : 0xFF888888);
-        b.setPadding(dp(4), dp(8), dp(4), dp(8));
+        b.setPadding(dp(4), dp(4), dp(4), dp(4));
         b.setOnClickListener(v -> {
             boolean on = b.getCurrentTextColor() != 0xFF66FF99;
-            b.setText(name + ": " + (on ? "ON" : "OFF"));
+            b.setText(glyph(name) + " " + name + ": " + (on ? "ON" : "OFF"));
             b.setTextColor(on ? 0xFF66FF99 : 0xFF888888);
             nativeSetEnh(key, on ? 1 : 0);
             if (key == 0) ragdollOn = on;
@@ -3369,13 +3519,13 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
 
     private TextView addStereoToggle(String name, final int key, boolean initial) {
         final TextView b = new TextView(this);
-        b.setText(name + ": " + (initial ? "ON" : "OFF"));
-        b.setTextSize(16);
+        b.setText(glyph(name) + " " + name + ": " + (initial ? "ON" : "OFF"));
+        b.setTextSize(15);
         b.setTextColor(initial ? 0xFF66FF99 : 0xFF888888);
-        b.setPadding(dp(4), dp(8), dp(4), dp(8));
+        b.setPadding(dp(4), dp(4), dp(4), dp(4));
         b.setOnClickListener(v -> {
             boolean on = b.getCurrentTextColor() != 0xFF66FF99;
-            b.setText(name + ": " + (on ? "ON" : "OFF"));
+            b.setText(glyph(name) + " " + name + ": " + (on ? "ON" : "OFF"));
             b.setTextColor(on ? 0xFF66FF99 : 0xFF888888);
             nativeSetStereoInt(key, on ? 1 : 0);
             Log.i(TAG, name + "=" + on);
@@ -3400,10 +3550,10 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
 
     private TextView addEnhButton(String name, final Runnable action) {
         TextView b = new TextView(this);
-        b.setText(name);
-        b.setTextSize(16);
+        b.setText("\u25B8 " + name);
+        b.setTextSize(15);
         b.setTextColor(0xFFFF9966);
-        b.setPadding(dp(4), dp(10), dp(4), dp(10));
+        b.setPadding(dp(4), dp(6), dp(4), dp(6));
         b.setOnClickListener(v -> action.run());
         addPressFeedback(b);
         addCompact(enhParent(), b);
@@ -3416,22 +3566,35 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                               final java.util.function.IntConsumer sink) {
         final TextView label = new TextView(this);
         label.setTextColor(Color.WHITE);
-        label.setTextSize(14);
-        label.setText(name + ": " + initial);
-        SeekBar bar = new SeekBar(this);
+        label.setTextSize(13);
+        label.setText(glyphLabel(name, ": " + initial));
+        SeekBar bar = new CompactSeekBar();
         bar.setMax(max - min);
         bar.setProgress(initial - min);
         bar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override public void onProgressChanged(SeekBar sb, int progress, boolean fromUser) {
                 int value = progress + min;
-                label.setText(name + ": " + value);
+                label.setText(glyphLabel(name, ": " + value));
                 sink.accept(value);
             }
             @Override public void onStartTrackingTouch(SeekBar sb) {}
             @Override public void onStopTrackingTouch(SeekBar sb) {}
         });
-        enhParent().addView(label);
-        enhParent().addView(bar);
+        /* One line per slider: label, bar, one-step buttons. */
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.addView(label, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 0.42f));
+        row.addView(stepButton("-", bar, -1), new LinearLayout.LayoutParams(dp(20),
+                ViewGroup.LayoutParams.MATCH_PARENT));
+        row.addView(bar, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 0.58f));
+        row.addView(stepButton("+", bar, 1), new LinearLayout.LayoutParams(dp(20),
+                ViewGroup.LayoutParams.MATCH_PARENT));
+        LinearLayout p = enhParent();
+        p.addView(row, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         sink.accept(initial);
     }
 
@@ -3439,10 +3602,10 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     private TextView addEnhSection(String title) {
         TextView h = new TextView(this);
         h.setText(title);
-        h.setTextSize(15);
+        h.setTextSize(13);
         h.setTextColor(0xFF66CCFF);
-        h.setPadding(dp(4), dp(14), dp(4), dp(4));
-        h.setBackgroundColor(0x22FFFFFF);
+        h.setPadding(dp(6), dp(7), dp(6), dp(3));
+        h.setBackgroundColor(0x33FFFFFF);
         enhParent().addView(h);
         return h;
     }
@@ -3450,13 +3613,13 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     /** ENH toggle that drives a runtime PTC knob (`ptc knob <name> 1|0`). */
     private TextView addEnhKnobToggle(String name, final String knob, boolean initial) {
         final TextView b = new TextView(this);
-        b.setText(name + ": " + (initial ? "ON" : "OFF"));
-        b.setTextSize(16);
+        b.setText(glyph(name) + " " + name + ": " + (initial ? "ON" : "OFF"));
+        b.setTextSize(15);
         b.setTextColor(initial ? 0xFF66FF99 : 0xFF888888);
-        b.setPadding(dp(4), dp(8), dp(4), dp(8));
+        b.setPadding(dp(4), dp(4), dp(4), dp(4));
         b.setOnClickListener(v -> {
             boolean on = b.getCurrentTextColor() != 0xFF66FF99;
-            b.setText(name + ": " + (on ? "ON" : "OFF"));
+            b.setText(glyph(name) + " " + name + ": " + (on ? "ON" : "OFF"));
             b.setTextColor(on ? 0xFF66FF99 : 0xFF888888);
             nativePtcCommand("knob " + knob + " " + (on ? 1 : 0));
             Log.i(TAG, "KNOB " + knob + "=" + (on ? 1 : 0));
@@ -3480,7 +3643,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         for (int i = 0; i < values.length; i++) {
             if (Math.abs(values[i] - initial) < 0.01f) { idx[0] = i; break; }
         }
-        Runnable render = () -> b.setText(name + ": "
+        Runnable render = () -> b.setText(glyph(name) + " " + name + ": "
                 + (integerFormat ? String.valueOf((int) values[idx[0]])
                                  : String.format(java.util.Locale.US, "%.1f", values[idx[0]])));
         render.run();
@@ -3558,14 +3721,14 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
 
     private void refreshQuickDevUi() {
         if (quickDevToggle != null) {
-            quickDevToggle.setText("QUICK DEV: " + (quickDevOn ? "ON" : "OFF"));
+            quickDevToggle.setText(toggleLabel("QUICK DEV", quickDevOn));
             quickDevToggle.setTextColor(quickDevOn ? 0xFF66FF99 : 0xFF888888);
         }
         if (quickDevLevelButton != null) {
-            quickDevLevelButton.setText("QD LEVEL: L" + quickDevLevel + " (tap to change)");
+            quickDevLevelButton.setText("\u2691 QD LEVEL: L" + quickDevLevel + " (tap to change)");
         }
         if (quickDevMuteToggle != null) {
-            quickDevMuteToggle.setText("QD MUTE AUDIO: " + (quickDevMute ? "ON" : "OFF"));
+            quickDevMuteToggle.setText(toggleLabel("QD MUTE AUDIO", quickDevMute));
             quickDevMuteToggle.setTextColor(quickDevMute ? 0xFF66FF99 : 0xFF888888);
         }
     }
@@ -3581,7 +3744,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         uncappedTestOn = on != 0;
         nativeSetUncappedTest(uncappedTestOn ? 1 : 0);
         if (uncappedTestToggle != null) {
-            uncappedTestToggle.setText("UNCAPPED TEST SIM: " + (uncappedTestOn ? "ON" : "OFF"));
+            uncappedTestToggle.setText(toggleLabel("UNCAPPED TEST SIM", uncappedTestOn));
             uncappedTestToggle.setTextColor(uncappedTestOn ? 0xFF66FF99 : 0xFF888888);
         }
         Log.i(TAG, "UNCAPPED_TEST=" + uncappedTestOn);
@@ -3625,7 +3788,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         hardPaused = on != 0;
         nativeSetHardPause(hardPaused ? 1 : 0);
         if (pauseLoopToggle != null) {
-            pauseLoopToggle.setText("PAUSE GAME LOOP: " + (hardPaused ? "ON" : "OFF"));
+            pauseLoopToggle.setText(toggleLabel("PAUSE GAME LOOP", hardPaused));
             pauseLoopToggle.setTextColor(hardPaused ? 0xFF66FF99 : 0xFF888888);
         }
         Log.i(TAG, "PAUSE " + hardPaused);
@@ -3671,14 +3834,14 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         final TextView label = new TextView(this);
         label.setTextColor(Color.WHITE);
         label.setTextSize(14);
-        label.setText(name + ": " + initial + unit);
-        SeekBar bar = new SeekBar(this);
+        label.setText(glyphLabel(name, ": " + initial + unit));
+        SeekBar bar = new CompactSeekBar();
         bar.setMax(max - min);
         bar.setProgress(initial - min);
         bar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override public void onProgressChanged(SeekBar sb, int progress, boolean fromUser) {
                 int v = progress + min;
-                label.setText(name + ": " + v + unit);
+                label.setText(glyphLabel(name, ": " + v + unit));
                 nativeSetShadow(key, v);
                 if (key == 11) shadowDebug = v;
             }
@@ -3691,13 +3854,13 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
 
     private TextView addShadowToggle(String name, final int key, boolean initial) {
         final TextView b = new TextView(this);
-        b.setText(name + ": " + (initial ? "ON" : "OFF"));
-        b.setTextSize(16);
+        b.setText(glyph(name) + " " + name + ": " + (initial ? "ON" : "OFF"));
+        b.setTextSize(15);
         b.setTextColor(initial ? 0xFF66FF99 : 0xFF888888);
-        b.setPadding(dp(4), dp(8), dp(4), dp(8));
+        b.setPadding(dp(4), dp(3), dp(4), dp(3));
         b.setOnClickListener(v -> {
             boolean on = b.getCurrentTextColor() != 0xFF66FF99;
-            b.setText(name + ": " + (on ? "ON" : "OFF"));
+            b.setText(glyph(name) + " " + name + ": " + (on ? "ON" : "OFF"));
             b.setTextColor(on ? 0xFF66FF99 : 0xFF888888);
             nativeSetShadow(key, on ? 1 : 0);
             if (key == 0) {
@@ -3706,29 +3869,29 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             refreshTabStyles();
             Log.i(TAG, name + "=" + on);
         });
-        controls.addView(b);
+        addAboveGrid(b, 0);
         nativeSetShadow(key, initial ? 1 : 0);
         return b;
     }
 
     private TextView addShadowButton(String name, final Runnable action) {
         final TextView b = new TextView(this);
-        b.setText(name);
+        b.setText("\u25C9 " + name);
         b.setTextSize(16);
         b.setTextColor(0xFF66CCFF);
         b.setPadding(dp(4), dp(10), dp(4), dp(10));
         b.setOnClickListener(v -> action.run());
-        enhParent().addView(b);
+        addAboveGrid(b, 0);
         return b;
     }
 
     private void applyEnhState(TextView b, String name, boolean on) {
-        b.setText(name + ": " + (on ? "ON" : "OFF"));
+        b.setText(glyph(name) + " " + name + ": " + (on ? "ON" : "OFF"));
         b.setTextColor(on ? 0xFF66FF99 : 0xFF888888);
     }
 
     private void applyShadowEnable(TextView b, boolean on) {
-        b.setText("SHADOW ENABLE: " + (on ? "ON" : "OFF"));
+        b.setText(glyph("shadow enable") + " SHADOW ENABLE: " + (on ? "ON" : "OFF"));
         b.setTextColor(on ? 0xFF66FF99 : 0xFF888888);
         shadowOn = on;
         refreshTabStyles();
@@ -3833,16 +3996,16 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         final TextView label = new TextView(this);
         label.setTextColor(Color.WHITE);
         label.setTextSize(14);
-        label.setText(name + ": " + initial + unit);
+        label.setText(glyphLabel(name, ": " + initial + unit));
 
-        SeekBar bar = new SeekBar(this);
+        SeekBar bar = new CompactSeekBar();
         bar.setMax(max - min);
         bar.setProgress(initial - min);
         bar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
             public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
                 int value = progress + min;
-                label.setText(name + ": " + value + unit);
+                label.setText(glyphLabel(name, ": " + value + unit));
                 nativeSetSSFX(key, value);
             }
             @Override public void onStartTrackingTouch(SeekBar seekBar) {}
@@ -3855,15 +4018,15 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
 
     private TextView addFxToggle(String name, final int key, boolean initial) {
         final TextView b = new TextView(this);
-        b.setText(name + ": " + (initial ? "ON" : "OFF"));
-        b.setTextSize(16);
+        b.setText(glyph(name) + " " + name + ": " + (initial ? "ON" : "OFF"));
+        b.setTextSize(15);
         b.setTextColor(initial ? 0xFF66FF99 : 0xFF888888);
-        b.setPadding(dp(4), dp(8), dp(4), dp(8));
+        b.setPadding(dp(4), dp(3), dp(4), dp(3));
         b.setOnClickListener(v -> {
             boolean on = b.getCurrentTextColor() != 0xFF66FF99;
             applyFxToggle(b, name, key, on);
         });
-        addCompact(controls, b);
+        addAboveGrid(b, 0);
         nativeSetSSFX(key, initial ? 1 : 0);
         return b;
     }
@@ -3873,6 +4036,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
      * mode button cycles OFF / DROPOUT / ALPHA / CUTOUT (fx key 274). */
     private void addOcclusionControls() {
         final String[] names = { "OFF", "DROPOUT", "ALPHA", "CUTOUT" };
+        beginSection("OCCLUSION (PUNCH-THROUGH)", false);
         occlButton = new TextView(this);
         occlButton.setTextSize(15);
         occlButton.setGravity(Gravity.CENTER);
@@ -3881,22 +4045,24 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             setOcclusionMode((occlMode + 1) % names.length);
             Log.i(TAG, "OCCLUSION mode=" + occlMode + " " + names[occlMode]);
         });
-        addCompact(controls, occlButton);
+        addAboveGrid(occlButton, 0);
         setOcclusionMode(occlMode);
 
         TextView hint = new TextView(this);
         hint.setTextSize(12);
         hint.setTextColor(0xFFAACCFF);
         hint.setPadding(dp(4), 0, dp(4), dp(6));
+        hint.setTextSize(11);
         hint.setText("Discards only geometry in front of Mario inside a circle:"
                 + " DROPOUT = hard 100% hole, ALPHA = partial dither, CUTOUT ="
                 + " solid hole with a dithered feather. Mario always stays visible.");
-        controls.addView(hint);
+        currentParent().addView(hint);
 
         addFxSlider("Occl radius", 20, 600, 150, " px", 275);
         addFxSlider("Occl feather", 0, 100, 35, " %", 276);
         addFxSlider("Occl dither", 0, 100, 50, " %", 277);
         addFxSlider("Occl depth bias", 0, 100, 5, "", 278);
+        endSection();
     }
 
     private void setOcclusionMode(int mode) {
@@ -4071,7 +4237,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     }
 
     private void applyFxToggle(TextView b, String name, int key, boolean on) {
-        b.setText(name + ": " + (on ? "ON" : "OFF"));
+        b.setText(glyph(name) + " " + name + ": " + (on ? "ON" : "OFF"));
         b.setTextColor(on ? 0xFF66FF99 : 0xFF888888);
         nativeSetSSFX(key, on ? 1 : 0);
         if (key == 1) aoOn = on;
@@ -4114,6 +4280,269 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         if (grid == null || controls == null) return;
         controls.removeView(grid);
         controls.addView(grid);
+        aboveGridIndex = controls.indexOfChild(grid);
+    }
+
+    // ---- compact debug-panel layout helpers --------------------------------
+
+    /**
+     * Glyph for a control label, so a row is glanceable without reading it.
+     * One shared mapping for every page (Task A iconography).
+     */
+    private static String glyph(String name) {
+        String n = " " + name.toLowerCase(java.util.Locale.US) + " ";
+        if (n.contains(" on/off") || n.contains("enable") || n.contains("show")
+                || n.contains("toggle") || n.contains("visible")
+                || n.contains(": on") || n.contains("auto")) return "\u25C9";  // ◉
+        if (n.contains("intens") || n.contains("strength") || n.contains("gain")
+                || n.contains("bright") || n.contains("glow") || n.contains("power")
+                || n.contains("opacity") || n.contains("alpha")) return "\u2600"; // ☀
+        if (n.contains("radius") || n.contains("distance") || n.contains("range")
+                || n.contains("size") || n.contains("width") || n.contains("height")
+                || n.contains("spacing") || n.contains("margin") || n.contains("length")
+                || n.contains("offset") || n.contains("thickness")) return "\u21D4"; // ⇔
+        if (n.contains("decay") || n.contains("falloff") || n.contains("fade")
+                || n.contains("time") || n.contains("every") || n.contains("frame")
+                || n.contains("shutter") || n.contains("update") || n.contains("ago")) return "\u23F1"; // ⏱
+        if (n.contains("passes") || n.contains("samples") || n.contains("steps")
+                || n.contains("taps") || n.contains("bounce") || n.contains("iterations")
+                || n.contains("repeat")) return "\u259A"; // ▚ stair
+        if (n.contains("soft") || n.contains("feather") || n.contains("curve")
+                || n.contains("smooth") || n.contains("jitter") || n.contains("weight")
+                || n.contains("rough") || n.contains("clamp")) return "\u2248"; // ≈
+        if (n.contains("angle") || n.contains("rotation") || n.contains("yaw")
+                || n.contains("pitch") || n.contains("deg") || n.contains("toe")
+                || n.contains("aspect")) return "\u2220"; // ∠
+        if (n.contains("color") || n.contains("colour") || n.contains("tint")
+                || n.contains(" R") || n.contains(" G") || n.contains(" B")
+                || n.contains("red") || n.contains("green") || n.contains("blue")) return "\u25D1"; // ◑
+        if (n.contains("res") || n.contains("buffer") || n.contains("texture")
+                || n.contains("bias") || n.contains("depth")) return "\u25A4"; // ▤
+        if (n.contains("grid") || n.contains("cols") || n.contains("rows")) return "\u2317"; // ⌗
+        if (n.contains("bloom") || n.contains("emissive") || n.contains("blades")
+                || n.contains("blur")) return "\u2726"; // ✦
+        if (n.contains("speed") || n.contains("velocity") || n.contains("fps")
+                || n.contains("hz")) return "\u21C9"; // ⇉
+        if (n.contains("camera") || n.contains("cam") || n.contains("focus")
+                || n.contains("fov") || n.contains("lens") || n.contains("bokeh")) return "\u25CE"; // ◎
+        if (n.contains("portal") || n.contains("relay") || n.contains("eye")
+                || n.contains("stereo") || n.contains("ipd")) return "\u25C8"; // ◈
+        if (n.contains("levels") || n.contains("scene") || n.contains("warp")
+                || n.contains("test")) return "\u2691"; // ⚑
+        return "\u00B7"; // ·
+    }
+
+    /** Label text with its glyph prefix. */
+    private static String glyphLabel(String name, String value) {
+        return glyph(name) + " " + name + value;
+    }
+
+    /** "glyph NAME: ON/OFF", the shared shape of every toggle row. */
+    private static String toggleLabel(String name, boolean on) {
+        return glyph(name) + " " + name + ": " + (on ? "ON" : "OFF");
+    }
+
+    private int pageMaxHeight() {
+        int h = getResources().getDisplayMetrics().heightPixels;
+        // Horizontal: the drawer keeps the upper third of the game visible.
+        // Vertical: the left half can use almost the whole height.
+        int raw = panelVertical ? h - dp(420) : (int) (h * 0.62f);
+        // 1600px panel / density 2: keep it under the screen even with tabs.
+        return Math.min(raw, h - dp(60));
+    }
+
+    /**
+     * Page scroll container that is only as tall as its content needs, capped
+     * at pageMaxHeight(). A page that fits therefore never scrolls; one that
+     * cannot still degrades to a normal scroll container.
+     */
+    private final class PageScroll extends android.widget.ScrollView {
+        int maxH;
+
+        PageScroll() {
+            super(sm64portActivity.this);
+            setFillViewport(false);
+            setOverScrollMode(OVER_SCROLL_NEVER);
+            maxH = pageMaxHeight();
+            pageScrollers.add(this);
+        }
+
+        @Override
+        protected void onMeasure(int widthSpec, int heightSpec) {
+            int cap = Math.max(dp(80), maxH);
+            super.onMeasure(widthSpec,
+                    MeasureSpec.makeMeasureSpec(cap, MeasureSpec.AT_MOST));
+        }
+
+        void setMaxHeight(int h) {
+            maxH = h;
+            requestLayout();
+        }
+    }
+
+    /** Compact two-column slider grid that also anchors the toggle order. */
+    private android.widget.GridLayout newGrid(LinearLayout parent) {
+        android.widget.GridLayout g = new android.widget.GridLayout(this);
+        g.setColumnCount(2);
+        g.setOrientation(android.widget.GridLayout.HORIZONTAL);
+        g.setUseDefaultMargins(false);
+        g.setAlignmentMode(android.widget.GridLayout.ALIGN_BOUNDS);
+        parent.addView(g);
+        grid = g;
+        aboveGridIndex = parent.indexOfChild(g);
+        return g;
+    }
+
+    /**
+     * Insert a toggle above the page's slider grid, keeping insertion order.
+     * Task rule: a tab's enable/show switch is the first control on the page.
+     */
+    private void addAboveGrid(View v, int height) {
+        addAboveGrid(v, height, ViewGroup.LayoutParams.WRAP_CONTENT);
+    }
+
+    private void addAboveGrid(View v, int height, int width) {
+        LinearLayout parent = sectionBody != null ? sectionBody : controls;
+        if (parent == null) return;
+        int gi = grid != null ? parent.indexOfChild(grid) : -1;
+        int at = gi < 0 ? parent.getChildCount() : Math.min(aboveGridIndex, gi);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                width, height > 0 ? height : ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.setMargins(dp(2), dp(1), dp(8), dp(1));
+        parent.addView(v, at, lp);
+        aboveGridIndex = at + 1;
+    }
+
+    /* Collapsible sections: rarely used controls stay reachable behind a
+     * disclosure instead of pushing the common ones off the page. */
+    private final java.util.ArrayDeque<Object[]> sectionStack = new java.util.ArrayDeque<>();
+    private LinearLayout sectionBody;
+
+    private LinearLayout currentParent() {
+        if (sectionBody != null) return sectionBody;
+        return enhColumnTarget != null ? enhColumnTarget : controls;
+    }
+
+    private static void updateSectionHeader(TextView h, String title, boolean open) {
+        h.setText((open ? "\u25BE " : "\u25B8 ") + title);
+    }
+
+    /** Add a collapsible section; returns the body to add controls to. */
+    private LinearLayout beginSection(String title, boolean open) {
+        LinearLayout parent = currentParent();
+        final TextView head = new TextView(this);
+        head.setTextSize(13);
+        head.setTextColor(0xFF66CCFF);
+        head.setPadding(dp(6), dp(4), dp(6), dp(4));
+        head.setBackgroundColor(0x33FFFFFF);
+        final LinearLayout body = new LinearLayout(this);
+        body.setOrientation(LinearLayout.VERTICAL);
+        body.setVisibility(open ? View.VISIBLE : View.GONE);
+        updateSectionHeader(head, title, open);
+        head.setOnClickListener(v -> {
+            boolean show = body.getVisibility() != View.VISIBLE;
+            body.setVisibility(show ? View.VISIBLE : View.GONE);
+            updateSectionHeader(head, title, show);
+        });
+        parent.addView(head, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        parent.addView(body, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        sectionStack.push(new Object[] {
+                grid, sectionBody, parent, Integer.valueOf(aboveGridIndex) });
+        sectionBody = body;
+        if (grid != null) {
+            grid = newGrid(body);
+        }
+        return body;
+    }
+
+    private void endSection() {
+        if (sectionStack.isEmpty()) return;
+        Object[] st = sectionStack.pop();
+        grid = (android.widget.GridLayout) st[0];
+        sectionBody = (LinearLayout) st[1];
+        aboveGridIndex = ((Integer) st[3]).intValue();
+    }
+
+    /**
+     * Row of chips that wraps to a second line when the dock is narrow
+     * (vertical mode). It behaves like a normal horizontal LinearLayout
+     * whenever everything fits on one line.
+     */
+    private final class FlowBar extends LinearLayout {
+        FlowBar() {
+            super(sm64portActivity.this);
+            setOrientation(HORIZONTAL);
+        }
+
+        @Override
+        protected void onMeasure(int widthSpec, int heightSpec) {
+            int width = MeasureSpec.getSize(widthSpec);
+            if (width <= 0) {
+                super.onMeasure(widthSpec, heightSpec);
+                return;
+            }
+            int left = getPaddingLeft();
+            int usable = width - left - getPaddingRight();
+            measureChildren(MeasureSpec.makeMeasureSpec(usable, MeasureSpec.AT_MOST),
+                    MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED));
+            int x = 0, y = 0, rowH = 0;
+            for (int i = 0; i < getChildCount(); i++) {
+                View c = getChildAt(i);
+                if (c.getVisibility() == GONE) continue;
+                int cw = c.getMeasuredWidth();
+                int ch = c.getMeasuredHeight();
+                if (x > 0 && x + cw > usable) {
+                    x = 0;
+                    y += rowH;
+                    rowH = 0;
+                }
+                x += cw;
+                if (ch > rowH) rowH = ch;
+            }
+            setMeasuredDimension(width,
+                    y + rowH + getPaddingTop() + getPaddingBottom());
+        }
+
+        @Override
+        protected void onLayout(boolean changed, int l, int t, int r, int b) {
+            int usable = (r - l) - getPaddingLeft() - getPaddingRight();
+            int x = 0, y = getPaddingTop(), rowH = 0;
+            for (int i = 0; i < getChildCount(); i++) {
+                View c = getChildAt(i);
+                if (c.getVisibility() == GONE) continue;
+                int cw = c.getMeasuredWidth();
+                int ch = c.getMeasuredHeight();
+                if (x > 0 && x + cw > usable) {
+                    x = 0;
+                    y += rowH;
+                    rowH = 0;
+                }
+                c.layout(getPaddingLeft() + x, y,
+                        getPaddingLeft() + x + cw, y + ch);
+                x += cw;
+                if (ch > rowH) rowH = ch;
+            }
+        }
+    }
+
+    /** Compact SeekBar: a normal bar in a single-line row. */
+    private final class CompactSeekBar extends SeekBar {
+        CompactSeekBar() {
+            super(sm64portActivity.this);
+            setPadding(0, 0, 0, 0);
+            setMinimumHeight(0);
+            setMinimumWidth(0);
+            setThumbOffset(dp(4));
+            setSplitTrack(false);
+        }
+
+        @Override
+        protected void onMeasure(int widthSpec, int heightSpec) {
+            super.onMeasure(widthSpec,
+                    MeasureSpec.makeMeasureSpec(dp(22), MeasureSpec.EXACTLY));
+        }
     }
 
     /** Add a button-like TextView at its natural width, not full row width. */
@@ -4121,7 +4550,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         b.setBackgroundColor(0x22FFFFFF);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.setMargins(0, dp(2), dp(8), dp(2));
+        lp.setMargins(dp(1), dp(1), dp(6), dp(1));
         parent.addView(b, lp);
     }
 
@@ -4130,17 +4559,17 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        controls.addView(row);
+        currentParent().addView(row);
         return row;
     }
 
     /** Toggle cell for a row built with {@link #addRow()}. */
     private TextView addToggleCell(LinearLayout row, String name, final int key, boolean initial) {
         final TextView b = new TextView(this);
-        b.setText(name + ": " + (initial ? "ON" : "OFF"));
-        b.setTextSize(14);
+        b.setText(glyph(name) + " " + name + ": " + (initial ? "ON" : "OFF"));
+        b.setTextSize(13);
         b.setTextColor(initial ? 0xFF66FF99 : 0xFF888888);
-        b.setPadding(dp(4), dp(8), dp(4), dp(8));
+        b.setPadding(dp(4), dp(4), dp(4), dp(4));
         b.setOnClickListener(v -> {
             boolean on = b.getCurrentTextColor() != 0xFF66FF99;
             applyFxToggle(b, name, key, on);
@@ -4169,7 +4598,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     /** Action cell for a row built with {@link #addRow()}. */
     private TextView addActionCell(LinearLayout row, String name, final Runnable action) {
         TextView b = new TextView(this);
-        b.setText(name);
+        b.setText("\u25B8 " + name);
         b.setTextSize(14);
         b.setTextColor(0xFFFFCC66);
         b.setPadding(dp(4), dp(10), dp(4), dp(10));
@@ -4182,12 +4611,12 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
 
     private void addFxDebugButton(String name, final int mode) {
         TextView b = new TextView(this);
-        b.setText(name);
+        b.setText("\u25C9 " + name);
         b.setTextSize(14);
         b.setTextColor(0xFF888888);
         b.setPadding(dp(4), dp(6), dp(4), dp(6));
         b.setOnClickListener(v -> setFxDebug(mode));
-        addCompact(controls, b);
+        addAboveGrid(b, 0);
         fxDebugButtons.add(b);
         fxDebugModes.add(mode);
     }
@@ -4400,16 +4829,16 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         final TextView label = new TextView(this);
         label.setTextColor(Color.WHITE);
         label.setTextSize(14);
-        label.setText(name + ": " + initial);
+        label.setText(glyphLabel(name, ": " + initial));
 
-        SeekBar bar = new SeekBar(this);
+        SeekBar bar = new CompactSeekBar();
         bar.setMax(max - min);
         bar.setProgress(initial - min);
         bar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
             public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
                 int value = progress + min;
-                label.setText(name + ": " + value);
+                label.setText(glyphLabel(name, ": " + value));
                 outVal[kind] = value;
                 applyOutTransform();
             }
@@ -4482,20 +4911,20 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         final TextView label = new TextView(this);
         label.setTextColor(Color.WHITE);
         label.setTextSize(14);
-        label.setText(which == 57
-                ? name + ": " + aspectLabelTenths(initial)
-                : name + ": " + initial + unit);
+        label.setText(glyphLabel(name, which == 57
+                ? ": " + aspectLabelTenths(initial)
+                : ": " + initial + unit));
 
-        SeekBar bar = new SeekBar(this);
+        SeekBar bar = new CompactSeekBar();
         bar.setMax(max - min);
         bar.setProgress(initial - min);
         bar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
             public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
                 int value = progress + min;
-                label.setText(which == 57
-                        ? name + ": " + aspectLabelTenths(value)
-                        : name + ": " + value + unit);
+                label.setText(glyphLabel(name, which == 57
+                        ? ": " + aspectLabelTenths(value)
+                        : ": " + value + unit));
                 if (which == 17) toeValuePct = value;
                 stereoValues.put(which, value);
                 if (stereoPictogram != null) stereoPictogram.invalidate();
@@ -4543,14 +4972,14 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         final TextView label = new TextView(this);
         label.setTextColor(Color.WHITE);
         label.setTextSize(14);
-        label.setText(name + ": " + initial);
-        SeekBar bar = new SeekBar(this);
+        label.setText(glyphLabel(name, ": " + initial));
+        SeekBar bar = new CompactSeekBar();
         bar.setMax(max - min);
         bar.setProgress(initial - min);
         bar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override public void onProgressChanged(SeekBar sb, int progress, boolean fromUser) {
                 int value = progress + min;
-                label.setText(name + ": " + value);
+                label.setText(glyphLabel(name, ": " + value));
                 sink.accept(value);
             }
             @Override public void onStartTrackingTouch(SeekBar sb) {}
@@ -4611,7 +5040,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     private TextView stepButton(String text, final SeekBar bar, final int dir) {
         TextView b = new TextView(this);
         b.setText(text);
-        b.setTextSize(20);
+        b.setTextSize(15);
         b.setGravity(Gravity.CENTER);
         b.setTextColor(0xFFCCDDFF);
         b.setPadding(0, 0, 0, 0);
@@ -4627,7 +5056,9 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     private void addToGrid(TextView label, SeekBar bar) {
         android.widget.LinearLayout col = new android.widget.LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
-        col.setPadding(0, 0, dp(8), 0);
+        col.setPadding(0, 0, dp(6), dp(1));
+        label.setTextSize(12);
+        label.setPadding(0, 0, 0, 0);
         col.addView(label);
 
         LinearLayout barRow = new LinearLayout(this);
@@ -4635,12 +5066,12 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         barRow.setGravity(Gravity.CENTER_VERTICAL);
         TextView minus = stepButton("-", bar, -1);
         TextView plus = stepButton("+", bar, +1);
-        barRow.addView(minus, new LinearLayout.LayoutParams(dp(34),
-                ViewGroup.LayoutParams.WRAP_CONTENT));
+        barRow.addView(minus, new LinearLayout.LayoutParams(dp(24),
+                ViewGroup.LayoutParams.MATCH_PARENT));
         barRow.addView(bar, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        barRow.addView(plus, new LinearLayout.LayoutParams(dp(34),
-                ViewGroup.LayoutParams.WRAP_CONTENT));
+        barRow.addView(plus, new LinearLayout.LayoutParams(dp(24),
+                ViewGroup.LayoutParams.MATCH_PARENT));
         col.addView(barRow);
         sliderRows.add(col);
         // While a slider is being dragged, hide every other slider row and make
@@ -4814,7 +5245,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                 if (portalGunButton != null) {
                     String want = portalGunLabel();
                     if (!want.contentEquals(portalGunButton.getText())) {
-                        portalGunButton.setText(want);
+                        portalGunButton.setText("\u25B8 " + want);
                     }
                 }
                 debugView.setTextColor(busyOn ? 0xFFFF5555 : 0xFFAAFFAA);
@@ -5096,7 +5527,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         nativeSetHardPause(0);
         nativeResetToIntro();
         if (pauseLoopToggle != null) {
-            pauseLoopToggle.setText("PAUSE GAME LOOP: OFF");
+            pauseLoopToggle.setText(toggleLabel("PAUSE GAME LOOP", false));
             pauseLoopToggle.setTextColor(0xFF888888);
         }
         Log.i(TAG, "RESET TO LOGO");
@@ -5131,7 +5562,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             Log.i(TAG, "PORTAL gun given");
         }
         if (portalGunButton != null) {
-            portalGunButton.setText(portalGunLabel());
+            portalGunButton.setText("\u25B8 " + portalGunLabel());
         }
     }
 
@@ -5560,7 +5991,86 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                 Log.i(TAG, "LAYOUT " + touchOverlay.statusLine());
             }
             Log.i(TAG, "UNCAPPED_TEST=" + nativeGetUncappedTest());
+            logPanelMetrics();
         });
+    }
+
+    /**
+     * Debug panel geometry: for every page, the natural content height against
+     * the page viewport. `scrolls=1` means the page needs a scroll to reach its
+     * last control at the current screen size. Logged by `cmd dump` so the
+     * panel layout can be checked without eyeballing screenshots.
+     */
+    private void logPanelMetrics() {
+        if (tabViews.isEmpty()) return;
+        int scrolling = 0;
+        for (int i = 0; i < tabViews.size(); i++) {
+            View sc = tabViews.get(i);
+            if (!(sc instanceof android.view.ViewGroup)) continue;
+            android.view.ViewGroup vg = (android.view.ViewGroup) sc;
+            if (vg.getChildCount() == 0) continue;
+            View content = vg.getChildAt(0);
+            int w = sc.getWidth();
+            if (w <= 0) {
+                w = getResources().getDisplayMetrics().widthPixels
+                        - (tuningPanelView == null ? 0 : tuningPanelView.getPaddingLeft()
+                           + tuningPanelView.getPaddingRight());
+            }
+            content.measure(View.MeasureSpec.makeMeasureSpec(w, View.MeasureSpec.EXACTLY),
+                    View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
+            int ch = content.getMeasuredHeight();
+            int vh = sc.getHeight();
+            boolean scrolls = ch > vh + 2;
+            if (scrolls) scrolling++;
+            Log.i(TAG, "PANELMETRIC page=" + i + " content=" + ch + " view=" + vh
+                    + " scrolls=" + (scrolls ? 1 : 0));
+        }
+        Log.i(TAG, "PANELMETRIC total=" + tabViews.size() + " scrolling=" + scrolling
+                + " orientation=" + (panelVertical ? "V" : "H"));
+        logPanelButtons();
+    }
+
+    /** Tap targets of every visible tab/sub-tab, for headless UI scripts. */
+    private void logPanelButtons() {
+        int[] loc = new int[2];
+        StringBuilder b = new StringBuilder();
+        b.append("PANELBTN page=").append(selectedPage).append(' ');
+        for (int i = 0; i < tabButtons.size(); i++) {
+            TextView v = tabButtons.get(i);
+            if (!v.isShown() || v.getWidth() <= 0) continue;
+            v.getLocationOnScreen(loc);
+            b.append("top:").append(v.getText()).append('=')
+             .append(loc[0]).append(',').append(loc[1]).append(',')
+             .append(v.getWidth()).append('x').append(v.getHeight()).append(' ');
+        }
+        for (int i = 0; i < subTabButtons.size(); i++) {
+            TextView v = subTabButtons.get(i);
+            if (!v.isShown() || v.getWidth() <= 0) continue;
+            v.getLocationOnScreen(loc);
+            b.append("sub:").append(v.getText()).append('=')
+             .append(loc[0]).append(',').append(loc[1]).append(',')
+             .append(v.getWidth()).append('x').append(v.getHeight()).append(' ');
+        }
+        if (hideButton != null && hideButton.isShown()) {
+            hideButton.getLocationOnScreen(loc);
+            b.append("caret=").append(loc[0]).append(',').append(loc[1]).append(',')
+             .append(hideButton.getWidth()).append('x').append(hideButton.getHeight()).append(' ');
+        }
+        for (int i = 0; i < namedPanelButtons.size(); i++) {
+            TextView v = (TextView) namedPanelButtons.get(i)[1];
+            if (!v.isShown() || v.getWidth() <= 0) continue;
+            v.getLocationOnScreen(loc);
+            b.append("tab:").append(namedPanelButtons.get(i)[0]).append('=')
+             .append(loc[0]).append(',').append(loc[1]).append(',')
+             .append(v.getWidth()).append('x').append(v.getHeight()).append(' ');
+        }
+        if (orientButton != null && orientButton.isShown()) {
+            orientButton.getLocationOnScreen(loc);
+            b.append("orient=").append(loc[0]).append(',').append(loc[1]).append(',')
+             .append(orientButton.getWidth()).append('x').append(orientButton.getHeight())
+             .append(' ');
+        }
+        Log.i(TAG, b.toString());
     }
 
     @Override
