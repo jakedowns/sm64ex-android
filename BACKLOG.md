@@ -11,6 +11,35 @@ that is finished gets deleted here, not ticked.
 
 ## In progress
 
+### Wave 2 (ten-feature request) — merged 2026-11-26, device pass pending
+All nine worktrees are applied to the main tree and the combined build is green.
+Not yet verified on hardware because the tablet dropped off Wi-Fi adb and needs a
+human wake.
+
+| feature | keys | commit |
+| --- | --- | --- |
+| touch layout editor + profiles | `300`-`309` | merged in the wave |
+| camera sensitivity band + FREE-mode black-screen fix | `330`-`332` | `ab4f945` |
+| feedback outbox | — | `a8fde17` |
+| wall-run stick push-off + release window | `320`-`329` | `685ce6a` |
+| tone mapping / looks / LUT | `280`-`289` | `5925b7b` |
+| painting ripple at present rate | `350` | `4e2a0c8` |
+| grapple targeting view | `310`-`315` | `d9972df` |
+| cam-stick curve, heatmap, C-bits, R-follow | `290`-`299` | `93cc92d` |
+| panel compaction, glyphs, docking | — | `ca27d21` |
+
+Merge scars worth knowing: each worktree patch had to be applied on top of the
+previous ones, and the fx switch cases (290-299 / 310-315 / 320-329 / 330-332 /
+350) interleave, so a "keep both sides" resolution twice dropped the closing
+brace of the neighbouring case — the compiler caught all of them. The cam-stick
+patch also assumed the pre-layout `TouchOverlay` field `stickRadius`, now
+`stickRadiusPx(E_RSTICK)`.
+
+**Device pass still to run:** panel stills in both docks + restart persistence,
+camera sens/cycler wrap, feedback capture + adb pull/delete, wall-run six-case
+harness, paint-ripple alternation metric, grapple stills, cam-stick heatmap and
+R-follow clips, grading operators/looks/LUT + cost.
+
 ### Painting ripple at the present rate (unmerged, worktree `w2-paint-ripple`)
 `paintings.c` regroups the mesh and relights it once per 30 Hz sim tick and
 bakes the result into the display list Vtx array, so the extra 60/120 Hz
