@@ -2446,8 +2446,105 @@ static void upload_mat4_rowvec(GLint loc, const float m[4][4]) {
     glUniformMatrix4fv(loc, 1, GL_FALSE, &m[0][0]);
 }
 
+/* ---------------- QUALITY presets: LOW / MED / HIGH (fx 430-431) ----------
+ *
+ * One tap picks smoothness vs beauty.  A preset is nothing but an ordered list
+ * of ordinary keys from the table above, applied through gfx_opengl_ssfx_set()
+ * itself: it cannot reference an effect that does not exist, it adds no shader
+ * work, and every value it sets stays visible to `cmd fx` and to the panel.
+ *
+ * s_fx_preset_base runs first and switches the whole optional stack off (AO,
+ * C.DOF, shadow, lights, SSGI, SSRTX, MB, bloom, grade) and resets the
+ * reduced-res chains to their shipping dials, so a tap is absolute: HIGH then
+ * LOW cannot inherit HIGH's DOF, its shadow taps or its full-res pass.
+ *
+ * Cost (PTC 38 `ptc fadetest`, pacer off, 3 samples, median) is in
+ * findings/quality-presets-11-26-26.md; the README table is the user-facing
+ * version.  `431` reads back which tier was applied last (read-only).
+ */
+typedef struct { short key; short value; } fx_preset_kv;
+
+static const fx_preset_kv s_fx_preset_base[] = {
+    { 1,   0 },     /* MXAO off                                            */
+    { 11,  0 },     /* C.DOF off                                           */
+    { 50,  0 },     /* shadow map off                                      */
+    { 103, 0 },     /* dynamic lights off (hands the slots back)           */
+    { 21,  0 },     /* SSGI off                                            */
+    { 70,  0 },     /* SSRTX off                                           */
+    { 100, 0 },     /* motion blur off                                     */
+    { 261, 0 },     /* bloom off                                           */
+    { 280, 0 },     /* tonemap / grade off                                 */
+    { 282, 0 }, { 283, 100 }, { 284, 0 }, { 285, 100 },
+    { 286, 100 }, { 287, 0 }, { 288, 0 },                 /* grade defaults   */
+    { 420, 1 },     /* FX pass full res (a tier may lower it)              */
+    { 421, 0 },     /* bilinear upsample                                   */
+    { 390, 1 }, { 391, 2 }, { 393, 0 }, { 394, 1 },       /* AO half-res chain */
+    { 2, 100 }, { 4, 8 },                                 /* AO intensity/taps */
+    { 380, 1 }, { 381, 2 },                               /* DOF half-res chain*/
+    { 14, 12 }, { 15, 12 },                               /* DOF blur/taps     */
+    { 250, 0 }, { 255, 8 }, { 251, 80 },                  /* rays off/8/80 %   */
+    { 51, 1024 }, { 57, 4 }, { 104, 0 },                  /* shadow res/taps   */
+};
+
+static const fx_preset_kv s_fx_preset_low[] = {
+    { 420, 2 },                       /* FX/post pass at half res per eye  */
+    { 250, 1 }, { 255, 8 }, { 251, 80 },  /* crepuscular rays, 8 samples   */
+};
+
+static const fx_preset_kv s_fx_preset_med[] = {
+    { 420, 2 },                       /* FX/post pass at half res per eye  */
+    { 1, 1 }, { 4, 8 },               /* MXAO, 8 taps, half-res chain      */
+    { 50, 1 }, { 57, 4 },             /* shadow map, 4 PCF taps            */
+    { 250, 1 }, { 255, 8 }, { 251, 80 },
+};
+
+static const fx_preset_kv s_fx_preset_high[] = {
+    { 420, 1 },                       /* full-res FX pass (stereo A/B)     */
+    { 1, 1 }, { 4, 12 },              /* MXAO, 12 taps, half-res chain     */
+    { 11, 1 }, { 15, 12 }, { 14, 12 },/* C.DOF, 12 taps, half res, 12 px   */
+    { 250, 1 }, { 255, 16 }, { 251, 80 },
+    { 50, 1 }, { 57, 9 },             /* shadow map, 9 PCF taps            */
+    { 280, 1 }, { 281, 2 }, { 284, 0 },   /* ACES tonemap                  */
+};
+
+#define FX_PRESET_COUNT 3
+static const fx_preset_kv *const s_fx_preset_tier[FX_PRESET_COUNT] = {
+    s_fx_preset_low, s_fx_preset_med, s_fx_preset_high };
+static const int s_fx_preset_tier_len[FX_PRESET_COUNT] = {
+    (int) (sizeof(s_fx_preset_low) / sizeof(s_fx_preset_low[0])),
+    (int) (sizeof(s_fx_preset_med) / sizeof(s_fx_preset_med[0])),
+    (int) (sizeof(s_fx_preset_high) / sizeof(s_fx_preset_high[0])) };
+static const char *const s_fx_preset_name[FX_PRESET_COUNT] = { "low", "med", "high" };
+/* Last applied tier; 431 reads it.  A later manual `cmd fx` does not clear it:
+ * the label records the choice, the individual keys stay the truth. */
+static int s_fx_preset = 0;
+
+void gfx_opengl_ssfx_set(int which, int value);
+
+static void fx_preset_apply(int idx) {
+    int i;
+    if (idx < 0) idx = 0;
+    if (idx >= FX_PRESET_COUNT) idx = FX_PRESET_COUNT - 1;
+    for (i = 0; i < (int) (sizeof(s_fx_preset_base) / sizeof(s_fx_preset_base[0])); i++) {
+        gfx_opengl_ssfx_set(s_fx_preset_base[i].key, s_fx_preset_base[i].value);
+    }
+    for (i = 0; i < s_fx_preset_tier_len[idx]; i++) {
+        gfx_opengl_ssfx_set(s_fx_preset_tier[idx][i].key,
+                            s_fx_preset_tier[idx][i].value);
+    }
+    s_fx_preset = idx;
+    __android_log_print(ANDROID_LOG_INFO, "SM64FX",
+            "preset -> %s (%d base + %d tier keys)",
+            s_fx_preset_name[idx],
+            (int) (sizeof(s_fx_preset_base) / sizeof(s_fx_preset_base[0])),
+            s_fx_preset_tier_len[idx]);
+}
+
 void gfx_opengl_ssfx_set(int which, int value) {
     switch (which) {
+        /* 430 applies a QUALITY bundle, 431 is its read-only record. */
+        case 430: fx_preset_apply(value); return;
+        case 431: return;
         case 1:  s_fx_ao_on = value ? 1 : 0; break;
         case 2:  s_fx_ao_intensity = value < 0 ? 0 : value; break;
         case 3:  s_fx_ao_radius = value < 1 ? 1 : value; break;
@@ -2792,6 +2889,8 @@ int gfx_opengl_ssfx_get(int which) {
         case 420: return s_fx_div;
         case 421: return s_fx_upmode;
         case 422: return s_fx_div_eff;
+        /* Last applied QUALITY tier: 0 = LOW, 1 = MED, 2 = HIGH. */
+        case 431: return s_fx_preset;
         case 31: return s_fx_debug;
         case 32: return s_fx_normal_flip;
         case 370: return (int) (gfx_sky_scale_x * 100.0f + 0.5f);

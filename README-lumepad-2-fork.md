@@ -38,9 +38,10 @@ Everything below was added on top of upstream in this fork.
 - Headless tooling: `cmd shadow`, `cmd kill`, `cmd pad`, plus new
   `RAGDOLL/HITRAG/PPCAM/SHADOW/SHADOWDBG/SSRTX` toggles.
 
-Defaults for the gameplay features are on; SSRTX and the pre-existing MXAO /
-C.DOF / SSGI effects stay off so the base look and frame rate are unchanged
-until you enable them.
+Defaults for the gameplay features are on; SSRTX stays opt-in, and the
+pre-existing MXAO / C.DOF / SSGI effects are now chosen through the
+**QUALITY: LOW / MED / HIGH** row (default LOW, which keeps them off and only
+adds light shafts).
 
 ---
 
@@ -182,6 +183,45 @@ A per-eye post pass runs after the scene is rendered (options tabs **MXAO**,
   the most expensive post effect.
 - **Crepuscular rays** — quarter-resolution screen-space light shafts (below).
 - Debug views: AO buffer, CoC, GI, SSRTX reflections, ray shafts/visibility.
+
+### Quality presets: LOW / MED / HIGH (first FX page, `fx` 430-431)
+
+The first row on the first FX page is **QUALITY: LOW / MED / HIGH** — one tap
+instead of a dozen sliders. Each tier is a fixed bundle of the keys documented
+below, applied in a single call (`fx 430 0|1|2`) and recorded behind
+`fx 431` (read-only). `cmd dump` reports `preset=low|med|high`; `cmd profile
+--es name low|med|high` is the same thing by name. The choice is persisted
+(`fx_preset` in `sm64port.xml`) and re-applied after the panel is built, so the
+panel's own default pushes cannot overwrite it. A tap is **absolute**: the
+bundle starts with an explicit "everything optional off" list, so HIGH → LOW
+clears DOF, the 9-tap shadow and the full-res pass.
+
+| | `fx 430` | turns on | 3D (PTC 38, pacer off) | 2D |
+| --- | --- | --- | --- | --- |
+| **LOW** | `0` (default) | crepuscular rays 8 @ 80 %, FX/post pass at 1/2 res | **9.2 ms / 109 fps** | 4.4 ms / 227 fps |
+| **MED** | `1` | + MXAO 8 taps (half-res chain), shadow map 4 PCF taps | **14.2 ms / 70 fps** | 6.5 ms / 155 fps |
+| **HIGH** | `2` | + MXAO 12, C.DOF 12 taps (half res), rays 16, shadow 9 taps, FX pass full res, ACES tonemap | **36.6 ms / 27 fps** | 10.9–16.2 ms / 62–92 fps |
+
+What each tier gives up: LOW has no contact AO, no DOF and no shadow map, and
+the half-res pass softens silhouettes and thin geometry by ~1 px (the trade
+measured for `420 2`). MED adds both contact shadowing forms, but AO is the
+half-res chain (~2 px softer than the old full-res gather) and the shadow
+penumbra is the chunkiest of the three. HIGH adds everything except dynamic
+lights and bloom — those stay manual dials because 3 shadowed lights measured
++12.3 ms in 3D and would drop the tier out of the 30 Hz class.
+
+HIGH is the "best quality that stays playable" tier and it sits right at the
+edge: 36.6 ms is 3.3 ms over the 33.3 ms 30 Hz budget on the run above, while
+the same key list measured 28.6 ms in the half-res study on a cooler tablet, so
+expect ~27–35 fps depending on thermal state. The three trims measured
+interleaved on one fresh app start are additive: ACES off **−2.1 ms** (34.5),
+shadow 9 → 4 taps **−1.8 ms** (34.8), DOF 12 → 8 taps **−1.3 ms** (35.2);
+ACES off plus 4-tap shadow lands at ~32.4 ms / 31 fps. `fx 420 2` would buy
+12.7 ms, but that is exactly the stereo A/B whose "visibly coarser soft
+gradients" kept HIGH at full res.
+
+Keys, measured tables, stills and the rerun recipe:
+[`findings/quality-presets-11-26-26.md`](findings/quality-presets-11-26-26.md).
 
 ### SSRTX controls (SSRTX tab)
 
@@ -782,16 +822,17 @@ while the UI range is replayed so the HUD does not sway.
 
 | Feature | Default | Where |
 |---|---|---|
+| Quality preset (LOW / MED / HIGH) | **LOW** | first FX page / `fx 430`, `cmd profile` |
 | Death ragdoll | **on** | ENH tab / `cmd toggle --es name RAGDOLL` |
 | Hit (knockback) ragdoll | **on** | ENH tab / `cmd toggle --es name HITRAG` |
 | Puppycam+ wall margin + Mario fade | **on** | ENH tab / `cmd toggle --es name PPCAM` |
-| Realtime dynamic shadows | **on** | SHADOW tab / `cmd toggle --es name SHADOW` |
+| Realtime dynamic shadows | MED/HIGH | SHADOW tab / `cmd toggle --es name SHADOW` |
 | SSRTX reflections | **off** (opt-in) | SSRTX tab / `cmd toggle --es name SSRTX` |
-| Crepuscular rays | **off** (opt-in) | RAYS tab / `cmd toggle --es name RAYS` |
+| Crepuscular rays | **on** (all tiers) | RAYS tab / `cmd toggle --es name RAYS` |
 | Occluder punch-through | **off** (mode 0) | CAMERA > SETTINGS / `fx 274` |
-| Tone map + colour grade | **off** (opt-in) | GRADE tab / `fx 280` |
+| Tone map + colour grade | HIGH (ACES) | GRADE tab / `fx 280` |
 | Grapple targeting debug view | **off** | ENH > MOVE / `fx 310` |
-| MXAO / C.DOF / SSGI | off | their tabs |
+| MXAO / C.DOF / SSGI | MED / HIGH / off | QUALITY row or their tabs |
 
 - **Stay in level after a star** (default on): normal stars take the vanilla
   no-exit path (star dance -> save prompt -> idle) instead of the star-exit warp.
@@ -971,6 +1012,8 @@ adb shell $B --es cmd toggle --es name MXAO     # MXAO / CDOF / SSGI / SSRTX / S
                                                 # RAGDOLL / HITRAG / PPCAM /
                                                 # SHADOW / SHADOWDBG / ...
 adb shell $B --es cmd fx --ei k 2 --ei v 250    # screen-space FX knob
+adb shell $B --es cmd profile --es name high    # QUALITY tier: low | med | high
+adb shell $B --es cmd fx --ei k 430 --ei v 2    # same as profile high (431 reads back)
 adb shell $B --es cmd shadow --ei k 1 --ei v 1024  # shadow knob (res here)
 adb shell $B --es cmd kill                      # kill Mario (ragdoll if enabled)
 adb shell $B --es cmd level                     # open debug level select

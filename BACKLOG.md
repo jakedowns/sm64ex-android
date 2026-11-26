@@ -314,6 +314,42 @@ no-op; every `103=` row in the 11-25 sweep's LOW/MED/HIGH presets now measures a
 lightless scene. Needs a `cmd light` path (or an "own the slots" bit on the fx
 key) before the presets are re-measured.
 
+### QUALITY presets (worktree `w4-presets`, `fx` 430-431)
+One tap picks smoothness vs beauty instead of a dozen sliders. `fx 430 0|1|2`
+applies LOW / MED / HIGH as a single call; `fx 431` is the read-only record of
+the tier applied last; `cmd profile --es name low|med|high` does it by name and
+`cmd dump` reports `preset=`. The panel's first FX page opens with the
+**QUALITY** row (pills + a one-line description of the tier) and persists the
+choice in SharedPreferences (`fx_preset`), re-applying it after the panel is
+built — the panel's construction writes its own defaults to native, so anything
+applied earlier is lost.
+
+The bundle is data, not code: a base list that switches every optional effect
+off and resets the reduced-res chains to their shipping dials, then a per-tier
+delta, all fed through `gfx_opengl_ssfx_set()` itself. Consequences worth
+keeping: a preset cannot reference a key that does not exist, it adds no shader
+work, every value stays visible to `cmd fx` and the panel afterwards, and
+"absolute" is automatic (HIGH → LOW cannot inherit DOF or the 9-tap shadow).
+Default tier LOW (rays 8 + FX at 1/2 res); HIGH is the only one that enables
+ACES.
+
+Measured (PTC 38 `fadetest`, pacer off, 3 samples): 3D **LOW 9.20 ms /
+109 fps, MED 14.18 / 70.5, HIGH 36.6 / 27.3**; 2D 4.41 / 6.47 / 13.4 ms
+(HIGH 10.9 cool to 16.2 hot). The 11-25 tiers are superseded: they measured the
+full-res AO/DOF paths and their `103=` rows were dead. HIGH is 3.3 ms over the
+strict 30 Hz budget on this hot run; the same keys measured 28.6 ms on a cooler
+tablet, so it is a ~27–35 fps tier. Interleaved trims on one fresh start (all
+additive): ACES off −2.1 ms (34.5), shadow 9→4 −1.8 (34.8), DOF 12→8 taps
+−1.3 (35.2); `420 2` −12.7 ms but that is the stereo-quality trade HIGH
+deliberately rejects. DOF owns 6.8 ms of the tier and 3 shadowed lights would
+add 12.3 ms (lights stay a manual dial). Tables, stills and rerun recipe:
+[`findings/quality-presets-11-26-26.md`](findings/quality-presets-11-26-26.md).
+**New bug found while measuring:** `381 3` / `381 4` (C.DOF divisor changed at
+runtime) do not recover in-process — the same row re-applied with `430=2`
+measured 26–72 ms instead of ~35, i.e. the DOF reduced-res target is
+re-created wrongly on a divisor change. Treat `381` as a boot-time dial until
+it is fixed.
+
 ### Shipped this wave (merged 2026-11-25)
 Rays (`6c55b1e`), the reduced-res denoiser, slow-motion interpolation, the
 emissive/bloom/GLOW work, the occluded-Mario punch-through and the HFR held-object
@@ -550,6 +586,7 @@ keep a feature inside its block:
 | `400`-`409` | reduced-resolution SSGI (taken: `400` divisor, `401` blur, `402` roto jitter, `403` debug view, `404` sky skip, `405` normal reject) |
 | `410`-`419` | wall-run 90° corner rig, worktree `w3-corner-test` (taken: `410` nominal jump distance, `411` timing spacing, `412` re-entry deadline ticks, `413` entry height, `414` entry speed, `415` corner-stuck ticks; `416`-`419` free) |
 | `420`-`429` | reduced-resolution FX/post pass, worktree `w4-fx-halfres` (taken: `420` divisor 1/n, `421` upsample mode 0=bilinear 1=depth-aware, `422` read-only divisor the last frame used; `423`-`429` free) |
+| `430`-`439` | QUALITY presets, worktree `w4-presets` (taken: `430` apply tier 0=LOW 1=MED 2=HIGH, `431` read-only tier last applied; `432`-`439` free) |
 
 ## Known bugs and limits
 

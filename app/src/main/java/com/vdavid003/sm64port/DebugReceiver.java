@@ -44,6 +44,13 @@ public class DebugReceiver extends BroadcastReceiver {
                 Log.i(TAG, "CMD fx k=" + k + " v=" + v);
                 break;
             }
+            case "profile": {
+                /* QUALITY tier by name: low | med | high (or 0 | 1 | 2). */
+                String name = intent.getStringExtra("name");
+                a.debugProfile(name);
+                Log.i(TAG, "CMD profile name=" + name);
+                break;
+            }
             case "shadow": {
                 int k = intent.getIntExtra("k", -1);
                 int v = intent.getIntExtra("v", 0);

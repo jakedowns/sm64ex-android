@@ -166,10 +166,12 @@ for line in "${LINES[@]}"; do
     for kv in $settings; do setfx "${kv%%=*}" "${kv##*=}"; done
     sleep "$settle"
     st=$(dump_state)
-    fps=$(field fps "$st"); [[ -n "$fps" ]] || fps=0
+    # `field` returns 1 when the field is absent; without the guards a missing
+    # field kills the whole plan under `set -e` (the assignment inherits it).
+    fps=$(field fps "$st" || true); [[ -n "$fps" ]] || fps=0
     ms=$(awk -v f="$fps" 'BEGIN{ if (f+0 > 0) printf "%.2f", 1000.0/(f+0); else printf "-" }')
     extras=""
-    for e in "${EXTRACT[@]}"; do extras="${extras:+$extras,}$(field "$e" "$st")"; done
+    for e in "${EXTRACT[@]}"; do extras="${extras:+$extras,}$(field "$e" "$st" || true)"; done
     [[ "$SETTLE_SHOTS" == 1 ]] && adb exec-out screencap -p >"$OUT/$name.png" || true
     printf '%s\t%s\t%s\t%s\t%s\n' "$name" "$fps" "$ms" "${extras:--}" "${caption:-$name}" \
         | tee -a "$OUT/results.tsv"

@@ -45,8 +45,7 @@ compaction + docking, Java captions, vertical dock, and the three perf rewrites
 ## Performance, next (biggest levers left)
 
 - [ ] **Half-resolution FX/post pass** — the sweep's biggest remaining win: `set
-      12` only shrinks the scene raster, so a 76.9 ms 3D stack drops just 13 %.
-- [ ] GI at 1/8 res (`div 8` is one line); DOF at `div 4` as a shipping default;
+      12` only shrinks the scene raster, so a 76.9 ms 3D stack drops just 13 %.- [ ] GI at 1/8 res (`div 8` is one line); DOF at `div 4` as a shipping default;
       bokeh at 32 taps.
 - [ ] Cheapen the reduced-res upsamples (DOF's bilateral stop is ~2 ms/eye).
 - [ ] MXAO: drop the normal prepass when the reject dial is off; `RGBA16F` gather
@@ -59,8 +58,13 @@ compaction + docking, Java captions, vertical dock, and the three perf rewrites
 - [ ] Fix `fx 103` (dynamic lights): `gfx_pc.c`'s per-frame registry now resets
       the light count unless a caller claims the slots, so the sweep's `103=`
       preset rows silently measure a lightless scene.
-- [ ] LOW/MED/HIGH presets from `findings/fx-sweep-11-25-26.md`, re-measured on
-      the new DOF/SSGI/MXAO code.
+- [x] **LOW/MED/HIGH presets** — `fx 430` / `431`, `cmd profile`, the QUALITY row
+      on the first FX page, `preset=` in the dump. Re-derived on the new
+      DOF/SSGI/MXAO/FX-half-res code: 3D 9.2 / 14.2 / 36.6 ms (109 / 70 / 27 fps).
+      `findings/quality-presets-11-26-26.md`.
+- [ ] HIGH is 2.7 ms over the 30 Hz budget on the hot run: trim DOF taps
+      (`15 12`→`15 8`) or accept 34.7 ms with `57 4`. Also fix `381 3/4`, which
+      does not recover in-process (see BACKLOG).
 
 ## Not started (from the session, still wanted)
 

@@ -73,6 +73,17 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     private static final String PREF_CAPTION_JAVA = "caption_java";
     private static final String PREF_CAPTION_SIZE = "caption_size_pct";
     private static final String PREF_CAPTION_OPACITY = "caption_opacity_pct";
+    /* QUALITY tier (fx 430/431): 0 = LOW, 1 = MED, 2 = HIGH. */
+    private static final String PREF_FX_PRESET = "fx_preset";
+    private static final String[] QUALITY_NAMES = { "LOW", "MED", "HIGH" };
+    /* One-line description per tier; the measured cost table lives in the
+     * README and findings/quality-presets-11-26-26.md, so the panel never
+     * carries a number that a re-measure would make stale. */
+    private static final String[] QUALITY_DETAIL = {
+        "\u25B8 rays 8  \u00b7  no AO / DOF  \u00b7  FX 1/2",
+        "\u25B8 + AO 8  \u00b7  shadow 4  \u00b7  FX 1/2",
+        "\u25B8 + AO 12  \u00b7  DOF  \u00b7  rays 16  \u00b7  shadow 9  \u00b7  FX full + ACES",
+    };
     private static final int QUICK_DEV_DEFAULT_LEVEL = 38; // Portal Test Chamber
     private static final int LEVEL_MAX_PORT = 38;
     private static final int REQ_EXPORT_LOG = 0x5A64;
@@ -293,6 +304,15 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     private TextView[] camSensPills = new TextView[CAM_SENS_NAMES.length];
     private TextView[] camGroundPills = new TextView[CAM_GROUND_NAMES.length];
     private TextView[] camModePills = new TextView[6];
+    /* QUALITY row (FX strip, first page).  fxPreset is the tier last applied;
+     * the native side records the same index behind fx 431. */
+    private int fxPreset = 0;
+    private TextView[] qualityPills = new TextView[QUALITY_NAMES.length];
+    private TextView qualityDetail;
+    /** Sliders the preset owns, keyed by fx key, so a tap can move them from
+     *  native back to the widgets (entry: SeekBar, Integer min, TextView, unit). */
+    private final java.util.Map<Integer, Object[]> fxBarByKey =
+            new java.util.HashMap<>();
     private float panelDownY = -1;
     private static final int PANEL_BG = 0xCC101010;
     private static final String CHANGELOG =
@@ -531,6 +551,24 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         if (camGroundClip != 1) camGroundClip = 0;
         Log.i(TAG, "CAM_GROUND restored: " + CAM_GROUND_NAMES[camGroundClip]);
 
+        /* QUALITY tier: the persisted choice, pushed to native *after* the
+         * panel is built (the panel's own construction writes its default
+         * values, so applying earlier would be overwritten). */
+        /* -1 = no preset chosen yet: leave whatever FX keys the panel and the
+         * user already have alone. Auto-applying LOW on first launch would
+         * silently overwrite hand-set keys, which is worse than "no preset". */
+        try {
+            android.content.SharedPreferences prefs =
+                    getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+            fxPreset = prefs.contains(PREF_FX_PRESET)
+                    ? prefs.getInt(PREF_FX_PRESET, -1) : -1;
+        } catch (Throwable t) {
+            fxPreset = -1;
+        }
+        if (fxPreset >= QUALITY_NAMES.length) fxPreset = -1;
+        Log.i(TAG, "QUALITY restored: "
+                + (fxPreset >= 0 ? QUALITY_NAMES[fxPreset] : "none (keys untouched)"));
+
         try {
             initLeia();
         } catch (Throwable t) {
@@ -759,6 +797,9 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             // Apply the persisted opacity after both the overlay and its slider
             // exist (SeekBar.setProgress happens before the listener is set).
             applyOverlayAlpha(overlayAlphaPct);
+            // Last: the QUALITY bundle overwrites every FX key the panel's own
+            // construction just pushed, so it must run after buildTuningPanel().
+            if (fxPreset >= 0) applyFxPreset(fxPreset, false);
             updateToeSliderState();
             try {
                 if (touchOverlay != null) {
@@ -1603,6 +1644,9 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         setPanelBodyVisible(false);
 
         grid = newGrid(controls);
+        /* QUALITY is the first row on the first FX page: one tap picks
+         * smoothness vs beauty (fx 430/431, persisted). */
+        addQualityRow();
         addSlider("IPD / baseline", -300, 300, 300, " px", 0);
         addSlider("Zero parallax", -100, 100, 40, " px", 1);
         addSlider("Depth", -200, 200, 50, " %", 2);
@@ -3084,7 +3128,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             controls.addView(hint);
         }
         addIntSlider("Post pass res 1/n", 1, 4, nativeGetSSFX(420),
-                     v -> debugFx(420, v));
+                     v -> debugFx(420, v), 420);
         addIntSlider("Upsample 0=bilin 1=depth", 0, 1, nativeGetSSFX(421),
                      v -> debugFx(421, v));
     }
@@ -3500,6 +3544,170 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
 
     private String camModeLabel() {
         return "CAM MODE: " + camModeName(camMode2);
+    }
+
+    /* ---- QUALITY presets: LOW / MED / HIGH (fx 430/431) ------------------ */
+
+    /**
+     * QUALITY: LOW / MED / HIGH — the first row on the first FX page.
+     *
+     * The bundle itself lives in C (`fx 430`), built only from keys that
+     * already exist, so one tap is one native call and cannot reference an
+     * effect that is not there. This row picks the tier, spells out what it
+     * contains, and persists the choice. Headless equivalents:
+     * `cmd profile --es name low|med|high` and `cmd fx --ei k 430 --ei v 0|1|2`;
+     * `cmd fx --ei k 431` reads the applied tier back (also `preset=` in
+     * `cmd dump`).
+     */
+    private void addQualityRow() {
+        TextView label = new TextView(this);
+        label.setText("QUALITY");
+        label.setTextSize(12);
+        label.setTextColor(0xFF888888);
+        label.setPadding(dp(4), dp(2), dp(4), dp(3));
+
+        LinearLayout track = new LinearLayout(this);
+        track.setOrientation(LinearLayout.HORIZONTAL);
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(0xFF171B22);
+        bg.setCornerRadius(dp(18));
+        bg.setStroke(dp(1), 0xFF39404E);
+        track.setBackground(bg);
+        track.setPadding(dp(3), dp(3), dp(3), dp(3));
+
+        qualityPills = new TextView[QUALITY_NAMES.length];
+        for (int i = 0; i < QUALITY_NAMES.length; i++) {
+            TextView pill = new TextView(this);
+            pill.setText(QUALITY_NAMES[i]);
+            pill.setTextSize(11);
+            pill.setSingleLine(true);
+            pill.setGravity(Gravity.CENTER);
+            pill.setPadding(dp(2), dp(9), dp(2), dp(9));
+            final int tier = i;
+            pill.setOnClickListener(v -> applyFxPreset(tier, true));
+            /* Fixed cell, not weight: the track is wrap-content, so a weighted
+             * 0-width child collapses to its text and "HIGH" wraps at 4 chars. */
+            track.addView(pill, new LinearLayout.LayoutParams(
+                    dp(48), ViewGroup.LayoutParams.WRAP_CONTENT));
+            qualityPills[i] = pill;
+            registerPanelButton("QUALITY_" + QUALITY_NAMES[i], pill);
+        }
+
+        qualityDetail = new TextView(this);
+        qualityDetail.setTextSize(12);
+        qualityDetail.setTextColor(0xFFAACCFF);
+        qualityDetail.setPadding(dp(4), dp(4), dp(4), dp(4));
+
+        addAboveGrid(label, 0);
+        addAboveGrid(track, 0, ViewGroup.LayoutParams.MATCH_PARENT);
+        addAboveGrid(qualityDetail, 0);
+        updateQualityPills();
+    }
+
+    private void updateQualityPills() {
+        for (int i = 0; i < qualityPills.length; i++) {
+            TextView pill = qualityPills[i];
+            if (pill == null) continue;
+            GradientDrawable bg = new GradientDrawable();
+            bg.setCornerRadius(dp(15));
+            if (i == fxPreset) {
+                bg.setColor(0xFF2E6FD8);
+                pill.setTextColor(Color.WHITE);
+                pill.setTypeface(null, Typeface.BOLD);
+            } else {
+                bg.setColor(Color.TRANSPARENT);
+                pill.setTextColor(0xFF9AA3B2);
+                pill.setTypeface(null, Typeface.NORMAL);
+            }
+            pill.setBackground(bg);
+        }
+        if (qualityDetail != null) qualityDetail.setText(QUALITY_DETAIL[fxPreset]);
+    }
+
+    /**
+     * Apply a QUALITY tier: one native call (the bundle is in C), then pull the
+     * widgets the bundle owns back to the values it set, so the MXAO / C.DOF /
+     * RAYS / SHADOW / GRADE pages can never disagree with what is rendering.
+     */
+    private void applyFxPreset(int tier, boolean persist) {
+        fxPreset = Math.max(0, Math.min(QUALITY_NAMES.length - 1, tier));
+        nativeSetSSFX(430, fxPreset);
+        aoOn = fxPreset >= 1;
+        dofOn = fxPreset == 2;
+        giOn = false;
+        ssrtxOn = false;
+        raysOn = true;
+        shadowOn = fxPreset >= 1;
+        syncFxToggleLabel(aoToggle, "MXAO ENABLE", aoOn);
+        syncFxToggleLabel(dofToggle, "CINEMATIC DOF", dofOn);
+        syncFxToggleLabel(giToggle, "SSGI ENABLE", false);
+        syncFxToggleLabel(ssrtxToggle, "SSRTX ENABLE", false);
+        syncFxToggleLabel(raysToggle, "CREPUSCULAR RAYS", true);
+        syncFxToggleLabel(shadowEnableToggle, "SHADOW ENABLE", shadowOn);
+        syncFxBar(4);    // MXAO taps
+        syncFxBar(15);   // C.DOF taps
+        syncFxBar(255);  // ray samples
+        syncFxBar(420);  // FX/post pass divisor
+        syncFxBar(57);   // shadow PCF taps
+        updateQualityPills();
+        refreshTabStyles();
+        if (persist) {
+            try {
+                getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                        .putInt(PREF_FX_PRESET, fxPreset).commit();
+            } catch (Throwable t) {
+                Log.w(TAG, "QUALITY prefs not saved", t);
+            }
+        }
+        Log.i(TAG, "QUALITY -> " + QUALITY_NAMES[fxPreset]
+                + " (fx 430=" + fxPreset + ")");
+    }
+
+    /** Rewrite a toggle label/colour after a preset. The preset has already
+     *  pushed the value to native, so this must not call native again. */
+    private void syncFxToggleLabel(TextView b, String name, boolean on) {
+        if (b == null) return;
+        b.setText(glyph(name) + " " + name + ": " + (on ? "ON" : "OFF"));
+        b.setTextColor(on ? 0xFF66FF99 : 0xFF888888);
+    }
+
+    /** Move a preset-owned slider to the value native now holds. */
+    private void syncFxBar(int key) {
+        Object[] e = fxBarByKey.get(key);
+        if (e == null) return;
+        SeekBar bar = (SeekBar) e[0];
+        int min = (Integer) e[1];
+        int value = nativeGetSSFX(key);
+        if (bar == null || value < 0) return;
+        bar.setProgress(Math.max(0, Math.min(bar.getMax(), value - min)));
+    }
+
+    /** `cmd profile --es name low|med|high` (or `cmd fx 430 <0|1|2>`). */
+    void debugProfile(String name) {
+        int tier = -1;
+        if (name != null) {
+            for (int i = 0; i < QUALITY_NAMES.length; i++) {
+                if (QUALITY_NAMES[i].equalsIgnoreCase(name.trim())) tier = i;
+            }
+            if (tier < 0) {
+                try {
+                    tier = Integer.parseInt(name.trim());
+                } catch (Throwable ignored) {
+                    tier = -1;
+                }
+            }
+        }
+        if (tier < 0 || tier >= QUALITY_NAMES.length) {
+            Log.w(TAG, "profile unknown: " + name);
+            return;
+        }
+        final int t = tier;
+        runOnUiThread(() -> applyFxPreset(t, true));
+    }
+
+    private static String presetName(int tier) {
+        if (tier < 0 || tier >= QUALITY_NAMES.length) return "?";
+        return QUALITY_NAMES[tier].toLowerCase(java.util.Locale.US);
     }
 
     /**
@@ -4363,6 +4571,9 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             @Override public void onStopTrackingTouch(SeekBar sb) {}
         });
         addToGrid(label, bar);
+        /* Shadow keys 0-11 mirror fx 50-61, so register the slider under its fx
+         * key (7 = PCF taps = fx 57) for the QUALITY preset sync. */
+        fxBarByKey.put(50 + key, new Object[] { bar, min, label, unit });
         nativeSetShadow(key, initial);
     }
 
@@ -4527,6 +4738,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         });
         barDefaults.add(new BarDefault(bar, initial - min));
         addToGrid(label, bar);
+        fxBarByKey.put(key, new Object[] { bar, min, label, unit });
         nativeSetSSFX(key, initial);
     }
 
@@ -5555,6 +5767,13 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
 
     private void addIntSlider(String name, int min, int max, int initial,
                               final java.util.function.IntConsumer sink) {
+        addIntSlider(name, min, max, initial, sink, -1);
+    }
+
+    /** Same, but also register the bar under an fx key so a QUALITY preset can
+     *  move it (syncFxBar(key)). */
+    private void addIntSlider(String name, int min, int max, int initial,
+                              final java.util.function.IntConsumer sink, int key) {
         final TextView label = new TextView(this);
         label.setTextColor(Color.WHITE);
         label.setTextSize(14);
@@ -5571,6 +5790,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             @Override public void onStartTrackingTouch(SeekBar sb) {}
             @Override public void onStopTrackingTouch(SeekBar sb) {}
         });
+        if (key >= 0) fxBarByKey.put(key, new Object[] { bar, min, label, "" });
         addToGrid(label, bar);
     }
 
@@ -6203,6 +6423,14 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             handleLayoutFx(k, v);
             return;
         }
+        if (k == 430) {
+            /* Route the headless preset call through the panel path so the
+             * QUALITY pills and the MXAO/DOF/RAYS/SHADOW toggles stay in step
+             * with native. 431 is read-only and falls through to native. */
+            applyFxPreset(v, true);
+            Log.i(TAG, "FX set " + k + "=" + v);
+            return;
+        }
         if (k == 360) {
             /* Keep the CAMERA > SETTINGS pills in step with a remote change and
              * persist it, so `cmd fx 360 1` survives a relaunch too. */
@@ -6586,6 +6814,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             Log.i(TAG, captionsDebugLine());
             Log.i(TAG, "DUMP drawable=" + nativeGetDrawableWidth() + "x" + nativeGetDrawableHeight()
                     + " eyeW=" + nativeGetEyeWidth() + " st=" + nativeGetStereoEnabled()
+                    + " preset=" + presetName(nativeGetSSFX(431))
                     + " fps=" + nativeGetFps()
                     + " view=" + leiaView.getWidth() + "x" + leiaView.getHeight()
                     + " surfaceValid=" + surfaceValid
