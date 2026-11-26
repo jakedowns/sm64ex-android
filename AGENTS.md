@@ -217,7 +217,8 @@ Useful PTC actions: `annex`, `cubetop`, `slam`, `groundslam`, `balltest`,
 `ballreset`, `ballequip`, `resetpad`, `portaltest`, `portalforce`,
 `portalauto`, `portalalign`, `portalblit`, `eyeL`, `eyeR`, `eyeOff`,
 `bowser` (held tail-spin HFR rig), `hfron`/`hfroff`, `hfrdump`,
-`hfrslerpon`/`hfrslerpoff`, `hfralphaNNN`.
+`hfrslerpon`/`hfrslerpoff`, `hfralphaNNN`, `corner0..7` (90° corner
+wall-run timings), `cornerlive0..7`, `corneroff`.
 
 ## Feedback outbox
 

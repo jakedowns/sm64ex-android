@@ -470,6 +470,7 @@ static int s_bowserHeldOn;
 static void ptc_annex_update(void);
 static void ptc_wrj_update(void);
 static void ptc_wrj_input(struct MarioState *m);
+static void ptc_wrc_update(void);
 static void ptc_paint_update(void);
 static void ptc_pov_apply(void);
 static int  s_pov_shot;
@@ -1713,6 +1714,7 @@ void ptc_update(void) {
     ptc_goomba_update();
     ptc_annex_update();
     ptc_wrj_update();
+    ptc_wrc_update();
     ptc_portal_walk_update();
     ptc_mpw_update();
 
@@ -1806,6 +1808,12 @@ void ptc_update(void) {
  * override needs to see it first. */
 static int s_wrjMode;
 
+/* 90-degree corner rig (ptc corner0..7).  The state machine lives next to the
+ * wrjump rig further down; the input override needs the mode and the one-tick
+ * A press flag first. */
+static int s_wrcMode;
+static int s_wrcPress;
+
 void ptc_mario_input_override(struct MarioState *m) {
     if (m == NULL) {
         return;
@@ -1837,6 +1845,21 @@ void ptc_mario_input_override(struct MarioState *m) {
 
     if (s_wrjMode) {
         ptc_wrj_input(m);
+        return;
+    }
+
+    if (s_wrcMode) {
+        /* Corner rig: the stick is held towards wall B the whole time (-Z is
+         * both along wall A's run and into wall B), and A is pulsed for one
+         * tick when the rig decides the jump is due. */
+        m->intendedYaw = 0x8000;
+        m->intendedMag = 32.0f;
+        m->input |= INPUT_NONZERO_ANALOG;
+        m->input &= ~INPUT_UNKNOWN_5;
+        if (s_wrcPress) {
+            m->input |= INPUT_A_PRESSED;
+            s_wrcPress = 0;
+        }
         return;
     }
 
@@ -4499,6 +4522,410 @@ static void ptc_wrj_update(void) {
     }
 }
 
+/* ------------------------------------------- wall-run 90-degree corner rig */
+
+/* Does a wall-run survive a 90-degree inner corner?  Two walls meet at an
+ * inner corner in the chamber itself, so the rig needs no new geometry:
+ *
+ *   wall A  room west wall,  x = -2600, normal +X, run direction -Z
+ *   wall B  room south wall, z = -3200, normal +Z
+ *   corner  (-2600, -3200)
+ *
+ * Mario is placed airborne 26 units off wall A at y = WRC_Y, already moving
+ * into it (-X) and along it (-Z), so the automatic wall-run trigger starts on
+ * the first airborne tick exactly as it does in play.  The stick is held at
+ * 0x8000 (-Z) for the whole rig: that is along wall A's run *and* towards
+ * wall B, i.e. the direction the wr_jump stick blend is meant to use at a
+ * corner.  When Mario is `d` units (hidden dial 410/411) from the corner the
+ * rig pulses A for one tick; the flight is then pure engine physics.
+ *
+ * The pass condition is measured, not assumed:
+ *   - ACT_WALLRUN is entered again on a wall whose normal is not wall A's
+ *     within WRC_DEADLINE ticks of the jump (normal x 100 = wall A, 0 = wall B),
+ *   - Mario advances >= 150 units along wall B afterwards,
+ *   - he never touches the floor between the jump and that re-entry.
+ * A jump too late reaches wall B inside the jump-off cooldown (movekit leaves
+ * 18 ticks after a jump-off): the first airborne tick that touches it bonks
+ * into ACT_AIR_HIT_WALL and then the backward knockback, which ignores the
+ * stick, carries him away from the wall and he lands.  A jump too early runs
+ * out of height before reaching wall B.  Both are real outcomes of the same
+ * physics, not rig failures.
+ *
+ * Timing is the distance before the corner, so index 0 is the earliest jump:
+ *   d(i) = perfect + (3 - i) * step
+ * with perfect = 1480 and step = 100 by default; fx 410-415 retune it without
+ * a rebuild (see BACKLOG / TESTING.md). */
+#define WRC_STAGE_PLACE 0
+#define WRC_STAGE_RUN   1
+#define WRC_STAGE_JUMP  2
+#define WRC_STAGE_TRACK 3
+
+#define WRC_OUT_NONE  0
+#define WRC_OUT_PASS  1
+#define WRC_OUT_FELL  2
+#define WRC_OUT_STUCK 3
+#define WRC_OUT_BONK  4
+
+#define PTC_WRC_WALL_X   (-2600.0f)   /* room west wall (normal +X) */
+#define PTC_WRC_WALL_Z   (-3200.0f)   /* room south wall (normal +Z) */
+#define PTC_WRC_X        (-2574.0f)   /* 26 units off wall A */
+#define PTC_WRC_START_Z  (-700.0f)
+#define PTC_WRC_YAW      0x8000       /* -Z: along A, towards B */
+
+#define WRC_PERFECT_DEF  1480
+#define WRC_STEP_DEF     100
+#define WRC_DEADLINE_DEF 30
+#define WRC_HEIGHT_DEF   900
+#define WRC_SPEED_DEF    42
+#define WRC_STALL_DEF    6
+#define WRC_ADVANCE_MIN  150.0f
+
+static int s_wrcCase;
+static int s_wrcStage;
+static int s_wrcTick;        /* ticks since the rig started */
+static int s_wrcRel = -1;    /* ticks since the jump, -1 before it */
+static int s_wrcPressTick;
+static int s_wrcDist;        /* press threshold for this case, units */
+static int s_wrcDeadlineTicks = WRC_DEADLINE_DEF;
+static int s_wrcStallTicks   = WRC_STALL_DEF;
+static int s_wrcPerfect      = WRC_PERFECT_DEF;
+static int s_wrcStep         = WRC_STEP_DEF;
+static int s_wrcHeight       = WRC_HEIGHT_DEF;
+static int s_wrcSpeed        = WRC_SPEED_DEF;
+static int s_wrcJumpY;
+static f32 s_wrcJumpZ = PTC_WRC_WALL_Z;
+static f32 s_wrcBx0;
+static f32 s_wrcAdv;
+static f32 s_wrcYmin = (f32) WRC_HEIGHT_DEF;
+static int s_wrcReTick = -1;
+static int s_wrcCornerTicks;
+static int s_wrcStall;
+static int s_wrcMaxStall;
+static int s_wrcFloor;
+static int s_wrcBonk;
+static int s_wrcOutcome = WRC_OUT_NONE;
+static int s_wrcFovSaved = -1;
+static int s_wrcLive;        /* 1 = advance in real time, 0 = wait for runticks */
+
+static void ptc_wrc_finish(int outcome) {
+    if (s_wrcOutcome != WRC_OUT_NONE) {
+        return;                     /* first classification wins */
+    }
+    s_wrcOutcome = outcome;
+    s_wrcMode = 0;
+    s_wrcPress = 0;
+}
+
+static void ptc_wrc_camera(void) {
+    extern void custom_camera_apply_mode(int mode);
+    extern void custom_camera_set_freelook(int on, const Vec3f pos,
+                                           const Vec3f focus);
+    extern int gfx_stereo_fov_pct;
+    Vec3f pos = { -1000.0f, 1500.0f, -700.0f };
+    Vec3f focus = { -2500.0f, 500.0f, -2500.0f };
+
+    if (s_wrcFovSaved < 0) {
+        s_wrcFovSaved = gfx_stereo_fov_pct;
+    }
+    gfx_stereo_fov_pct = 140;
+    if (gfx_cam_mode != 3) {
+        custom_camera_apply_mode(3);
+    }
+    custom_camera_set_freelook(1, pos, focus);
+}
+
+/* Put Mario back on the frozen start pose.  Also used every real-time tick
+ * while the rig waits for `cmd runticks`, so nothing depends on how long the
+ * adb round trip takes. */
+static void ptc_wrc_place(struct MarioState *m) {
+    struct Surface *floor = NULL;
+    f32 fh;
+
+    if (m == NULL) {
+        return;
+    }
+    ptc_annex_place(PTC_WRC_X, (f32) s_wrcHeight, PTC_WRC_START_Z, PTC_WRC_YAW);
+    m->vel[0] = -14.0f;
+    m->vel[1] = 0.0f;
+    m->vel[2] = -(f32) s_wrcSpeed;
+    m->forwardVel = (f32) s_wrcSpeed;
+    m->intendedYaw = PTC_WRC_YAW;
+    m->intendedMag = 32.0f;
+    fh = find_floor(m->pos[0], m->pos[1], m->pos[2], &floor);
+    if (floor != NULL) {
+        m->floor = floor;
+        m->floorHeight = fh;
+    }
+    m->peakHeight = m->pos[1];
+}
+
+static void ptc_wrc_start(int cs, int live) {
+    struct MarioState *m = gMarioState;
+
+    s_wrcMode = 0;
+    s_wrjMode = 0;
+    s_mpw = 0;
+    s_portalWalk = 0;
+    s_chainMode = 0;                 /* CH_OFF */
+    s_testMode = 0;
+    s_testActive = 0;
+    ptc_annex_reset();
+    movekit_set_flag(0, 1);
+    movekit_wr_clear();
+
+    s_wrcCase = cs;
+    s_wrcLive = live ? 1 : 0;
+    s_wrcDist = s_wrcPerfect + (3 - cs) * s_wrcStep;
+    if (s_wrcDist < 100) {
+        s_wrcDist = 100;
+    }
+    s_wrcStage = WRC_STAGE_PLACE;
+    s_wrcTick = 0;
+    s_wrcRel = -1;
+    s_wrcPressTick = 0;
+    s_wrcJumpZ = PTC_WRC_WALL_Z;
+    s_wrcJumpY = 0;
+    s_wrcBx0 = 0.0f;
+    s_wrcAdv = 0.0f;
+    s_wrcYmin = (f32) s_wrcHeight;
+    s_wrcReTick = -1;
+    s_wrcCornerTicks = 0;
+    s_wrcStall = 0;
+    s_wrcMaxStall = 0;
+    s_wrcFloor = 0;
+    s_wrcBonk = 0;
+    s_wrcOutcome = WRC_OUT_NONE;
+
+    if (s_failReason[0] != '\0') {
+        s_failReason[0] = '\0';
+    }
+
+    ptc_wrc_place(m);
+    ptc_wrc_camera();
+    s_wrcMode = 1;
+}
+
+/* Per-tick trace line; pc_main's runticks batch stores it in the same ring the
+ * ninja chain uses, so the harness gets the exact tick a wall was re-entered. */
+static void ptc_wrc_trace(struct MarioState *m) {
+    extern void ptc_trace_note(const char *fmt, ...);
+
+    if (m == NULL) {
+        return;
+    }
+    if (s_wrcRel < 0 && s_wrcStage < WRC_STAGE_JUMP
+        && (s_wrcTick % 6) != 0) {
+        return;             /* sparse while running up, one line per tick after */
+    }
+    ptc_trace_note("WRC t=%d ph=%d a=0x%08X p=%d,%d,%d v=%d,%d n=%d,%d rel=%d",
+                   s_wrcTick, s_wrcStage, (unsigned int) m->action,
+                   (int) m->pos[0], (int) m->pos[1], (int) m->pos[2],
+                   (int) m->vel[0], (int) m->vel[2],
+                   (int) (movekit_wr_wall_normal(0) * 100.0f),
+                   (int) (movekit_wr_wall_normal(2) * 100.0f), s_wrcRel);
+}
+
+static void ptc_wrc_update(void) {
+    struct MarioState *m = gMarioState;
+    extern int gfx_test_uncapped;
+    int airborne;
+
+    if (!s_wrcMode || m == NULL) {
+        return;
+    }
+
+    /* Batch mode holds the start pose in real time so the adb round trip
+     * between `cmd ptc cornerN` and `cmd runticks` cannot shift the timing:
+     * the run only begins inside the deterministic fast-forward batch.  The
+     * wall-run state is cleared every held tick because the trigger attaches
+     * for one tick each time the placement is re-asserted, which would leave
+     * s_lastWallY at the start height and make the same-wall regrab rule
+     * refuse the real trigger on the batch's first tick. */
+    if (!s_wrcLive && s_wrcStage == WRC_STAGE_PLACE && !gfx_test_uncapped) {
+        ptc_wrc_place(m);
+        movekit_wr_clear();
+        ptc_wrc_camera();
+        return;
+    }
+
+    s_wrcTick++;
+    airborne = (m->action & ACT_FLAG_AIR) != 0;
+
+    if (m->pos[1] < s_wrcYmin) {
+        s_wrcYmin = m->pos[1];
+    }
+
+    switch (s_wrcStage) {
+        case WRC_STAGE_PLACE:
+            if (m->action == ACT_WALLRUN) {
+                s_wrcStage = WRC_STAGE_RUN;
+                s_wrcTick = 0;
+            } else if (s_wrcTick > 40) {
+                snprintf(s_failReason, sizeof(s_failReason),
+                         "corner%d: wall-run did not start", s_wrcCase);
+                ptc_wrc_finish(WRC_OUT_BONK);
+            }
+            break;
+
+        case WRC_STAGE_RUN:
+            if (m->action != ACT_WALLRUN) {
+                /* Fell off wall A before the press; there is nothing to time. */
+                s_wrcStage = WRC_STAGE_TRACK;
+                break;
+            }
+            if (m->pos[2] - PTC_WRC_WALL_Z <= (f32) s_wrcDist) {
+                s_wrcPress = 1;          /* applied by the next input override */
+                s_wrcStage = WRC_STAGE_JUMP;
+                s_wrcPressTick = s_wrcTick;
+                s_wrcRel = -1;
+                s_wrcJumpZ = m->pos[2];
+                s_wrcJumpY = (int) m->pos[1];
+                s_wrcBx0 = m->pos[0];
+            }
+            break;
+
+        case WRC_STAGE_JUMP:
+            /* Waiting for the jump to be applied (wr_jump runs in the action
+             * step of the tick after the press). */
+            if (m->action != ACT_WALLRUN) {
+                /* The true jump-off point is after that tick's move, not the
+                 * press threshold, so record it here. */
+                s_wrcStage = WRC_STAGE_TRACK;
+                s_wrcRel = 0;
+                s_wrcJumpZ = m->pos[2];
+                s_wrcJumpY = (int) m->pos[1];
+            } else if (s_wrcTick - s_wrcPressTick > 4) {
+                /* A press that never fired: report it, do not hang. */
+                snprintf(s_failReason, sizeof(s_failReason),
+                         "corner%d: jump-off did not fire", s_wrcCase);
+                ptc_wrc_finish(WRC_OUT_BONK);
+            }
+            break;
+
+        case WRC_STAGE_TRACK:
+            s_wrcRel++;
+            break;
+
+        default:
+            break;
+    }
+
+    if (s_wrcStage == WRC_STAGE_TRACK) {
+        f32 dz = m->pos[2] - PTC_WRC_WALL_Z;
+
+        if ((m->action == ACT_AIR_HIT_WALL
+             || m->action == ACT_BACKWARD_AIR_KB
+             || m->action == ACT_SOFT_BONK)) {
+            s_wrcBonk = 1;
+        }
+        if (!airborne) {
+            s_wrcFloor = 1;
+        }
+
+        /* Re-entry: a wall run whose wall is not wall A (normal != +X). */
+        if (s_wrcReTick < 0 && m->action == ACT_WALLRUN
+            && fabsf(movekit_wr_wall_normal(0)) < 0.7f) {
+            s_wrcReTick = s_wrcRel;
+            s_wrcBx0 = m->pos[0];
+        }
+        if (s_wrcReTick >= 0) {
+            f32 adv = m->pos[0] - s_wrcBx0;   /* units run along wall B */
+
+            if (adv > s_wrcAdv) {
+                s_wrcAdv = adv;
+            }
+            if (s_wrcAdv >= WRC_ADVANCE_MIN && !s_wrcFloor
+                && s_wrcReTick <= s_wrcDeadlineTicks) {
+                ptc_wrc_finish(WRC_OUT_PASS);
+            }
+        } else if (m->action == ACT_WALLRUN && dz <= 90.0f) {
+            /* Still on wall A with the corner blocking the run: no advance. */
+            if (++s_wrcCornerTicks >= s_wrcStallTicks) {
+                ptc_wrc_finish(WRC_OUT_STUCK);
+            }
+        }
+
+        /* Continuity: a wall-run that stops moving while still airborne. */
+        if (m->action == ACT_WALLRUN) {
+            f32 step = sqrtf(m->vel[0] * m->vel[0] + m->vel[2] * m->vel[2]);
+
+            if (step < 4.0f) {
+                if (++s_wrcStall > s_wrcMaxStall) {
+                    s_wrcMaxStall = s_wrcStall;
+                }
+            } else {
+                s_wrcStall = 0;
+            }
+        }
+
+        if (s_wrcFloor) {
+            if (s_wrcReTick >= 0 && s_wrcAdv >= WRC_ADVANCE_MIN
+                && s_wrcReTick <= s_wrcDeadlineTicks) {
+                ptc_wrc_finish(WRC_OUT_PASS);
+            } else if (s_wrcBonk) {
+                ptc_wrc_finish(WRC_OUT_BONK);
+            } else {
+                ptc_wrc_finish(WRC_OUT_FELL);
+            }
+        } else if (s_wrcRel > 120) {
+            /* Hard backstop so the rig always finishes inside a 150-tick
+             * batch; a re-entry later than the deadline is not a pass. */
+            if (s_wrcReTick >= 0 && s_wrcAdv >= WRC_ADVANCE_MIN
+                && s_wrcReTick <= s_wrcDeadlineTicks) {
+                ptc_wrc_finish(WRC_OUT_PASS);
+            } else if (s_wrcCornerTicks >= s_wrcStallTicks) {
+                ptc_wrc_finish(WRC_OUT_STUCK);
+            } else {
+                ptc_wrc_finish(WRC_OUT_BONK);
+            }
+        }
+    }
+
+    ptc_wrc_trace(m);
+}
+
+/* fx 410-415: corner rig dials (410 perfect press distance, 411 spacing
+ * between the eight timings, 412 re-entry deadline in ticks, 413 entry
+ * height, 414 entry speed along wall A, 415 corner-stuck ticks). */
+void ptc_wrc_dial_set(int which, int value) {
+    switch (which) {
+        case 410: s_wrcPerfect = value < 200 ? 200 : (value > 4000 ? 4000 : value); break;
+        case 411: s_wrcStep = value < 10 ? 10 : (value > 500 ? 500 : value); break;
+        case 412: s_wrcDeadlineTicks = value < 1 ? 1 : (value > 120 ? 120 : value); break;
+        case 413: s_wrcHeight = value < 100 ? 100 : (value > 2600 ? 2600 : value); break;
+        case 414: s_wrcSpeed = value < 20 ? 20 : (value > 60 ? 60 : value); break;
+        case 415: s_wrcStallTicks = value < 2 ? 2 : (value > 40 ? 40 : value); break;
+        default: break;
+    }
+}
+
+int ptc_wrc_dial_get(int which) {
+    switch (which) {
+        case 410: return s_wrcPerfect;
+        case 411: return s_wrcStep;
+        case 412: return s_wrcDeadlineTicks;
+        case 413: return s_wrcHeight;
+        case 414: return s_wrcSpeed;
+        case 415: return s_wrcStallTicks;
+        default: return -1;
+    }
+}
+
+/* corner=<case>,<stage>,<outcome>,<re-entry ticks after the jump>,<done>,
+ * <advance units along wall B>,<lowest y>,<corner ticks>,<jump distance>,
+ * <jump y>,<longest airborne wall-run stall>,<bonk seen>.  re-entry -1 =
+ * never entered wall B; outcome 0 none, 1 pass, 2 fell, 3 stuck, 4 bonk. */
+void ptc_wrc_format(char *buf, int len) {
+    if (buf == NULL || len <= 0) {
+        return;
+    }
+    snprintf(buf, len, "%d,%d,%d,%d,%d,%.0f,%.0f,%d,%.0f,%d,%d,%d",
+             s_wrcCase, s_wrcStage, s_wrcOutcome, s_wrcReTick,
+             s_wrcMode ? 0 : 1, s_wrcAdv, s_wrcYmin, s_wrcCornerTicks,
+             PTC_WRC_WALL_Z - s_wrcJumpZ, s_wrcJumpY,
+             s_wrcMaxStall, s_wrcBonk);
+}
+
 /* ------------------------------------------------------------ diagnostics */
 
 static void ptc_apply_command(const char *action) {
@@ -4926,6 +5353,30 @@ extern int gfx_cam_mode;
         if (cs >= 0 && cs <= 5) {
             ptc_wrj_start(cs);
         }
+    } else if (strncmp(action, "corner", 6) == 0
+               && strcmp(action, "corneroff") == 0) {
+        extern void custom_camera_set_freelook(int on, const Vec3f pos,
+                                               const Vec3f focus);
+        extern int gfx_stereo_fov_pct;
+        s_wrcMode = 0;
+        s_wrcPress = 0;
+        custom_camera_set_freelook(0, NULL, NULL);
+        if (s_wrcFovSaved >= 0) {
+            gfx_stereo_fov_pct = s_wrcFovSaved;
+            s_wrcFovSaved = -1;
+        }
+    } else if (strncmp(action, "cornerlive", 10) == 0) {
+        int cs = action[10] - '0';
+        if (cs >= 0 && cs <= 7) {
+            /* Real-time variant for stills/clips; the table run uses batch
+             * mode (`cornerN`), which only advances inside `cmd runticks`. */
+            ptc_wrc_start(cs, 1);
+        }
+    } else if (strncmp(action, "corner", 6) == 0) {
+        int cs = action[6] - '0';
+        if (cs >= 0 && cs <= 7) {
+            ptc_wrc_start(cs, 0);
+        }
     } else if (strcmp(action, "jetpack") == 0) {
         ptc_annex_jetpack();
     } else if (strcmp(action, "jetshot") == 0) {
@@ -5040,7 +5491,10 @@ void ptc_format_status(char *buf, int len) {
     int cdbg[8] = { 0 };
     int hasA = portal_get(0, pa, na);
     int hasB = portal_get(1, pb, nb);
+    char wrcBuf[96] = "0,0,0,-1,1,0,0,0,0,0";
     custom_camera_debug(cdbg);
+
+    ptc_wrc_format(wrcBuf, (int) sizeof(wrcBuf));
 
     /* Grapple targeting: resolved with the same query the attach uses, so the
      * status field cannot disagree with what a press would hook. */
@@ -5072,7 +5526,7 @@ void ptc_format_status(char *buf, int len) {
              "mpw=%d,%d,%d,%d,%d,%d,%d fc=%d,%d,%d,%d cg=%d,%.0f,%.0f,%.0f,0x%x "
              "slowmo=%d,%d,%d rays=%d,%d,%d glow=%d,%d,%d,%d,%d occl=%d,%d,%d "
              "dof=%d,%d,%d,%d "
-             "qd=%d,%d,%d lvl=%d sens=%d,%d,%d wr=%d,%d,%d,%d,%d,%.2f,%.2f "
+             "qd=%d,%d,%d lvl=%d sens=%d,%d,%d wr=%d,%d,%d,%d,%d,%.2f,%.2f wrc=%s "
              "grade=%d,%d,%d,%d grp=%d,%d,%.1f,%.0f,%.0f,%.0f,%.0f camclip=%s "
              "gi=%d,%d,%d,%d "
              "aop=%d,%d,%d,%d,%d,%d,%d",
@@ -5157,7 +5611,7 @@ void ptc_format_status(char *buf, int len) {
              gfx_cam_sens_state(0), gfx_cam_sens_state(1), gfx_cam_sens_state(2),
              movekit_wr_state(0), movekit_wr_state(1), movekit_wr_state(2),
              movekit_wr_state(5), movekit_wr_state(6),
-             movekit_wr_last_vel(0), movekit_wr_last_vel(1),
+             movekit_wr_last_vel(0), movekit_wr_last_vel(1), wrcBuf,
              gfx_opengl_ssfx_get(280), gfx_opengl_ssfx_get(281),
              gfx_opengl_ssfx_get(284), gfx_opengl_ssfx_get(285),
              gfx_opengl_ssfx_get(310), grpStatus, grpRayDeg, grpDist,

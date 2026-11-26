@@ -38,7 +38,43 @@ the world still rendering correctly), plus one wall case with `fx 360 1` to
 show the camera still pulling in. Artifacts:
 `/media/share/tmp/artifacts/sm64/cam-ground/`.
 
-### Wave 2 (ten-feature request) — merged 2026-11-26, device pass pending
+### Wall-run 90° corner smoke test (worktree `w3-corner-test`, 2026-11-26)
+Code-complete, not built and not device-run (the parent builds centrally). This
+is the code side of the `TODO.md` line "Wall-run rig pass window: measure and
+document the timing window at a 90° corner".
+
+`ptc corner0..7` runs a deterministic corner chain on the chamber's own walls —
+wall A the room west wall (`x=-2600`, normal +X, run -Z), wall B the room south
+wall (`z=-3200`, normal +Z), inner corner `(-2600,-3200)` — and `cornerliveN`
+is the real-time variant for stills/clips.  Mario starts airborne at
+`(-2574, 900, -700)` with `vel (-14,0,-42)` and the stick held at `0x8000`
+(along A, towards B); only the jump press is timed, as a distance `d` before
+the corner.  In batch mode the rig freezes the start pose until `cmd runticks`
+begins, so adb latency cannot shift the timing, and each tick emits a `WRC`
+trace line (position, action, wall normal) alongside the dump's
+`wrc=<case>,<stage>,<outcome>,<re>,<done>,<adv>,<ymin>,<corner>,<djump>,<jy>,
+<maxstall>,<bonk>`.
+
+`scripts/wallrun-corner-test.py` runs all eight timings in one device-lock
+hold (it refuses without `AGENT_DEVICE_LOCK_HELD=1`), cross-checks trace and
+dump, saves one still per timing, a mid-corner still and a clip of the passing
+timing, prints the table + window, and exits non-zero unless the nominal timing
+(index 3, `d=1480`) corner-passes.  Dials `fx 410`-`415` retune it live.
+
+Predicted window from the source constants (device run still to do): pass for
+`d ≈ 1280-1690`, bounded below by the 18-tick `s_cooldown` after a jump-off
+(a late jump reaches wall B inside it, bonks and loses the run) and above by
+the ~24-tick airtime from y=900.  That is ~6 ticks / ~200 ms of press
+timing.  TESTING.md has the rig table, the acceptance criteria and the table
+to replace with the measured one.
+
+Two things to do after the device pass: tick the `TODO.md` corner line, and
+answer the open question there — whether an early/late jump should bounce
+instead of falling.  Current answer from the code: it already does what the
+physics says, late = bonk (jump-off cooldown), early = falls short of the wall;
+changing that is a gameplay decision, not a rig bug.
+
+
 All nine worktrees are applied to the main tree and the combined build is green.
 Not yet verified on hardware because the tablet dropped off Wi-Fi adb and needs a
 human wake.
@@ -445,7 +481,9 @@ Open follow-ups:
   b/d pair is the same pose with `fx 314` changed, so the colour change is
   isolated.
 
-### Reserved fx key ranges (registered 2026-11-25)Parallel agents must not invent ranges. Claim one here before adding dials, and
+### Reserved fx key ranges (registered 2026-11-25)
+
+Parallel agents must not invent ranges. Claim one here before adding dials, and
 keep a feature inside its block:
 
 | range | owner |
@@ -466,6 +504,7 @@ keep a feature inside its block:
 | `380`-`389` | reduced-resolution C.DOF (taken, see the C.DOF section: `380` path, `381` divisor, `382` near field, `383` taps, `384` upsample, `385` CoC, `386` bokeh, `387` bilinear, `388` stage log, `389` sharpness) |
 | `390`-`399` | reduced-resolution MXAO (taken: `390` path, `391` divisor, `392` rotation, `393` upsample, `394` sky skip, `395` tap trig, `396` stage probe; `397`-`399` free) |
 | `400`-`409` | reduced-resolution SSGI (taken: `400` divisor, `401` blur, `402` roto jitter, `403` debug view, `404` sky skip, `405` normal reject) |
+| `410`-`419` | wall-run 90° corner rig, worktree `w3-corner-test` (taken: `410` nominal jump distance, `411` timing spacing, `412` re-entry deadline ticks, `413` entry height, `414` entry speed, `415` corner-stuck ticks; `416`-`419` free) |
 
 ## Known bugs and limits
 

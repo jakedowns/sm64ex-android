@@ -661,6 +661,116 @@ test/cinematic cameras (`custom_camera_freelook_active()`), so the ninja chain's
 section framing is unchanged; the fast chain check stays PASS 8/8
 (`scripts/ninja-chain-test.py --fast --section chain --ticks 2400`).
 
+## Wall-run 90-degree corner (timing window)
+
+Can a wall-run survive an inner 90-degree corner: jump off wall A, re-hold the
+stick towards the perpendicular wall B and keep running?  The rig uses the
+chamber's own walls, so there is no new geometry to trust:
+
+| element | coordinates |
+| --- | --- |
+| wall A | room **west** wall, plane `x = -2600`, normal **+X**, run along **-Z** |
+| wall B | room **south** wall, plane `z = -3200`, normal **+Z** |
+| corner | `(-2600, -3200)`, inner, both walls long (no second corner in reach) |
+| start | Mario at `(-2574, 900, -700)`, `vel = (-14, 0, -42)`, stick `0x8000` (-Z) |
+| camera | pinned freelook `(-1000, 1500, -700)` → `(-2500, 500, -2500)`, FOV 140 % |
+
+The stick never moves: `0x8000` is both **along** wall A's run and **towards**
+wall B, i.e. exactly the direction the `wr_jump` stick blend (fx 320-329) is
+meant to use at a corner.  Only the jump press is timed: the rig presses A when
+Mario is `d` units from the corner, and `d` is the sweep parameter.
+
+### Running it
+
+```bash
+AGENT_TABLET_MUTE=1 scripts/agent-lock.sh device --timeout 600 \
+    --reason "wallrun corner" -- scripts/wallrun-corner-test.py
+
+# retune the window without a rebuild (fx 410 nominal distance, 411 spacing)
+... -- scripts/wallrun-corner-test.py --perfect 1500 --step 80
+```
+
+The harness refuses to run unless `AGENT_DEVICE_LOCK_HELD=1`; it installs
+nothing and keeps everything in one hold.  Per timing it
+
+1. `cmd ptc --es action cornerN` – the rig **freezes Mario on the start pose**
+   in real time (re-placing him and clearing the wall-run state every held
+   tick), so adb latency cannot shift the timing;
+2. `cmd runticks --ei n 150` – the run only advances inside the engine's own
+   fast-forward loop, one `WRC` trace line per tick;
+3. `cmd trace` + `cmd dump` – the trace gives per-tick position, action and the
+   current wall normal; the dump's `wrc=` field gives the rig's summary.  The
+   harness cross-checks the two;
+4. one still per timing, a mid-corner still of the passing timing, and a
+   real-time screenrecord clip of it (`ptc cornerliveN`).
+
+`wrc=<case>,<stage>,<outcome>,<re>,<done>,<adv>,<ymin>,<corner>,<djump>,<jy>,
+<maxstall>,<bonk>` — `re` is ticks from the jump to the wall-B run (-1 = never),
+`adv` is units run along wall B after that, `djump` the measured distance to the
+corner at the jump, `corner` the ticks the run stayed pinned on wall A at the
+corner, `maxstall` the longest airborne run with < 4 u/tick.
+
+### What the pass is measured on
+
+`corner-pass` requires **all** of:
+
+- `ACT_WALLRUN` (`0x0300089A`, the same value `cmd dump` prints as `action=`)
+  again on a wall whose normal is **not** wall A's (`|normal.x| < 0.7`, i.e.
+  wall B's +Z) within `fx 412` ticks (default 30) of the jump; the trace logs
+  `m->action` and the wall normal every tick, and the dump's `wr=` run counter
+  must show the second run (`runs >= 2`) for the nominal case;
+- ≥ 150 units advanced along wall B after that re-entry (`adv`);
+- no floor contact anywhere between the jump and the re-entry;
+- continuity: no per-tick step ≥ 130 units (teleport; a fast fall plus the
+  jump is ~100), no 6-tick stall below 3 u/tick, and y never below -2;
+- a healthy app: no `FATAL`/`ANR`, the post-run `cmd dump` still parses with a
+  sane `fps=`, and the same case run twice produces an identical summary.
+
+The harness exits non-zero when the **nominal** timing (`PTC_WRC_PERFECT_DEF`,
+index 3, `d = 1480`) is not a `corner-pass`.  Early/late rows that end `fell`,
+`bonk` or `stuck` are measurements, not failures.
+
+### Timings and the predicted outcome table
+
+`d(i) = perfect + (3 - i) * step`, so index 0 is the earliest jump:
+
+| # | d (units) | predicted | why |
+| --- | --- | --- | --- |
+| 0 | 1780 | fell | airtime from y≈880 is ~24 ticks; 1780/68 ≈ 26 |
+| 1 | 1680 | corner-pass (late edge) | arrival ~24.5 ticks, still above the floor |
+| 2 | 1580 | corner-pass | arrival ~23 ticks |
+| **3** | **1480** | **corner-pass (nominal)** | arrival ~21.5 ticks, centred in the window |
+| 4 | 1380 | corner-pass | arrival ~20 ticks |
+| 5 | 1280 | corner-pass / bonk (early edge) | arrival ~18.5 ticks, right at the cooldown |
+| 6 | 1180 | bonk | arrives at ~17 ticks, inside the jump-off cooldown |
+| 7 | 1080 | bonk | same, earlier |
+
+*Predicted from source constants; replace with the measured table after the
+first device run.*  The two bounds are engine properties, not rig tuning:
+
+- **Lower bound (≈18 ticks):** `wr_jump` sets `s_cooldown = 18`, and
+  `movekit_try_wallrun` refuses any trigger while it is non-zero.  A jump that
+  reaches wall B earlier first touches it, bonks into `ACT_AIR_HIT_WALL` and
+  then `ACT_BACKWARD_AIR_KB`, whose knockback ignores the stick, so the run is
+  lost.  This is why a corner chain costs about 0.6 s of flight.
+- **Upper bound (≈24 ticks):** from the 900-unit start height the jump-off
+  (+10 up, gravity -4/tick) reaches the floor after ~24 ticks; at ~68
+  units/tick of flight that is ~1630 units, so a later jump lands short of
+  wall B.
+
+Recommended window: **d ≈ 1280–1690 units**, i.e. about **6 ticks
+(~200 ms) of press timing**, centred on ≈1480.  The rig keeps the run speed
+at the 55 u/tick cap for every case, so the window in ticks is
+`(d_hi − d_lo) / 55`.
+
+`fx 410`-`415` retune the rig live: 410 nominal distance, 411 spacing, 412
+re-entry deadline ticks, 413 entry height, 414 entry speed, 415 corner-stuck
+ticks.  If the measured window does not contain 1480, set `--perfect` to the
+measured centre, re-run, and update `PTC_WRC_PERFECT_DEF` so the default follows.
+
+`ptc corneroff` clears the rig (freelook off, FOV restored) if a run is aborted;
+the harness calls it at the end of the sweep.
+
 ## Ninja chain (continuous systems showcase)
 
 `NINJA-CHAIN.md` (project root) has the full brief, course table, phases and

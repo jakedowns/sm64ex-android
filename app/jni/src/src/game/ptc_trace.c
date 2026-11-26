@@ -115,6 +115,22 @@ static void trace_append_state(void) {
                   gfx_cam_mode);
 }
 
+/* Append one rig-owned line to the ring (no-op string formatting if the rig
+ * is not tracing).  Used by the PTC corner rig so its per-tick state lands in
+ * the same buffer `cmd trace` dumps after `cmd runticks`. */
+void ptc_trace_note(const char *fmt, ...) {
+    char line[192];
+    va_list args;
+
+    if (fmt == NULL) {
+        return;
+    }
+    va_start(args, fmt);
+    vsnprintf(line, sizeof(line), fmt, args);
+    va_end(args);
+    trace_append_line(line);
+}
+
 void ptc_trace_request_ticks(int n) {
     if (n <= 0) {
         return;

@@ -23,6 +23,10 @@
  * only ever written by the game thread. */
 void ptc_trace_request_ticks(int n);
 
+/* Append one rig-owned line to the trace ring (`cmd trace` prints it).  Used
+ * by the wall-run corner rig for its per-tick state; harmless anywhere else. */
+void ptc_trace_note(const char *fmt, ...);
+
 /* Called by the main loop: returns the queued tick count (0 = nothing) and
  * starts a fresh trace buffer. */
 int ptc_trace_take_ticks(void);

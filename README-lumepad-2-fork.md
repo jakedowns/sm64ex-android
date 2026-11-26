@@ -975,7 +975,7 @@ in-scale %, `15` ZBUF, `16` wireframe, `17` toe %, `18` aspect %, `19` no cull,
 FX knobs (`cmd fx`): AO `1`-`6`, DOF `11`-`15` (`16` auto focus, `17` reports
 the auto distance), SSGI `21`-`25`, SSRTX `70`-`77`, crepuscular rays
 `250`-`260`, tone map + grading `280`-`289`, wall-run jump-off `320`-`329`,
-camera vs ground `360`, normal flip `32`.
+wall-run corner rig `410`-`415`, camera vs ground `360`, normal flip `32`.
 normal flip `32`, skybox fine-tune `370`-`373` (UI size/box are the stereo
 keys `58`/`59`, i.e. `cmd set`, because `fx 50`-`61` are shadow knobs).
 
@@ -998,6 +998,7 @@ keys `58`/`59`, i.e. `cmd set`, because `fx 50`-`61` are shadow knobs).
 | emissive + bloom (GLOW) | `261` bloom on (default **off**), `262` threshold 0-255 (default 48), `263` intensity % (default 120), `264` blur radius (default 3), `265` blur passes 1-3 (default 2), `266` taps 5/9 (default 9), `267` emissive gain % (default 100), `268` debug view (0 off, 1 emissive buffer, 2 bloom buffer), `269` emissive tags on (default on), `270` also bloom scene pixels above threshold (default off) |
 | jetpack light | `271` on (default on), `272` intensity % (default 150), `273` radius in world units (default 220) |
 | wall-run jump-off | `320` stick blend % (default 65, 0 = the old fixed vector), `321` stick speed as % of run speed (default 120), `322` min outward direction x0.1 (default 40; clamps a stick held into the wall), `323` release window in ticks (default 5 ≈ 167 ms), `324` release window on (default 1), `325` jump-up vy x0.1 (default 100), `326` outward push x0.1 (default 120), `327` tangent speed % of run speed (default 112), `328` stick dead-zone 0-32 (default 8), `329` extra tangential speed when the stick is held along the run direction, % of run speed (default 15) |
+| wall-run corner rig | `410` nominal jump distance before the corner (default 1480), `411` spacing of the eight timings (default 100), `412` re-entry deadline in ticks (default 30), `413` entry height (default 900), `414` entry speed along wall A (default 42), `415` corner-stuck ticks (default 6). Test rig for `ptc corner0..7` / `scripts/wallrun-corner-test.py`; see TESTING.md |
 | touch layout / profiles | `300` edit mode on/off, `301` RESET layout, `302` select element (0-19, see below), `303` selected x (per-mille of width), `304` selected y (per-mille), `305` selected scale % (40-250), `306` activate profile by index, `307` save current as profile `p<v>`, `308` export active profile, `309` log status |
 
 Element indices for `302`: 0 `stick`, 1 `a`, 2 `b`, 3 `z`, 4 `r`, 5 `s`,

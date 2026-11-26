@@ -31,6 +31,9 @@ void movekit_set_flag(int which, int on);
  *  components for 0 = x, 1 = z. */
 int movekit_wr_state(int which);
 f32 movekit_wr_last_vel(int axis);
+/** Normal of the current/last wall-run surface (0 = x, 1 = y, 2 = z).  The
+ *  corner rig uses axis 0: +1 wall A (room west wall), ~0 wall B. */
+f32 movekit_wr_wall_normal(int axis);
 void movekit_wr_clear(void);
 /** Wall-run runtime dials (fx 320-329): 320 blend %, 321 stick gain %,
  *  322 min outward x0.1, 323 release ticks, 324 release on, 325 jump-up x0.1,

@@ -1556,6 +1556,15 @@ f32 movekit_wr_last_vel(int axis) {
     return axis ? s_wr_last_vz : s_wr_last_vx;
 }
 
+/* Normal of the wall the current/last wall run is on: axis 0 = x, 2 = z.
+ * The PTC corner rig uses it to tell wall B from wall A when a run resumes. */
+f32 movekit_wr_wall_normal(int axis) {
+    if (axis == 1) {
+        return s_lastWallNormal[1];
+    }
+    return axis ? s_lastWallNormal[2] : s_lastWallNormal[0];
+}
+
 /* fx 320-329.  Values are clamped to sane ranges; 0/1 switches are bools. */
 void movekit_dial_set(int which, int value) {
     switch (which) {

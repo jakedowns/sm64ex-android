@@ -2686,6 +2686,14 @@ void gfx_opengl_ssfx_set(int which, int value) {
             movekit_dial_set(which, value);
             break;
         }
+        /* 90-degree corner rig dials (ptc.c; fx 410-415): 410 perfect press
+         * distance, 411 spacing of the eight timings, 412 re-entry deadline
+         * ticks, 413 entry height, 414 entry speed, 415 corner-stuck ticks. */
+        case 410: case 411: case 412: case 413: case 414: case 415: {
+            extern void ptc_wrc_dial_set(int which, int value);
+            ptc_wrc_dial_set(which, value);
+            break;
+        }
         /* Presentation-time painting ripple mesh interpolation (fx 350).
          * 1 = interpolate with the present alpha (default), 0 = the old
          * per-sim-tick stepping, for A/B captures. */
@@ -2900,6 +2908,10 @@ int gfx_opengl_ssfx_get(int which) {
         case 325: case 326: case 327: case 328: case 329: {
             extern int movekit_dial_get(int which);
             return movekit_dial_get(which);
+        }
+        case 410: case 411: case 412: case 413: case 414: case 415: {
+            extern int ptc_wrc_dial_get(int which);
+            return ptc_wrc_dial_get(which);
         }
         case 310: case 311: case 312: case 313: case 314: case 315: {
             extern int movekit_grapple_debug_get(int which);

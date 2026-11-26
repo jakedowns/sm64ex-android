@@ -55,4 +55,10 @@ void ptc_mario_portal_walk_loop_stop(void);
 void ptc_debug_command(const char *action);
 void ptc_format_status(char *buf, int len);
 
+/* Wall-run 90-degree corner rig (ptc corner0..7 / cornerliveN / corneroff).
+ * Dials are fx 410-415; ptc_wrc_format() returns the compact `wrc=` summary. */
+void ptc_wrc_dial_set(int which, int value);
+int  ptc_wrc_dial_get(int which);
+void ptc_wrc_format(char *buf, int len);
+
 #endif
