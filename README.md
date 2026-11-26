@@ -1,125 +1,107 @@
-# sm64ex-android
- Super Mario 64, sm64ex, for Android
+# sm64ex-android — Lume Pad 2 fork
 
-It features support for touch controls, rumble, controllers, and keyboards.  
-The touch controls will automatically hide when using a controller or keyboard.  
-Vibration or rumble can disabled in pause -> options -> controls -> rumble strength -> 0  
+Super Mario 64 (sm64ex) for Android, forked for the **Lume Pad 2** — a
+glasses-free 3D tablet — with a rebuilt stereo renderer, a large screen-space
+effects suite, and debugging tools aimed at making the port tunable without
+recompiling.
 
+Upstream project and its build instructions (Windows/Android Studio, stock
+Android): **[README-original.md](README-original.md)**. This file describes what
+*this* fork is and how to build and run it here.
 
-## How to compile on windows for android:
+---
 
-Install MSYS2 and android studio.
+## What this fork adds
 
-https://www.msys2.org/
-https://developer.android.com/studio
+- **Leia stereo** — per-eye rendering woven by the Lume Pad's display, with
+  depth placement, toe-in, eye shear, focus and pop-out controls, plus a
+  head-tracked/gyro parallax camera.
+- **High frame rate** — the sim stays at 30 Hz while the renderer presents 60 or
+  120 Hz, interpolating camera and model matrices per present, including held
+  objects (the tail-spin Bowser pulse) and painting ripples.
+- **Screen-space effects**, all with runtime dials and a panel page:
+  MXAO, C.DOF (bokeh), SSGI, SSRTX, crepuscular rays, shadow-mapped dynamic
+  lights with light probes, emissive materials + bloom, tone mapping and colour
+  grading with LUTs, motion blur with real per-vertex motion vectors, and a
+  reduced-resolution denoiser.
+- **Quality presets** — LOW / MED / HIGH, one tap, measured on the tablet
+  (3D, PTC test chamber): **LOW 9.2 ms ≈ 108 fps**, **MED 14.2 ms ≈ 70 fps**,
+  **HIGH 36.6 ms ≈ 27 fps**.
+- **Gameplay/dev extras** — a Portal Test Chamber with scripted test rigs
+  (portal relay, ninja chain, wall-run corner timings, grapple targeting view,
+  Bowser tail-spin HFR rig), wall-run + grapple + jetpack movement kit, an
+  occluded-Mario punch-through, and a touch-control layout editor with profiles.
+- **Debugging without a compiler** — every tunable has an `fx` key and a panel
+  control, `cmd dump` reports a machine-readable status line, and there is an
+  in-app feedback outbox plus a `quick-dev` loop that gets a change on screen in
+  seconds.
 
-Run MINGW64
+## Build
 
-```
-pacman -S git
-git clone https://github.com/MegaBitmap/sm64ex-android
-```
+The toolchain lives outside `PATH`; nothing is installed system-wide.
 
-Rename the original sm64 rom to baserom.us.z64  
-Move baserom.us.z64 into the folder:
-`C:\msys64\home\%username%\sm64ex-android\app\jni\src\`  
+```bash
+export JAVA_HOME=/home/ubuntu/opencode/jdk                 # JDK 17
+export ANDROID_HOME=/home/ubuntu/opencode/sdk              # platform 34, build-tools 34.0.0
+export ANDROID_SDK_ROOT="$ANDROID_HOME"
+export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/27.2.12479018"
+export GRADLE_USER_HOME=/home/ubuntu/opencode/gradle-home
+export GNUMAKE=/usr/bin/make
+export PATH="$JAVA_HOME/bin:/media/share/lp2-test/toolchain/hostbin:/media/share/lp2-test/toolchain/x86bin:$PATH"
 
-```
-cd sm64ex-android
-bash Setup-MINGW64.sh
-```
-
-It will check for updates then start extracting assets from the rom.  
-
-This may take a while.  
-
-After that is finished, run Android Studio and open the project folder:
-`C:\msys64\home\%username%\sm64ex-android\`
-
-Wait for gradle to sync.
-
-Optional: Replace the app icons in `sm64ex-android\app\src\main\res\mipmap*` folders  
-https://developer.android.com/studio/write/create-app-icons#access
-
-After gradle finishes, click the hammer icon to build the app.  
-
-This may take a while.  
-
-Upon a successful build, the output apk file will be located here:  
-`C:\msys64\home\%username%\sm64ex-android\app\build\outputs\apk\debug\app-debug.apk`  
-
-Rename the apk to `sm64ex-android.apk`, install, and play!
-
-## Build tip: stream long builds through the progress relay
-
-When an agent drives the build, pipe it through the progress-tool relay so the
-user's progress indicator streams live (and at zero token cost) instead of the
-agent waiting on a wall of compiler output:
-
-```sh
-progress-relay --id build-1 -- /path/to/build-worktree.sh /path/to/worktree
-# or: /path/to/build-worktree.sh /path/to/worktree | progress-relay --id build-1
+# all builds go through the shared lock (see AGENTS.md)
+scripts/agent-lock.sh build --reason "my change" -- ./gradlew assembleDebug --no-daemon
+# -> app/build/outputs/apk/debug/app-debug.apk
 ```
 
-The relay parses OSC 9;4 progress sequences and maps the exit code to done/error.
+The NDK's host tools are x86_64 running under qemu on this arm64 VM: an
+**incremental build is ~1 minute**, a **fresh worktree is a full native rebuild
+at 15–25 minutes** (set `NDK_HOST_PYTHON=/usr/bin/python3` and copy the
+git-ignored `app/jni/src/build/us_pc` tree first).
 
-## Working with multiple agents
+## Run it on the tablet
 
-If more than one agent works in this checkout at the same time, follow
-`multi-agent-rules.md`. All Gradle/NDK builds must run under the build lock and
-all `adb`/device access under the device lock:
+The tablet is adb-over-Wi-Fi (`192.168.1.207:5555`); device work also goes
+through the lock, which marks the app BUSY and sleeps the panel on release.
 
+```bash
+export LD_LIBRARY_PATH=/home/ubuntu/.local/lib/android-tools:$LD_LIBRARY_PATH
+
+# one-shot install + launch + level + state/report capture
+AGENT_TABLET_MUTE=1 scripts/agent-lock.sh device --reason "quick dev" -- \
+    scripts/quick-dev.sh --install --level 38 --fx "100=1 101=200"
 ```
-scripts/agent-lock.sh build  --reason "assembleDebug" -- ./gradlew assembleDebug
-scripts/agent-lock.sh device --reason "install apk" -- adb install -r app/build/outputs/apk/debug/app-debug.apk
-scripts/agent-lock.sh status
-```
 
-The locks live under host state, not in the repository, so they are shared by
-every git worktree of this project. Run the helper from the worktree you are
-building; branch and commit are recorded automatically. Acquire/release/timeout
-events are appended as JSONL next to the locks, and `status` prints the exact
-log paths.
+`scripts/quick-dev.sh --help` lists the flags; `DEBUG → SYS → QUICK DEV` makes
+subsequent launches skip the logo/attract sequence.
 
-## Lume Pad 2 fork additions
+## Where to read more
 
-This fork turns the port into a glasses-free 3D, high-framerate build for the
-**Leia Lume Pad 2** and adds a lot of debug tooling on top of upstream:
+| file | what it is |
+| --- | --- |
+| [`README-lumepad-2-fork.md`](README-lumepad-2-fork.md) | the long-form fork manual: every effect, every `fx` key, panel layout, controls, measured costs |
+| [`TODO.md`](TODO.md) | what is still open (blocked device captures, bugs, next perf work) |
+| [`BACKLOG.md`](BACKLOG.md) | long-form notes, decisions and gotchas for open threads |
+| [`AGENTS.md`](AGENTS.md) | build/device protocol, locks, debug channel — read this before touching the tablet |
+| [`EFFICIENT-DEBUGGING.md`](EFFICIENT-DEBUGGING.md) | how to tune at runtime instead of rebuilding |
+| [`TESTING.md`](TESTING.md) | test rigs and harnesses (portal relay, chain, wall-run corner) |
+| [`PORTAL-TEST-CHAMBER.md`](PORTAL-TEST-CHAMBER.md) | the PTC level and its scripted actions |
+| [`MOTION-VECTORS.md`](MOTION-VECTORS.md), [`DENOISER-RATE-LIMIT.md`](DENOISER-RATE-LIMIT.md) | motion blur and denoiser internals with measurements |
+| [`findings/`](findings/) | perf investigations: the full FX sweep, DOF/SSGI/MXAO rewrites, the half-res FX pass, presets |
 
-- **Leia interlaced 3D** output: per-eye framebuffers, adjustable IPD,
-  zero-parallax/convergence, depth, toe (auto-toe to the DOF focus), UI depth,
-  plus a screen-locked UI layer.
-- **Interpolated 60/120 Hz rendering** while the simulation stays at a fixed
-  30 Hz (camera, objects, animation, shadows).
-- **Screen-space effects**: MXAO, cinematic DOF (auto focus on Mario) and
-  SSGI-lite, with live sliders and debug views.
-- **UI after post**: the HUD, dialogs, menus and transitions are composited
-  after the FX pass so they stay sharp and never bleed into the scene.
-- **Touch overlay**: floating left stick, A/B/Z/R/L, C-buttons or an analog
-  camera stick, START, portal buttons, adjustable opacity. The whole overlay is
-  re-arrangeable on the device (the **EDIT LAYOUT** chip under the FPS meter,
-  DEBUG > SYS > TOUCH LAYOUT, or long-press the overlay): drag to move, corner
-  grip to resize, snap-to-grid/edges, named profiles persisted across launches
-  and shared to `Android/data/com.vdavid003.sm64port/files/layouts/`.
-- **Camera**: free camera (X enables, Y recentres), head-tracked parallax and
-  gyro camera canting with independent strength sliders and a tilt-pivot height.
-- **Stay in level after a star** (default on).
-- **Portal gun prototype**: pick the gun up in the castle grounds, aim with the
-  centre reticle, place a blue (P1) and an orange (P2) portal on solid
-  geometry, and walk into one to teleport with momentum preserved.
-- **Debug channel** over adb (`dump`, `set`, `toggle`, `fx`, `fps`, `portal`,
-  `givegun`, `busy`, ...) plus a red/green hands-off indicator.
+## Controls
 
-See [README-lumepad-2-fork.md](README-lumepad-2-fork.md) for the full feature
-list, the knob/key tables and the known gaps.
+Touch controls with an on-screen layout editor (drag + corner resize, saved
+profiles), controller and keyboard support with rumble, and a debug panel in
+four docks (bottom/top, horizontal/vertical) that exposes every graphics knob.
+The panel's DEBUG → MOVE / PORTAL / BALL / SYS / LOGS pages drive the test rigs
+and produce bug reports.
 
-## Sources
+## Credits and licence
 
-https://github.com/libsdl-org/SDL/tree/release-2.30.3
-
-https://github.com/VDavid003/sm64-port-android/tree/ex/master
-
-https://github.com/VDavid003/sm64-port-android-base/tree/sm64ex
-
-https://github.com/VDavid003/sm64-port-android/commit/f54aa0aa1bcf4ec7626e42fc960840d65ef324d3
-
+This is a fork of [sm64ex-android](https://github.com/VDavid003/sm64ex-android)
+(see [README-original.md](README-original.md)) which in turn builds on
+[sm64ex](https://github.com/sm64pc/sm64ex) and the [n64decomp/sm64](https://github.com/n64decomp/sm64)
+decompilation. The Leia stereo integration uses Leia's CNSDK. Licensed under the
+same terms as upstream; the original README carries the attribution and the
+asset-extraction instructions.

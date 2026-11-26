@@ -2,6 +2,11 @@
 
 Notes for automated agents working in this repository.
 
+Docs: `README.md` is the fork's entry point, `README-lumepad-2-fork.md` the
+long-form manual, `README-original.md` the upstream project readme (build
+instructions for stock Android/Windows), `TODO.md` what is open, `BACKLOG.md`
+the long-form notes. Read `AGENTS.md` (this file) before touching the tablet.
+
 ## Mandatory shared locks
 
 All builds and all device/adb work must go through `scripts/agent-lock.sh`:
