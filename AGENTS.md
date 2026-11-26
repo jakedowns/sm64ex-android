@@ -100,6 +100,18 @@ export PATH="$JAVA_HOME/bin:/media/share/lp2-test/toolchain/hostbin:/media/share
 scripts/agent-lock.sh build --reason "my change" -- ./gradlew assembleDebug --no-daemon
 ```
 
+**Fresh worktrees need two extra things** (cost two failed builds otherwise):
+
+```bash
+export NDK_HOST_PYTHON=/usr/bin/python3          # the NDK's bundled host python is an
+                                                 # unwrapped x86-64 binary here
+cp -r /home/ubuntu/opencode/android-sm64/app/jni/src/build/us_pc \
+      <worktree>/app/jni/src/build/              # generated assets, git-ignored
+```
+
+The main checkout has neither problem, which is why a central incremental build
+is still the cheapest way to compile an agent's patch.
+
 APK: `app/build/outputs/apk/debug/app-debug.apk`.
 
 The NDK toolchain runs under qemu here and occasionally crashes with a spurious
