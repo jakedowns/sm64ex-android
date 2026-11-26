@@ -156,6 +156,20 @@ extern Vec3f *gPaintingTriNorms;
 extern struct Painting *gRipplingPainting;
 extern s8 gDddPaintingStatus;
 
+/**
+ * Presentation-time interpolation of the rippling painting mesh (paintings.c).
+ * The mesh is baked into the display list on 30 Hz sim ticks; these let the
+ * renderer rewrite the baked height/normal for the frame being presented.
+ */
+extern int gfx_paint_interp;  /* fx 350: 1 = interpolate, 0 = old 30 Hz stepping */
+extern int gfx_paint_log;     /* test rig: per-present telemetry */
+void painting_interp_frame_begin(void);
+void painting_interp_record_vtx(Vtx *v, const s16 *map, s16 n);
+void painting_interp_patch(float alpha);
+int painting_interp_status(char *buf, int len);
+struct Painting *painting_find(int group, int id);
+void painting_debug_trigger_entry(int group, int id);
+
 extern Gfx *geo_painting_draw(s32 run, struct GraphNode *node, void *context);
 extern Gfx *geo_painting_update(s32 run, struct GraphNode *node, f32 c[4][4]);
 

@@ -752,6 +752,7 @@ mirrored to `Android/data/com.vdavid003.sm64port/files/layouts/`:
 active profile). Positions are normalised (0..1) and sizes are multipliers of
 a 1600-px reference radius, so a profile survives a different panel resolution.
 | tone map + grading (GRADE) | `280` master (default **off**), `281` tonemap (0 linear, 1 Reinhard, 2 ACES, 3 filmic), `282` exposure EV×100, `283` white point % (100-400), `284` look (0 none, 1 sepia, 2 cool, 3 warm, 4 bleach, 5 cel, 6 LUT), `285` look strength %, `286` saturation %, `287` contrast %, `288` tint (-cool/+warm), `289` split pre/post debug |
+| painting ripple | `350` interpolate the rippling painting's mesh on presented frames (default **on**); `0` restores the old per-sim-tick stepping for A/B captures |
 
 The denoiser runs at 1/4 resolution by default: the scene colour and depth are
 downsampled to `scene_res/4`, 1-3 edge-aware à-trous passes run there, and a

@@ -11,6 +11,23 @@ that is finished gets deleted here, not ticked.
 
 ## In progress
 
+### Painting ripple at the present rate (unmerged, worktree `w2-paint-ripple`)
+`paintings.c` regroups the mesh and relights it once per 30 Hz sim tick and
+bakes the result into the display list Vtx array, so the extra 60/120 Hz
+presents replayed it unchanged. The ripple now keeps the two most recent meshes
+and `gfx_patch_frame()` rewrites the baked vertex height + normal for the frame
+being presented, the same way display-list matrices are rewritten. The state
+machine, `rippleTimer` and `currRippleMag` are untouched, so the transition
+still takes the same number of ticks; the entry-ripple dwell and the real warp
+duration were measured identical with `fx 350 0` / `fx 350 1`.
+Dials: `fx 350` (1 = interpolate, default; 0 = old stepping for A/B), status
+field `paint=<on>,<blocks>,<verts>,<alpha*1000>` appended to `ptc_format_status`.
+PTC rig: `ptc paint` (fixed camera on the Bob painting + re-armed entry ripple),
+`ptc paintwarp` (real warp transition for the duration comparison), `ptc
+paintoff`, `ptc paintdump` (per-present `SM64Paint` telemetry: alpha and the
+presented ripple height). Clips and frame strips:
+`/media/share/tmp/artifacts/sm64/paint-ripple/`.
+
 ### Shipped this wave (merged 2026-11-25)
 Rays (`6c55b1e`), the reduced-res denoiser, slow-motion interpolation, the
 emissive/bloom/GLOW work, the occluded-Mario punch-through and the HFR held-object
@@ -187,6 +204,7 @@ keep a feature inside its block:
 | `320`-`329` | wall-run stick vector + cooldown |
 | `330`-`339` | camera sensitivity picker + FREE-mode cycler fix (taken: `330` band, `331` trim, `332` effective readback) |
 | `340`-`349` | feedback outbox (reserved, likely unused) |
+| `350`-`359` | painting ripple presentation-time interpolation (taken) |
 
 ## Known bugs and limits
 
@@ -230,8 +248,10 @@ keep a feature inside its block:
   fallback blur pulses by design.
 - **Denoiser has no temporal reprojection.** `frames` is only a blend weight;
   `bounces` means extra à-trous iterations. See `DENOISER-RATE-LIMIT.md`.
-- **HUD, menus and transitions step at 30 Hz**, and the skybox, some particles
-  and paintings are not interpolated (also listed in the README roadmap).
+- **HUD, menus and transitions step at 30 Hz**, and the skybox and some particles
+  are not interpolated (also listed in the README roadmap). Rippling paintings
+  were on this list; they now interpolate at the present rate (`fx 350`), so the
+  remaining steppy cases are the HUD/menus, the skybox and some particles.
 - **Portal phase 3** (through-portal camera relay, Mario clone in the exit
   portal) is not implemented; portals are decal + instantaneous teleport.
 

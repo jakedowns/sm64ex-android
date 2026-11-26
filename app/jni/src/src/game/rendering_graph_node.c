@@ -31,6 +31,7 @@
 #include "object_helpers.h"
 #include "mario.h"
 #include "memory.h"
+#include "paintings.h"
 #include "../pc/gfx/gfx_pc.h"
 
 /**
@@ -623,6 +624,9 @@ void gfx_patch_frame(float alpha) {
     if (gfx_hfr_scale_debug) {
         gfx_hfr_scale_tick(alpha);
     }
+    /* The rippling-painting mesh is baked per sim tick like the matrices, so it
+     * needs the same per-present rewrite (it used to stay at 30 Hz). */
+    painting_interp_patch(alpha);
 }
 
 // Measures the held object's presented matrix against the scale it should
@@ -2080,6 +2084,9 @@ void geo_process_root(struct GraphNodeRoot *node, Vp *b, Vp *c, s32 clearColor) 
         gMatStackIndex = 0;
         gCurAnimType = 0;
         hfr_reset();
+        /* This display list's Vtx pool replaces the previous tick's, so the
+         * rippling-painting records from the last build are now stale. */
+        painting_interp_frame_begin();
         vec3s_set(viewport->vp.vtrans, node->x * 4, node->y * 4, 511);
         vec3s_set(viewport->vp.vscale, node->width * 4, node->height * 4, 511);
         if (b != NULL) {

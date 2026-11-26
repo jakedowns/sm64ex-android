@@ -14,6 +14,10 @@
 #include <string.h>
 #include <math.h>
 
+#if defined(__ANDROID__)
+#include <android/log.h>
+#endif
+
 #include "sm64.h"
 #include "ptc.h"
 #include "levels/ptc/ptc_level.h"
@@ -39,6 +43,7 @@
 #include "engine/math_util.h"
 #include "engine/surface_collision.h"
 #include "engine/graph_node.h"
+#include "game/paintings.h"
 #include "levels/ptc/header.h"
 #include "boxphys.h"
 #include "ptc_scene.h"
@@ -465,6 +470,7 @@ static int s_bowserHeldOn;
 static void ptc_annex_update(void);
 static void ptc_wrj_update(void);
 static void ptc_wrj_input(struct MarioState *m);
+static void ptc_paint_update(void);
 static void ptc_pov_apply(void);
 static int  s_pov_shot;
 static void ptc_chain_update(void);
@@ -1699,6 +1705,8 @@ void ptc_update(void) {
     if (s_pov_shot) {
         ptc_pov_apply();
     }
+
+    ptc_paint_update();
 
     ptc_chain_update();
 
@@ -3903,6 +3911,200 @@ static void ptc_cam_wall_test(void) {
     gfx_set_debug_note("CAM NOCLIP: camera through the west wall (wall hidden)");
 }
 
+/* -------------------------------------------------- painting ripple rig */
+
+/* Drives one painting's ripple for capture. `ptc paint` parks a fixed camera
+ * on the Bob painting's axis in Castle Inside and starts the same entry ripple
+ * Mario's jump starts (re-armed when it decays), so a clip can be recorded at
+ * any fps mode with no input scripting. `ptc paintwarp` instead places Mario on
+ * the painting's warp floor: that reproduces the whole real transition (ripple
+ * + fade + level load) for the duration comparison. `ptc paintdump` toggles the
+ * per-present telemetry (alpha + presented ripple height) from paintings.c.
+ * Nothing here runs unless one of those actions is issued. */
+static int s_paintShot;      /* 1 = rig active */
+static int s_paintWarp;      /* 1 = real warp entry instead of a direct ripple */
+static int s_paintPlaced;    /* camera/Mario set up for the current level load */
+static int s_paintLastState = -1;
+static u32 s_paintTriggerTick;
+static u32 s_paintTriggers;
+static int s_paintLastLevel = -1;
+static Vec3f s_paintCamPos;
+static Vec3f s_paintCamFocus;
+
+#if defined(__ANDROID__)
+#define PTC_PAINT_LOG(...) __android_log_print(ANDROID_LOG_INFO, "SM64Paint", __VA_ARGS__)
+#else
+#define PTC_PAINT_LOG(...) ((void) 0)
+#endif
+
+extern void custom_camera_apply_mode(int mode);
+extern void custom_camera_set_freelook(int on, const Vec3f pos, const Vec3f focus);
+
+/* Find the painting's special floors (the three triangles in front of it) and
+ * return their centroid. That is both where a player stands to jump in and a
+ * reliable "which side is the room on" answer, without hardcoding the wall. */
+static int ptc_paint_floor_centroid(struct Painting *p, Vec3f out) {
+    Vec3f acc = { 0.0f, 0.0f, 0.0f };
+    int found = 0;
+    s16 base = p->id * 3 + SURFACE_PAINTING_WARP_D3;
+
+    for (int dx = -800; dx <= 800; dx += 50) {
+        for (int dz = -800; dz <= 800; dz += 50) {
+            struct Surface *surf = NULL;
+            f32 x = p->posX + (f32) dx;
+            f32 z = p->posZ + (f32) dz;
+            f32 h = find_floor(x, p->posY + 2000.0f, z, &surf);
+
+            if (surf != NULL && surf->type >= base && surf->type <= base + 2) {
+                acc[0] += x;
+                acc[1] += h;
+                acc[2] += z;
+                found++;
+            }
+        }
+    }
+    if (found == 0) {
+        return 0;
+    }
+    out[0] = acc[0] / (f32) found;
+    out[1] = acc[1] / (f32) found;
+    out[2] = acc[2] / (f32) found;
+    return 1;
+}
+
+static void ptc_paint_off(void) {
+    if (!s_paintShot) {
+        return;
+    }
+    s_paintShot = 0;
+    s_paintWarp = 0;
+    s_paintPlaced = 0;
+    s_paintLastState = -1;
+    s_paintLastLevel = -1;
+    custom_camera_set_freelook(0, NULL, NULL);
+    custom_camera_apply_mode(0); /* hand the camera back to the vanilla rig */
+}
+
+static void ptc_paint_setup(struct Painting *p) {
+    Vec3f floorPt, dir, centre;
+    f32 len;
+
+    /* Painting centre: the mesh spans 0..PAINTING_SIZE in local units. */
+    centre[0] = p->posX;
+    centre[1] = p->posY + p->size * 0.5f;
+    centre[2] = p->posZ;
+
+    if (!ptc_paint_floor_centroid(p, floorPt)) {
+        /* No special floor found (wrong level / level data): fall back to a
+         * camera straight out along the painting's yaw. */
+        f32 a = p->yaw * 3.14159265f / 180.0f;
+
+        dir[0] = -sinf(a);
+        dir[1] = 0.0f;
+        dir[2] = cosf(a);
+        floorPt[0] = centre[0];
+        floorPt[1] = centre[1];
+        floorPt[2] = centre[2];
+    } else {
+        dir[0] = floorPt[0] - p->posX;
+        dir[1] = 0.0f;
+        dir[2] = floorPt[2] - p->posZ;
+    }
+    len = sqrtf(dir[0] * dir[0] + dir[2] * dir[2]);
+    if (len < 1.0f) {
+        dir[0] = 1.0f;
+        dir[2] = 0.0f;
+        len = 1.0f;
+    }
+    dir[0] /= len;
+    dir[2] /= len;
+
+    /* Camera 900 units out along the room direction, level with the painting's
+     * centre so the whole 614-unit face fills the frame. */
+    s_paintCamPos[0] = centre[0] + dir[0] * 900.0f;
+    s_paintCamPos[1] = centre[1];
+    s_paintCamPos[2] = centre[2] + dir[2] * 900.0f;
+    vec3f_copy(s_paintCamFocus, centre);
+
+    if (s_paintWarp && gMarioState != NULL) {
+        /* Put Mario on the special floor in front of the painting: the next
+         * tick's painting_update_floors() starts the entry ripple and
+         * initiate_painting_warp() warps, exactly like a player jumping in. */
+        gMarioState->pos[0] = floorPt[0];
+        gMarioState->pos[1] = floorPt[1] + 2.0f;
+        gMarioState->pos[2] = floorPt[2];
+        gMarioState->vel[0] = gMarioState->vel[1] = gMarioState->vel[2] = 0.0f;
+        gMarioState->forwardVel = 0.0f;
+        set_mario_action(gMarioState, ACT_IDLE, 0);
+        if (gMarioState->marioObj != NULL) {
+            vec3f_copy(gMarioState->marioObj->header.gfx.pos, gMarioState->pos);
+        }
+        gCameraMovementFlags |= CAM_MOVE_INIT_CAMERA;
+    } else if (gMarioState != NULL) {
+        /* Direct-ripple mode: keep Mario out of the shot (and off the special
+         * floors, so the natural state machine stays in ENTERED). */
+        gMarioState->pos[0] = centre[0] + dir[0] * 1600.0f;
+        gMarioState->pos[1] = centre[1];
+        gMarioState->pos[2] = centre[2] + dir[2] * 1600.0f;
+        gMarioState->vel[0] = gMarioState->vel[1] = gMarioState->vel[2] = 0.0f;
+        gMarioState->forwardVel = 0.0f;
+        set_mario_action(gMarioState, ACT_IDLE, 0);
+    }
+    s_paintPlaced = 1;
+}
+
+static void ptc_paint_update(void) {
+    struct Painting *p;
+
+    if (!s_paintShot) {
+        return;
+    }
+    if (gCurrLevelNum != s_paintLastLevel) {
+        /* New level load: recompute the camera/Mario placement for it. */
+        s_paintLastLevel = gCurrLevelNum;
+        s_paintPlaced = 0;
+        s_paintLastState = -1;
+        if (s_paintWarp) {
+            /* The warp target is reached: one transition measured, stop. */
+            if (s_paintTriggers > 0 && gCurrLevelNum != LEVEL_CASTLE) {
+                PTC_PAINT_LOG("RIG warp done level=%d tick=%u ticks=%u", gCurrLevelNum, gGlobalTimer,
+                              gGlobalTimer - s_paintTriggerTick);
+                ptc_paint_off();
+                return;
+            }
+        }
+    }
+    p = painting_find(1, 0);
+    if (p == NULL) {
+        return;
+    }
+    if (!s_paintPlaced) {
+        ptc_paint_setup(p);
+    }
+
+    /* A fixed camera, re-applied every tick like the portal POV rig so the idle
+     * camera and the Lakitu smoothing cannot drift the framing. */
+    custom_camera_apply_mode(3);
+    custom_camera_set_freelook(1, s_paintCamPos, s_paintCamFocus);
+
+    if (p->state != s_paintLastState) {
+        if (s_paintLastState >= 0) {
+            PTC_PAINT_LOG("RIG state=%d tick=%u since_trigger=%d mag=%.1f timer=%.1f", p->state,
+                          gGlobalTimer, s_paintTriggers ? (int) (gGlobalTimer - s_paintTriggerTick) : -1,
+                          p->currRippleMag, p->rippleTimer);
+        }
+        s_paintLastState = p->state;
+    }
+
+    if (!s_paintWarp && p->state == PAINTING_IDLE) {
+        painting_debug_trigger_entry(1, 0);
+        s_paintTriggerTick = gGlobalTimer;
+        s_paintTriggers++;
+        PTC_PAINT_LOG("RIG trigger n=%u tick=%u mag=%.1f rate=%.2f", s_paintTriggers,
+                      gGlobalTimer, p->currRippleMag, p->currRippleRate);
+    }
+}
+
 /* ------------------------------------------------- corner portal test */
 
 /* Reproducible corner test: portals 20 units from the SW corner where the blue
@@ -4686,6 +4888,27 @@ extern int gfx_cam_mode;
         ptc_corner_portal(action[12] == '2');
     } else if (strcmp(action, "walltest") == 0) {
         s_wallTest = portal_test_walls();
+    } else if (strcmp(action, "paint") == 0) {
+        s_paintShot = 1;
+        s_paintWarp = 0;
+        s_paintPlaced = 0;
+        s_paintLastState = -1;
+        s_paintLastLevel = -1;
+        s_paintTriggers = 0;
+        gfx_set_debug_note("PAINT: Bob painting entry ripple, fixed camera");
+    } else if (strcmp(action, "paintwarp") == 0) {
+        s_paintShot = 1;
+        s_paintWarp = 1;
+        s_paintPlaced = 0;
+        s_paintLastState = -1;
+        s_paintLastLevel = -1;
+        s_paintTriggers = 0;
+        gfx_set_debug_note("PAINT: real painting warp (ripple + fade + load)");
+    } else if (strcmp(action, "paintoff") == 0) {
+        ptc_paint_off();
+    } else if (strcmp(action, "paintdump") == 0) {
+        gfx_paint_log = !gfx_paint_log;
+        gfx_set_debug_note(gfx_paint_log ? "PAINT telemetry ON" : "PAINT telemetry off");
     } else if (strcmp(action, "stop") == 0) {
         ptc_stop();
     }
@@ -4845,6 +5068,13 @@ void ptc_format_status(char *buf, int len) {
         if (used + 2 < (size_t)len) {
             buf[used++] = ' ';
             gfx_hfr_scale_summary(buf + used, len - (int)used);
+        }
+    }
+    {
+        size_t used = strlen(buf);
+        if (used + 2 < (size_t)len) {
+            buf[used++] = ' ';
+            painting_interp_status(buf + used, len - (int)used);
         }
     }
 }

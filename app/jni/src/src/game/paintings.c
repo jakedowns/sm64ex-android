@@ -1,4 +1,5 @@
 #include <ultra64.h>
+#include <stdio.h>
 
 #include "sm64.h"
 #include "game_init.h"
@@ -11,6 +12,17 @@
 #include "area.h"
 #include "segment2.h"
 #include "paintings.h"
+
+#if defined(__ANDROID__)
+#include <android/log.h>
+#define SM64_PAINT_LOG(...) __android_log_print(ANDROID_LOG_INFO, "SM64Paint", __VA_ARGS__)
+#else
+#define SM64_PAINT_LOG(...)                                                                        \
+    do {                                                                                           \
+        fprintf(stderr, "SM64Paint " __VA_ARGS__);                                                 \
+        fputc('\n', stderr);                                                                       \
+    } while (0)
+#endif
 
 /**
  * @file paintings.c
@@ -156,6 +168,52 @@ struct Painting *gRipplingPainting;
  * Whether the DDD painting is moved forward, should being moving backwards, or has already moved backwards.
  */
 s8 gDddPaintingStatus;
+
+/* --- Presentation-time ripple interpolation -------------------------------
+ *
+ * painting_generate_mesh() bakes the ripple's vertex heights into the display
+ * list once per 30 Hz sim tick, and painting_average_vertex_normals() bakes the
+ * lighting derived from those heights. The 60/120 Hz presents replay that same
+ * display list, so before this the ripple (both the surface wobble and, far
+ * more visibly, its shading) only changed on sim ticks and read as 30 Hz next
+ * to the interpolated scene.
+ *
+ * Keep the mesh from the two most recent ticks and rewrite the baked vertex
+ * height + normal in gfx_patch_frame(), exactly like display-list matrices are
+ * rewritten: alpha 0 shows the previous tick's mesh, alpha 1 the current one.
+ * Gameplay timing is untouched - rippleTimer, currRippleMag and the state
+ * machine still advance only in painting_update_ripple_state().
+ */
+#define PAINT_INTERP_MAX_VERTS  160 /* seg2_painting_triangle_mesh has 157 */
+#define PAINT_INTERP_MAX_BLOCKS 16
+
+struct PaintingMeshSnap {
+    s16 n;
+    s16 z[PAINT_INTERP_MAX_VERTS];
+    s8 norm[PAINT_INTERP_MAX_VERTS][3];
+};
+
+/* One baked Vtx array from this tick's display list, with the mesh vertex each
+ * entry came from. Patching rewrites the heights/normals in place. */
+struct PaintingVtxBlock {
+    Vtx *v;
+    const s16 *map;
+    s16 n;
+};
+
+static struct PaintingMeshSnap sPaintSnapPrev;
+static struct PaintingMeshSnap sPaintSnapCur;
+static int sPaintSnapValid;
+static struct Painting *sPaintSnapOwner;
+static u32 sPaintSnapBuild;
+static struct PaintingVtxBlock sPaintBlocks[PAINT_INTERP_MAX_BLOCKS];
+static int sPaintBlockCount;
+static u32 sPaintBuild;        /* display-list builds (= sim ticks) */
+static u32 sPaintPatchFrame;   /* presented frames (telemetry) */
+static float sPaintPatchAlpha;
+
+int gfx_paint_interp = 1;      /* fx 350, default on */
+int gfx_paint_log;             /* PTC test: per-present telemetry */
 
 struct Painting *sHmcPaintings[] = {
     &cotmc_painting,
@@ -827,6 +885,7 @@ Gfx *render_painting(u8 *img, s16 tWidth, s16 tHeight, s16 *textureMap, s16 mapV
 
     s16 commands = triGroups * 2 + remGroupTris + 7;
     Vtx *verts = alloc_display_list(numVtx * sizeof(Vtx));
+    s16 *vmap = alloc_display_list(numVtx * sizeof(s16));
     Gfx *dlist = alloc_display_list(commands * sizeof(Gfx));
     Gfx *gfx = dlist;
 
@@ -848,6 +907,9 @@ Gfx *render_painting(u8 *img, s16 tWidth, s16 tHeight, s16 *textureMap, s16 mapV
 
             // The first entry is the ID of the vertex in the mesh
             meshVtx = textureMap[mapping * 3 + 1];
+            if (vmap != NULL) {
+                vmap[group * 15 + map] = meshVtx;
+            }
 
             // The next two are the texture coordinates for that vertex
             tx = textureMap[mapping * 3 + 2];
@@ -870,6 +932,9 @@ Gfx *render_painting(u8 *img, s16 tWidth, s16 tHeight, s16 *textureMap, s16 mapV
     for (map = 0; map < remGroupTris * 3; map++) {
         mapping = textureMap[triGroup + map];
         meshVtx = textureMap[mapping * 3 + 1];
+        if (vmap != NULL) {
+            vmap[triGroups * 15 + map] = meshVtx;
+        }
         tx = textureMap[mapping * 3 + 2];
         ty = textureMap[mapping * 3 + 3];
         make_vertex(verts, triGroups * 15 + map, gPaintingMesh[meshVtx].pos[0], gPaintingMesh[meshVtx].pos[1],
@@ -884,6 +949,9 @@ Gfx *render_painting(u8 *img, s16 tWidth, s16 tHeight, s16 *textureMap, s16 mapV
     }
 
     gSPEndDisplayList(gfx);
+    // Remember the baked array (and which mesh vertex each entry came from) so
+    // gfx_patch_frame() can rewrite the ripple for the sub-tick presents.
+    painting_interp_record_vtx(verts, vmap, numVtx);
     return dlist;
 }
 
@@ -994,6 +1062,182 @@ Gfx *painting_ripple_env_mapped(struct Painting *painting) {
     return dlist;
 }
 
+/* ------------------------------------------------- ripple interpolation */
+
+/**
+ * Called once per display-list build, from geo_process_root() next to
+ * hfr_reset(). The pool holding last tick's Vtx arrays is about to be reused,
+ * so their records must not survive into the next present.
+ */
+void painting_interp_frame_begin(void) {
+    sPaintBuild++;
+    sPaintBlockCount = 0;
+}
+
+/** Remember this tick's generated mesh, keeping the previous tick as well. */
+static void painting_interp_snapshot(struct Painting *painting, s16 numVtx) {
+    int adjacent;
+
+    if (numVtx > PAINT_INTERP_MAX_VERTS) {
+        sPaintSnapValid = 0;
+        return;
+    }
+    adjacent = sPaintSnapValid && sPaintSnapOwner == painting && sPaintSnapCur.n == numVtx
+               && sPaintSnapBuild + 1 == sPaintBuild;
+
+    /* The mesh just generated becomes the "current" end of the blend. */
+    if (adjacent) {
+        sPaintSnapPrev = sPaintSnapCur;
+    }
+    sPaintSnapCur.n = numVtx;
+    for (int i = 0; i < numVtx; i++) {
+        sPaintSnapCur.z[i] = gPaintingMesh[i].pos[2];
+        sPaintSnapCur.norm[i][0] = gPaintingMesh[i].norm[0];
+        sPaintSnapCur.norm[i][1] = gPaintingMesh[i].norm[1];
+        sPaintSnapCur.norm[i][2] = gPaintingMesh[i].norm[2];
+    }
+    if (!adjacent) {
+        /* First tick of a ripple (or a gap): no motion to interpolate yet, so
+         * both ends are the same mesh and the blend is a no-op. */
+        sPaintSnapPrev = sPaintSnapCur;
+    }
+    sPaintSnapOwner = painting;
+    sPaintSnapBuild = sPaintBuild;
+    sPaintSnapValid = 1;
+}
+
+/**
+ * Register a baked Vtx array so gfx_patch_frame() can rewrite it. `map[i]` is
+ * the mesh vertex baked into `v[i]`.
+ */
+void painting_interp_record_vtx(Vtx *v, const s16 *map, s16 n) {
+    if (v == NULL || map == NULL || n <= 0 || sPaintBlockCount >= PAINT_INTERP_MAX_BLOCKS) {
+        return;
+    }
+    sPaintBlocks[sPaintBlockCount].v = v;
+    sPaintBlocks[sPaintBlockCount].map = map;
+    sPaintBlocks[sPaintBlockCount].n = n;
+    sPaintBlockCount++;
+}
+
+/**
+ * Rewrite the baked ripple height/normal for the frame being presented.
+ * alpha 0 = previous sim tick, 1 = current. Called from gfx_patch_frame().
+ */
+void painting_interp_patch(float alpha) {
+    int b, i;
+    int on;
+
+    if (alpha < 0.0f) alpha = 0.0f;
+    if (alpha > 1.0f) alpha = 1.0f;
+    sPaintPatchFrame++;
+    sPaintPatchAlpha = alpha;
+
+    on = gfx_paint_interp && sPaintSnapValid && sPaintBlockCount > 0;
+    if (on) {
+        for (b = 0; b < sPaintBlockCount; b++) {
+            const struct PaintingVtxBlock *blk = &sPaintBlocks[b];
+
+            for (i = 0; i < blk->n; i++) {
+                s16 m = blk->map[i];
+                s16 zp, zc;
+                Vtx *v;
+
+                if (m < 0 || m >= sPaintSnapCur.n) {
+                    continue;
+                }
+                v = &blk->v[i];
+                zp = sPaintSnapPrev.z[m];
+                zc = sPaintSnapCur.z[m];
+                v->v.ob[2] = zp + (f32)(zc - zp) * alpha;
+                for (int c = 0; c < 3; c++) {
+                    int np = sPaintSnapPrev.norm[m][c];
+                    int nc = sPaintSnapCur.norm[m][c];
+                    int out = (int)(np + (f32)(nc - np) * alpha + 0.5f);
+
+                    if (out > 127) out = 127;
+                    if (out < -128) out = -128;
+                    /* .cn aliases .n on this port's Vtx, the same bytes
+                     * make_vertex() writes the normal into. */
+                    v->v.cn[c] = (u8)(s8) out;
+                }
+            }
+        }
+    }
+
+    if (gfx_paint_log && sPaintSnapValid && sPaintBlockCount > 0) {
+        /* Report the height the present actually shows: the blended one when
+         * interpolation is on, the baked tick value when it is off. */
+        const struct PaintingVtxBlock *blk = &sPaintBlocks[0];
+        f32 shown = on ? alpha : 1.0f;
+        int best = -1, bestDz = 0;
+
+        for (i = 0; i < blk->n; i++) {
+            s16 m = blk->map[i];
+            int dz;
+
+            if (m < 0 || m >= sPaintSnapCur.n) {
+                continue;
+            }
+            dz = sPaintSnapCur.z[m] - sPaintSnapPrev.z[m];
+            if (dz < 0) dz = -dz;
+            if (dz >= bestDz) {
+                bestDz = dz;
+                best = m;
+            }
+        }
+        if (best >= 0) {
+            SM64_PAINT_LOG("PAINT f=%u tick=%u interp=%d a=%.3f blocks=%d vtx=%d "
+                           "z=%d prev=%d cur=%d dzmax=%d",
+                           sPaintPatchFrame, gGlobalTimer, on, shown, sPaintBlockCount, best,
+                           (s16)(sPaintSnapPrev.z[best]
+                                 + (f32)(sPaintSnapCur.z[best] - sPaintSnapPrev.z[best]) * shown),
+                           sPaintSnapPrev.z[best], sPaintSnapCur.z[best], bestDz);
+        }
+    }
+}
+
+/** One-line state for `cmd dump` / the PTC status line. */
+int painting_interp_status(char *buf, int len) {
+    if (buf == NULL || len <= 0) {
+        return 0;
+    }
+    return snprintf(buf, len, "paint=%d,%d,%d,%d", gfx_paint_interp, sPaintBlockCount,
+                    sPaintSnapValid ? (int) sPaintSnapCur.n : 0,
+                    (int)(sPaintPatchAlpha * 1000.0f));
+}
+
+/** Look up a painting by group/id (test rig); NULL if the group has no such id. */
+struct Painting *painting_find(int group, int id) {
+    if (group < 0 || group >= (int)(sizeof(sPaintingGroups) / sizeof(sPaintingGroups[0]))) {
+        return NULL;
+    }
+    if (id < 0) {
+        return NULL;
+    }
+    for (int i = 0; sPaintingGroups[group][i] != NULL; i++) {
+        struct Painting *painting = segmented_to_virtual(sPaintingGroups[group][i]);
+
+        if (painting->id == id) {
+            return painting;
+        }
+    }
+    return NULL;
+}
+
+/**
+ * Start the same ripple Mario's jump starts, without touching floors or
+ * warping. Test rig only (PTC `paint`).
+ */
+void painting_debug_trigger_entry(int group, int id) {
+    struct Painting *painting = painting_find(group, id);
+
+    if (painting == NULL) {
+        return;
+    }
+    painting_state(PAINTING_ENTERED, painting, sPaintingGroups[group], NEAREST_4TH, MARIO_Y, RESET_TIMER);
+}
+
 /**
  * Generates a mesh, calculates vertex normals for lighting, and renders a rippling painting.
  * The mesh and vertex normals are regenerated and freed every frame.
@@ -1009,6 +1253,7 @@ Gfx *display_painting_rippling(struct Painting *painting) {
     painting_generate_mesh(painting, mesh, numVtx);
     painting_calculate_triangle_normals(mesh, numVtx, numTris);
     painting_average_vertex_normals(neighborTris, numVtx);
+    painting_interp_snapshot(painting, numVtx);
 
     // Map the painting's texture depending on the painting's texture type.
     switch (painting->textureType) {

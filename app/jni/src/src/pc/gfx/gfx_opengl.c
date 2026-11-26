@@ -2340,6 +2340,14 @@ void gfx_opengl_ssfx_set(int which, int value) {
             movekit_dial_set(which, value);
             break;
         }
+        /* Presentation-time painting ripple mesh interpolation (fx 350).
+         * 1 = interpolate with the present alpha (default), 0 = the old
+         * per-sim-tick stepping, for A/B captures. */
+        case 350: {
+            extern int gfx_paint_interp;
+            gfx_paint_interp = value ? 1 : 0;
+            break;
+        }
         default: return;
     }
     __android_log_print(ANDROID_LOG_INFO, "SM64FX",
@@ -2453,6 +2461,7 @@ int gfx_opengl_ssfx_get(int which) {
         case 276: return s_occl_feather;
         case 277: return s_occl_cover;
         case 278: return s_occl_bias;
+        case 350: { extern int gfx_paint_interp; return gfx_paint_interp; }
         case 200: { extern int gfx_rate_enabled; return gfx_rate_enabled; }
         case 201: { extern int gfx_rate_target_fps; return gfx_rate_target_fps; }
         case 202: { extern int gfx_rate_adaptive; return gfx_rate_adaptive; }
