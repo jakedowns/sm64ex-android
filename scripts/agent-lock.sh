@@ -168,7 +168,10 @@ device_sleep() {
     fi
     # Do not sleep the panel while another agent is queued for it: the sleep
     # drops the Wi-Fi adb link and the next waiter cannot wake it.
-    if [[ "$(pgrep -fc 'agent-lock.sh (device|device-quick)' 2>/dev/null || echo 1)" -gt 1 ]]; then
+    # Count other agents queued for the device lock. Exclude this script and its
+    # parent shell, otherwise the pattern matches ourselves and never sleeps.
+    if [[ "$(pgrep -f 'agent-lock\.sh (device|device-quick)' 2>/dev/null \
+              | grep -vx -e "$$" -e "${PPID:-0}" | wc -l)" -gt 0 ]]; then
         log_event sleep_skipped device "$DEVICE_LOCK" "another agent is waiting" 0 0 0 null
         return 0
     fi
