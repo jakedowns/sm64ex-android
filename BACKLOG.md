@@ -104,6 +104,35 @@ default 0 px / 100 % they coincide.
 Still to capture on hardware: JAVA vs GAME FONT at one fixed caption (PTC level
 38, e.g. `ptc light show` or `ptc momentum`), each in 2D and over the Leia 3D
 view, plus one panel-open still to prove the overlay sits below the panel.
+### C.DOF cost: reduced-resolution gather (worktree `w3-dof-perf`, 2026-11-26)
+The sweep measured C.DOF at **30.30 ms in 3D** (Δ +20.95 over the 9.35 ms
+empty FX pass) and 14.08 ms in 2D, plus +5.5 ms for the polygonal bokeh. Cause:
+the gather runs at full eye resolution (1280×1534 per eye) and each of the 16
+taps does **one full-res colour fetch + one full-res depth fetch + linZ + a CoC
+division**, for an output that is defocused by definition; the bokeh path adds
+`atan`/`cos`/`mod` per tap.
+
+New path (fx **380-389**, defaults pick it; dial 380=0 is the legacy gather):
+
+| key | default | meaning |
+| --- | --- | --- |
+| `380` | 1 | 0 = legacy in-shader full-res gather, 1 = reduced-res prepass |
+| `381` | 2 | prepass divisor 2-4 (scene_res/2 default) |
+| `382` | 1 | near field: 0 none, 1 CoC-aware (no depth fetch), 2 low-res z test |
+| `383` | 0 | prepass tap count (0 = key `15`) |
+| `384` | 1 | 0 bilinear upsample, 1 depth-aware bilateral |
+| `385` | 1 | 0 recompute CoC per tap (A/B), 1 precomputed CoC in colour alpha |
+| `386` | 1 | 0 in-shader atan blade mask, 1 precomputed taps+mask |
+| `387` | 1 | 0 point taps, 1 bilinear taps |
+| `388` | 0 | 1 = log `DOFSTAGE`/`FXSTAGE` ms (glFinish probes) |
+| `389` | 100 | in-focus sharpness pass-through % |
+
+`cmd dump` reports `dof=<380>,<381>,<382>,<383>`. Same shape as the denoiser
+(`s_dn_*`): prepare colour+CoC and packed z at eye/div, gather there, then a
+full-res bilateral upsample as its own pass. Result is fed to the FX shader as
+`uColor` with its DOF block off, so everything else (AO/GI/shadows) is
+unchanged. Still to do: automatic "no near field in frame" detection needs a
+CoC-max reduction plus a throttled 1×1 readback; only the forced dial exists.
 
 ### Shipped this wave (merged 2026-11-25)
 Rays (`6c55b1e`), the reduced-res denoiser, slow-motion interpolation, the

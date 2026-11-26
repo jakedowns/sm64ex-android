@@ -874,6 +874,7 @@ keys `58`/`59`, i.e. `cmd set`, because `fx 50`-`61` are shadow knobs).
 | camera sensitivity | `330` band (0 LOW 0.6x, 1 MED 1.0x, 2 HIGH 1.6x), `331` slider trim %, `332` reads back the effective % (`330`/`331` are also stereo-int keys; the panel slider is `49`) |
 | light probes | `110` show, `111` spacing, `113` radius, `114` resolution, `115` grid cols (X), `116` grid rows (Y), `117` grid repeats (Z); `112` sets all three axes at once |
 | bokeh / DOF | `160` kernel, `161` aspect %, `162` blades, `163` rotation, `164` anamorphic %, `165` highlight %, `166` cat eye % |
+| DOF performance | `380` reduced-res path (1 default, 0 legacy full-res), `381` divisor (2 default), `382` near field (0 none, 1 CoC-aware default, 2 low-res z test), `383` prepass taps (0 = key 15), `384` depth-aware upsample, `385` precomputed tap CoC, `386` precomputed bokeh taps+mask, `387` bilinear taps, `388` stage-timing log, `389` in-focus sharpness % |
 | rate limit | `200` on, `201` target fps, `202` adaptive, `203` reset stats |
 | slow motion | `241` sim speed `1/n` (1-8, 1 = normal), `242` sub-frame interpolation (1 = re-present the last display list at k/n of the step; 0 = old stop-motion), `243` diagnostic: always present `t=1` (step end) while still re-presenting |
 | UI layout + skybox | UI size/box: stereo keys `58`/`59` (`cmd set`; fx `50`-`61` are shadows); skybox `cmd fx` `370` scale X %, `371` scale Y %, `372` offset X %, `373` offset Y % (scene ortho only, neutral at 100/100/0/0) |

@@ -959,6 +959,34 @@ static int s_fx_bokeh_rot = 0;
 static int s_fx_anamorphic = 100;     /* percent horizontal stretch */
 static int s_fx_bokeh_highlight = 100;
 static int s_fx_cat_eye = 0;
+/* C.DOF cost reduction (fx 380-389).
+ *
+ * The legacy path is a single full-eye-resolution gather inside the big FX
+ * shader: 16 taps, each fetching full-res depth and re-deriving linear z and a
+ * CoC, for an output that is defocused by definition.  The reduced-resolution
+ * path below mirrors the denoiser prepass (see s_dn_*):
+ *
+ *   prepare  full eye colour+depth -> eye/div colour (a = signed CoC) and a
+ *            packed linear-z buffer (upsample edge stop + legacy z test)
+ *   gather   the same spiral / bokeh kernel at eye/div; the tap CoC comes from
+ *            the colour alpha, so a tap is one fetch and no linZ/division
+ *   upsample full-res depth-aware bilateral mix; the pixel's own CoC decides
+ *            how much of the sharp scene survives (in-focus stays sharp)
+ *
+ * The FX shader then receives the finished colour as uColor and its DOF block
+ * stays off.  Everything is skipped when DOF is off, so the MAIN path is
+ * unchanged.  Defaults pick the new path; every step has a dial for an A/B.
+ */
+static int s_fx_dof_half = 1;       /* 380: 0 legacy in-shader, 1 reduced-res */
+static int s_fx_dof_div = 2;        /* 381: reduced-res divisor (2..4) */
+static int s_fx_dof_near = 1;       /* 382: 0 none, 1 CoC-aware, 2 low-res z test */
+static int s_fx_dof_taps = 0;       /* 383: 0 = key 15, else prepass tap count */
+static int s_fx_dof_up = 1;         /* 384: 0 bilinear, 1 depth-aware bilateral */
+static int s_fx_dof_coc = 1;        /* 385: 0 recompute CoC per tap, 1 precomputed */
+static int s_fx_dof_bokeh_pre = 1;  /* 386: 0 in-shader atan mask, 1 precomputed */
+static int s_fx_dof_bilinear = 1;   /* 387: 0 point taps, 1 bilinear taps */
+static int s_fx_dof_stage = 0;      /* 388: 1 log per-stage ms incl. glFinish */
+static int s_fx_dof_sharp = 100;    /* 389: in-focus sharpness pass-through % */
 /* Alternative denoised rendering path. */
 static int s_denoise_path = 0;
 static int s_denoise_on = 0;
@@ -1151,6 +1179,7 @@ static const char *s_fx_fs =
     "uniform float uAperture;\n"
     "uniform float uMaxBlur;\n"
     "uniform float uDOFSamples;\n"
+    "uniform float uDofPre;\n"
     "uniform float uGIOn;\n"
     "uniform float uGIIntensity;\n"
     "uniform float uGIRadius;\n"
@@ -1632,10 +1661,10 @@ static const char *s_fx_fs =
     "  }\n"
     "  vec3 dofColor = color;\n"
     "  float cocPx = 0.0;\n"
-    "  if (uDOFOn > 0.5) {\n"
+    "  if (uDOFOn > 0.5 || (uDofPre > 0.5 && uDebug > 1.5)) {\n"
     "    float coc = abs(z - uFocus) / max(z, 1.0);\n"
     "    cocPx = clamp(coc * (uAperture / 100.0) * 220.0, 0.0, uMaxBlur);\n"
-    "    if (cocPx > 0.5) {\n"
+    "    if (uDOFOn > 0.5 && cocPx > 0.5) {\n"
     "      vec3 acc = vec3(0.0);\n"
     "      float ws = 0.0;\n"
     "      float ns = max(uDOFSamples, 1.0);\n"
@@ -2053,7 +2082,7 @@ static int    s_dn_src[2] = {0, 0};      // last à-trous stage per eye
 static struct {
     GLint color, depth, res, canvas, nearv, farv, tanhalf, aspect, frame;
     GLint ao_on, ao_intensity, ao_radius, ao_samples, ao_bias, ao_power;
-    GLint dof_on, dof_focus, dof_aperture, dof_maxblur, dof_samples;
+    GLint dof_on, dof_focus, dof_aperture, dof_maxblur, dof_samples, dof_pre;
     GLint gi_on, gi_intensity, gi_radius, gi_steps, gi_rays;
     GLint debug, normal_flip;
     GLint shear, toe, flipy;
@@ -2246,6 +2275,17 @@ void gfx_opengl_ssfx_set(int which, int value) {
         case 164: s_fx_anamorphic = value < 50 ? 50 : (value > 400 ? 400 : value); break;
         case 165: s_fx_bokeh_highlight = value < 0 ? 0 : (value > 300 ? 300 : value); break;
         case 166: s_fx_cat_eye = value < 0 ? 0 : (value > 100 ? 100 : value); break;
+        /* C.DOF reduced-resolution path + staged cost dials (380-389). */
+        case 380: s_fx_dof_half = value ? 1 : 0; break;
+        case 381: s_fx_dof_div = value < 2 ? 2 : (value > 4 ? 4 : value); break;
+        case 382: s_fx_dof_near = value < 0 ? 0 : (value > 2 ? 2 : value); break;
+        case 383: s_fx_dof_taps = value < 0 ? 0 : (value > 32 ? 32 : value); break;
+        case 384: s_fx_dof_up = value ? 1 : 0; break;
+        case 385: s_fx_dof_coc = value ? 1 : 0; break;
+        case 386: s_fx_dof_bokeh_pre = value ? 1 : 0; break;
+        case 387: s_fx_dof_bilinear = value ? 1 : 0; break;
+        case 388: s_fx_dof_stage = value < 0 ? 0 : (value > 2 ? 2 : value); break;
+        case 389: s_fx_dof_sharp = value < 0 ? 0 : (value > 100 ? 100 : value); break;
         /* Alternative denoised path. */
         case 210: s_denoise_path = value ? 1 : 0; break;
         case 211: s_denoise_on = value ? 1 : 0; break;
@@ -2472,6 +2512,16 @@ int gfx_opengl_ssfx_get(int which) {
         case 164: return s_fx_anamorphic;
         case 165: return s_fx_bokeh_highlight;
         case 166: return s_fx_cat_eye;
+        case 380: return s_fx_dof_half;
+        case 381: return s_fx_dof_div;
+        case 382: return s_fx_dof_near;
+        case 383: return s_fx_dof_taps;
+        case 384: return s_fx_dof_up;
+        case 385: return s_fx_dof_coc;
+        case 386: return s_fx_dof_bokeh_pre;
+        case 387: return s_fx_dof_bilinear;
+        case 388: return s_fx_dof_stage;
+        case 389: return s_fx_dof_sharp;
         case 210: return s_denoise_path;
         case 211: return s_denoise_on;
         case 212: return s_denoise_intensity;
@@ -2626,6 +2676,7 @@ static void stereo_fx_init(void) {
     s_fx_u.dof_aperture = glGetUniformLocation(s_fx_prog, "uAperture");
     s_fx_u.dof_maxblur = glGetUniformLocation(s_fx_prog, "uMaxBlur");
     s_fx_u.dof_samples = glGetUniformLocation(s_fx_prog, "uDOFSamples");
+    s_fx_u.dof_pre = glGetUniformLocation(s_fx_prog, "uDofPre");
     s_fx_u.gi_on = glGetUniformLocation(s_fx_prog, "uGIOn");
     s_fx_u.gi_intensity = glGetUniformLocation(s_fx_prog, "uGIIntensity");
     s_fx_u.gi_radius = glGetUniformLocation(s_fx_prog, "uGIRadius");
@@ -3748,6 +3799,513 @@ static void stereo_denoise_prepass(int div) {
     glBindTexture(GL_TEXTURE_2D, 0);
 }
 
+/* ---------------- Reduced-resolution C.DOF prepass -----------------------
+ * Mirrors the denoiser shape (see s_dn_*): reduced-res targets, a dedicated
+ * shader with modes, and a full-res upsample as its own pass.  Modes:
+ *
+ *   0  prepare: eye colour (bilinear box) + signed CoC in alpha   -> low col
+ *   1  prepare: full-res depth -> packed linear z (RG)            -> low dep
+ *   2  gather:  spiral / bokeh kernel at eye/div, tap CoC from alpha
+ *   3  upsample: full-res depth-aware bilateral mix, sharp where CoC ~ 0
+ *
+ * The packed-z target is only drawn when the upsample or the legacy near test
+ * needs it.  Every path is dialled (fx 380-389) so each can be A/B'd.
+ */
+static const char *s_dof_vs =
+    "attribute vec2 aPos; attribute vec2 aUV; varying vec2 vUV;\n"
+    "void main(){ vUV = aUV; gl_Position = vec4(aPos, 0.0, 1.0); }\n";
+
+static const char *s_dof_fs =
+    "precision highp float;\n"
+    "varying vec2 vUV;\n"
+    "uniform sampler2D uSrc;\n"        /* full-res eye colour (denoised if any) */
+    "uniform sampler2D uSrcDepth;\n"   /* full-res eye depth */
+    "uniform sampler2D uLowCol;\n"     /* eye/div colour, alpha = signed CoC */
+    "uniform sampler2D uLowDep;\n"     /* eye/div packed linear z */
+    "uniform sampler2D uLowBlur;\n"    /* eye/div gather result */
+    "uniform float uMode;\n"
+    "uniform vec2 uLowTexel;\n"
+    "uniform vec2 uRes;\n"
+    "uniform vec4 uCanvas;\n"
+    "uniform float uDiv;\n"
+    "uniform float uNear;\n"
+    "uniform float uFar;\n"
+    "uniform float uFocus;\n"
+    "uniform float uAperture;\n"
+    "uniform float uMaxBlur;\n"
+    "uniform float uSamples;\n"
+    "uniform float uUpSigma;\n"
+    "uniform float uBokehOn;\n"
+    "uniform float uBokehAspect;\n"
+    "uniform float uBokehBlades;\n"
+    "uniform float uBokehAnamorphic;\n"
+    "uniform float uBokehCatEye;\n"
+    "uniform float uBokehHighlight;\n"
+    "uniform float uBokehRot;\n"
+    "uniform float uNearMode;\n"
+    "uniform float uCocTex;\n"
+    "uniform float uBokehPre;\n"
+    "uniform float uUpMode;\n"
+    "uniform float uSharp;\n"
+    "uniform vec2 uDofTap[32];\n"
+    "uniform float uDofMask[32];\n"
+    "float linZ(float d) {\n"
+    "  float z = d * 2.0 - 1.0;\n"
+    "  return (2.0 * uNear * uFar) / (uFar + uNear - z * (uFar - uNear));\n"
+    "}\n"
+    "vec2 packZ(float z) {\n"
+    "  float v = clamp(z / uFar, 0.0, 1.0) * 65025.0;\n"
+    "  float hi = floor(v / 255.0);\n"
+    "  return vec2(hi / 255.0, (v - hi * 255.0) / 255.0);\n"
+    "}\n"
+    "float unpackZ(vec4 c) {\n"
+    "  return ((c.r * 255.0) * 255.0 + c.g * 255.0) / 65025.0 * uFar;\n"
+    "}\n"
+    "float cocOf(float z) {\n"
+    "  return abs(z - uFocus) / max(z, 1.0) * (uAperture / 100.0) * 220.0;\n"
+    "}\n"
+    "void main() {\n"
+    "  if (uMode < 0.5) {\n"
+    /* bilinear at the reduced-res centre = 2x2 box average of the eye colour */
+    "    vec3 c = texture2D(uSrc, vUV).rgb;\n"
+    "    float z = linZ(texture2D(uSrcDepth, vUV).r);\n"
+    "    float s = (z - uFocus) / max(z, 1.0) * (uAperture / 100.0) * 220.0;\n"
+    "    gl_FragColor = vec4(c, 0.5 + 0.5 * clamp(s / max(uMaxBlur, 1.0), -1.0, 1.0));\n"
+    "  } else if (uMode < 1.5) {\n"
+    "    gl_FragColor = vec4(packZ(linZ(texture2D(uSrcDepth, vUV).r)), 0.0, 1.0);\n"
+    "  } else if (uMode < 2.5) {\n"
+    "    vec4 c0 = texture2D(uLowCol, vUV);\n"
+    "    float ca = c0.a - 0.5;\n"
+    "    float coc = abs(ca) * 2.0 * max(uMaxBlur, 1.0);\n"
+    "    vec3 outc = c0.rgb;\n"
+    "    if (coc > 0.5) {\n"
+    "      float ns = max(uSamples, 1.0);\n"
+    "      float segA = 6.2831853 / max(uBokehBlades, 3.0);\n"
+    "      float edge = smoothstep(0.15, 1.0, abs(vUV.x * 2.0 - 1.0));\n"
+    "      vec2 cmin = uCanvas.xy / uRes;\n"
+    "      vec2 cmax = (uCanvas.xy + uCanvas.zw) / uRes;\n"
+    "      float cz = 0.0;\n"
+    "      if (uNearMode > 1.5) cz = unpackZ(texture2D(uLowDep, vUV));\n"
+    "      vec3 acc = vec3(0.0);\n"
+    "      float ws = 0.0;\n"
+    "      for (int i = 0; i < 32; i++) {\n"
+    "        if (float(i) >= ns) break;\n"
+    "        vec2 p;\n"
+    "        if (uBokehPre > 0.5) {\n"
+    "          p = uDofTap[i];\n"
+    "        } else {\n"
+    "          float fi = (float(i) + 0.5) / ns;\n"
+    "          float ang = float(i) * 2.39996323 + radians(uBokehRot);\n"
+    "          p = vec2(cos(ang), sin(ang)) * sqrt(fi);\n"
+    "        }\n"
+    "        if (uBokehOn > 0.5) {\n"
+    "          p.x *= (uBokehAspect / 100.0) * (uBokehAnamorphic / 100.0);\n"
+    "          if (uBokehCatEye > 0.5) {\n"
+    "            p.x *= 1.0 - (uBokehCatEye / 100.0) * 0.65 * edge;\n"
+    "            float aa = mod(atan(p.y, p.x) + segA * 0.5, segA) - segA * 0.5;\n"
+    "            float rpoly = cos(segA * 0.5) / max(cos(aa), 0.001);\n"
+    "            if (length(p) > rpoly) continue;\n"
+    "          } else if (uBokehPre > 0.5) {\n"
+    "            if (uDofMask[i] < 0.5) continue;\n"
+    "          } else {\n"
+    "            float aa = mod(atan(p.y, p.x) + segA * 0.5, segA) - segA * 0.5;\n"
+    "            float rpoly = cos(segA * 0.5) / max(cos(aa), 0.001);\n"
+    "            if (length(p) > rpoly) continue;\n"
+    "          }\n"
+    "        }\n"
+    "        vec2 suv = vUV + p * (coc / uDiv) * uLowTexel;\n"
+    "        if (suv.x < cmin.x || suv.x > cmax.x || suv.y < cmin.y || suv.y > cmax.y) continue;\n"
+    "        vec4 sc = texture2D(uLowCol, suv);\n"
+    "        float tcs;\n"
+    "        if (uCocTex > 0.5) {\n"
+    "          tcs = sc.a - 0.5;\n"
+    "        } else {\n"
+    "          float tz = unpackZ(texture2D(uLowDep, suv));\n"
+    "          tcs = clamp((tz - uFocus) / max(tz, 1.0) * (uAperture / 100.0) * 220.0\n"
+    "                      / max(uMaxBlur, 1.0), -1.0, 1.0);\n"
+    "        }\n"
+    "        float w = 1.0;\n"
+    "        if (uNearMode > 0.5 && uNearMode < 1.5) {\n"
+    /* CoC-aware near stop: a sharp tap next to a blurred centre must not be
+     * swept into (or over) the blur.  Same intent as the depth test below,
+     * without a per-tap depth fetch. */
+    "          if (abs(tcs) * 2.0 * max(uMaxBlur, 1.0) < 1.0 && coc > 1.0) w = 0.15;\n"
+    "        } else if (uNearMode > 1.5) {\n"
+    "          float tz2 = unpackZ(texture2D(uLowDep, suv));\n"
+    "          if (tz2 < cz - 1.0 && abs(tcs) * 2.0 * max(uMaxBlur, 1.0) < 1.0) w = 0.15;\n"
+    "        }\n"
+    "        float lum = dot(sc.rgb, vec3(0.299, 0.587, 0.114));\n"
+    "        w *= 1.0 + (uBokehHighlight / 100.0) * lum * lum * 2.0;\n"
+    "        acc += sc.rgb * w;\n"
+    "        ws += w;\n"
+    "      }\n"
+    "      outc = ws > 0.0 ? acc / ws : c0.rgb;\n"
+    "    }\n"
+    "    gl_FragColor = vec4(outc, 1.0);\n"
+    "  } else {\n"
+    "    vec3 sharp = texture2D(uSrc, vUV).rgb;\n"
+    "    float ca = texture2D(uLowCol, vUV).a - 0.5;\n"
+    "    float m = clamp(abs(ca) * 2.0 * max(uMaxBlur, 1.0), 0.0, 1.0) * uSharp;\n"
+    "    vec3 blur = texture2D(uLowBlur, vUV).rgb;\n"
+    "    if (uUpMode > 0.5) {\n"
+    /* Four low-res taps at texel centres, weighted by bilinear coverage and
+     * |z_tap - z_pixel| so the upsample does not smear across silhouettes. */
+    "      vec2 low = 1.0 / uLowTexel;\n"
+    "      vec2 p = vUV * low - 0.5;\n"
+    "      vec2 f = p - floor(p);\n"
+    "      vec2 base0 = (floor(p) + 0.5) / low;\n"
+    "      float cz = unpackZ(texture2D(uLowDep, vUV));\n"
+    "      vec3 acc = vec3(0.0);\n"
+    "      float ws = 0.0;\n"
+    "      for (int i = 0; i < 4; i++) {\n"
+    "        float ox = (i == 1 || i == 3) ? 1.0 : 0.0;\n"
+    "        float oy = (i >= 2) ? 1.0 : 0.0;\n"
+    "        vec2 suv = base0 + vec2(ox, oy) * uLowTexel;\n"
+    "        vec3 sc = texture2D(uLowBlur, suv).rgb;\n"
+    "        float sz = unpackZ(texture2D(uLowDep, suv));\n"
+    "        float bw = mix(1.0 - f.x, f.x, ox) * mix(1.0 - f.y, f.y, oy);\n"
+    "        float w = bw * exp(-abs(sz - cz) * uUpSigma);\n"
+    "        acc += sc * w;\n"
+    "        ws += w;\n"
+    "      }\n"
+    "      if (ws > 0.0001) blur = acc / ws;\n"
+    "    }\n"
+    "    gl_FragColor = vec4(mix(sharp, blur, m), 1.0);\n"
+    "  }\n"
+    "}\n";
+
+static GLuint s_dof_prog = 0;
+static int    s_dof_prog_state = 0;   /* 0 untried, 1 ok, -1 failed */
+static GLint  s_dof_apos = -1, s_dof_auv = -1;
+static struct {
+    GLint mode, src, src_depth, low_col, low_dep, low_blur;
+    GLint low_texel, res, canvas, div, nearv, farv;
+    GLint focus, aperture, maxblur, samples, up_sigma;
+    GLint bokeh_on, bokeh_aspect, bokeh_blades, bokeh_anamorphic, bokeh_cat_eye;
+    GLint bokeh_highlight, bokeh_rot;
+    GLint near_mode, coc_tex, bokeh_pre, up_mode, sharp;
+    GLint tap, mask;
+} s_dof_u;
+static GLuint s_dof_col[2] = {0, 0}, s_dof_cfbo[2] = {0, 0};
+static GLuint s_dof_dep[2] = {0, 0}, s_dof_dfbo[2] = {0, 0};
+static GLuint s_dof_bl[2] = {0, 0},  s_dof_bfbo[2] = {0, 0};
+static GLuint s_dof_up[2] = {0, 0},  s_dof_ufbo[2] = {0, 0};
+static int    s_dof_w = 0, s_dof_h = 0, s_dof_div = 0;
+static int    s_dof_upw = 0, s_dof_uph = 0;
+static int    s_dof_valid[2] = {0, 0};
+static GLuint s_dof_result[2] = {0, 0};
+/* Precomputed spiral taps (direction * sqrt(fi), 32 vec2) and the blade mask. */
+static float  s_dof_tap[64];
+static float  s_dof_mask[32];
+
+static double dof_now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double) ts.tv_sec * 1000.0 + (double) ts.tv_nsec / 1000000.0;
+}
+
+static void dof_build_taps(int n, int blades, float rot_deg, float aspect_pct,
+                           float anam_pct) {
+    const float segA = 6.28318530718f / (float) (blades < 3 ? 3 : blades);
+    const float rot = rot_deg * 0.01745329252f;
+    if (n < 1) n = 1;
+    if (n > 32) n = 32;
+    for (int i = 0; i < 32; i++) {
+        float ang = (float) i * 2.39996323f + rot;
+        float fi = ((float) i + 0.5f) / (float) n;
+        float s = sqrtf(fi);
+        float px = cosf(ang) * s;
+        float py = sinf(ang) * s;
+        if (i < n) {
+            s_dof_tap[i * 2 + 0] = px;
+            s_dof_tap[i * 2 + 1] = py;
+        } else {
+            s_dof_tap[i * 2 + 0] = 0.0f;
+            s_dof_tap[i * 2 + 1] = 0.0f;
+        }
+        float ax = px * (aspect_pct / 100.0f) * (anam_pct / 100.0f);
+        float len = sqrtf(ax * ax + py * py);
+        /* replicate the shader: aa = mod(atan(p.y,p.x) + segA/2, segA) - segA/2 */
+        float d = atan2f(py, ax) + segA * 0.5f;
+        d = d - segA * floorf(d / segA) - segA * 0.5f;
+        float c = cosf(d);
+        float rpoly = cosf(segA * 0.5f) / (c > 0.001f ? c : 0.001f);
+        s_dof_mask[i] = (len <= rpoly) ? 1.0f : 0.0f;
+    }
+}
+
+static int dof_ensure_program(void) {
+    if (s_dof_prog_state != 0) return s_dof_prog_state == 1;
+    GLuint vs = compile_shader_checked(GL_VERTEX_SHADER, s_dof_vs, "dof vertex");
+    GLuint fs = compile_shader_checked(GL_FRAGMENT_SHADER, s_dof_fs, "dof fragment");
+    if (!vs || !fs) {
+        s_dof_prog_state = -1;
+        if (vs) glDeleteShader(vs);
+        if (fs) glDeleteShader(fs);
+        return 0;
+    }
+    s_dof_prog = glCreateProgram();
+    glAttachShader(s_dof_prog, vs);
+    glAttachShader(s_dof_prog, fs);
+    glLinkProgram(s_dof_prog);
+    GLint ok = 0;
+    glGetProgramiv(s_dof_prog, GL_LINK_STATUS, &ok);
+    glDeleteShader(vs);
+    glDeleteShader(fs);
+    if (!ok) {
+        char log[1024];
+        GLsizei len = 0;
+        glGetProgramInfoLog(s_dof_prog, sizeof(log), &len, log);
+        __android_log_print(ANDROID_LOG_ERROR, "SM64FX",
+                "dof program link failed: %.*s", (int) len, log);
+        glDeleteProgram(s_dof_prog);
+        s_dof_prog = 0;
+        s_dof_prog_state = -1;
+        return 0;
+    }
+    s_dof_apos = glGetAttribLocation(s_dof_prog, "aPos");
+    s_dof_auv = glGetAttribLocation(s_dof_prog, "aUV");
+    s_dof_u.mode = glGetUniformLocation(s_dof_prog, "uMode");
+    s_dof_u.src = glGetUniformLocation(s_dof_prog, "uSrc");
+    s_dof_u.src_depth = glGetUniformLocation(s_dof_prog, "uSrcDepth");
+    s_dof_u.low_col = glGetUniformLocation(s_dof_prog, "uLowCol");
+    s_dof_u.low_dep = glGetUniformLocation(s_dof_prog, "uLowDep");
+    s_dof_u.low_blur = glGetUniformLocation(s_dof_prog, "uLowBlur");
+    s_dof_u.low_texel = glGetUniformLocation(s_dof_prog, "uLowTexel");
+    s_dof_u.res = glGetUniformLocation(s_dof_prog, "uRes");
+    s_dof_u.canvas = glGetUniformLocation(s_dof_prog, "uCanvas");
+    s_dof_u.div = glGetUniformLocation(s_dof_prog, "uDiv");
+    s_dof_u.nearv = glGetUniformLocation(s_dof_prog, "uNear");
+    s_dof_u.farv = glGetUniformLocation(s_dof_prog, "uFar");
+    s_dof_u.focus = glGetUniformLocation(s_dof_prog, "uFocus");
+    s_dof_u.aperture = glGetUniformLocation(s_dof_prog, "uAperture");
+    s_dof_u.maxblur = glGetUniformLocation(s_dof_prog, "uMaxBlur");
+    s_dof_u.samples = glGetUniformLocation(s_dof_prog, "uSamples");
+    s_dof_u.up_sigma = glGetUniformLocation(s_dof_prog, "uUpSigma");
+    s_dof_u.bokeh_on = glGetUniformLocation(s_dof_prog, "uBokehOn");
+    s_dof_u.bokeh_aspect = glGetUniformLocation(s_dof_prog, "uBokehAspect");
+    s_dof_u.bokeh_blades = glGetUniformLocation(s_dof_prog, "uBokehBlades");
+    s_dof_u.bokeh_anamorphic = glGetUniformLocation(s_dof_prog, "uBokehAnamorphic");
+    s_dof_u.bokeh_cat_eye = glGetUniformLocation(s_dof_prog, "uBokehCatEye");
+    s_dof_u.bokeh_highlight = glGetUniformLocation(s_dof_prog, "uBokehHighlight");
+    s_dof_u.bokeh_rot = glGetUniformLocation(s_dof_prog, "uBokehRot");
+    s_dof_u.near_mode = glGetUniformLocation(s_dof_prog, "uNearMode");
+    s_dof_u.coc_tex = glGetUniformLocation(s_dof_prog, "uCocTex");
+    s_dof_u.bokeh_pre = glGetUniformLocation(s_dof_prog, "uBokehPre");
+    s_dof_u.up_mode = glGetUniformLocation(s_dof_prog, "uUpMode");
+    s_dof_u.sharp = glGetUniformLocation(s_dof_prog, "uSharp");
+    s_dof_u.tap = glGetUniformLocation(s_dof_prog, "uDofTap[0]");
+    s_dof_u.mask = glGetUniformLocation(s_dof_prog, "uDofMask[0]");
+    s_dof_prog_state = 1;
+    __android_log_print(ANDROID_LOG_INFO, "SM64FX", "dof program ready (%u)", s_dof_prog);
+    return 1;
+}
+
+static void dof_make_target(GLuint *tex, GLuint *fbo, int w, int h, int linear) {
+    if (*fbo) glDeleteFramebuffers(1, fbo);
+    if (*tex) glDeleteTextures(1, tex);
+    glGenTextures(1, tex);
+    glBindTexture(GL_TEXTURE_2D, *tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA,
+                 GL_UNSIGNED_BYTE, NULL);
+    GLenum f = linear ? GL_LINEAR : GL_NEAREST;
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, f);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, f);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glGenFramebuffers(1, fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, *fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_2D, *tex, 0);
+}
+
+/* Reduced-res colour + packed depth + gather target per eye, plus the full-res
+ * upsample destination. */
+static void stereo_ensure_dof(int div) {
+    int w = s_eye_w / div;
+    int h = s_eye_h / div;
+    if (w < 1) w = 1;
+    if (h < 1) h = 1;
+    if (w == s_dof_w && h == s_dof_h && div == s_dof_div && s_dof_cfbo[0] != 0
+        && s_dof_upw == s_eye_w && s_dof_uph == s_eye_h) {
+        return;
+    }
+    for (int eye = 0; eye < 2; eye++) {
+        dof_make_target(&s_dof_col[eye], &s_dof_cfbo[eye], w, h,
+                        s_fx_dof_bilinear ? 1 : 0);
+        dof_make_target(&s_dof_dep[eye], &s_dof_dfbo[eye], w, h, 0);
+        dof_make_target(&s_dof_bl[eye], &s_dof_bfbo[eye], w, h, 1);
+        dof_make_target(&s_dof_up[eye], &s_dof_ufbo[eye], s_eye_w, s_eye_h, 1);
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    s_dof_w = w;
+    s_dof_h = h;
+    s_dof_div = div;
+    s_dof_upw = s_eye_w;
+    s_dof_uph = s_eye_h;
+    __android_log_print(ANDROID_LOG_INFO, "SM64FX",
+            "DOF fbo col=%u dep=%u blur=%u up=%u %dx%d div=%d (eye %dx%d)",
+            s_dof_col[0], s_dof_dep[0], s_dof_bl[0], s_dof_up[0], w, h, div,
+            s_eye_w, s_eye_h);
+}
+
+/* Returns 1 when the per-eye results in s_dof_result[] are valid. */
+static int stereo_dof_prepass(int div) {
+    s_dof_valid[0] = s_dof_valid[1] = 0;
+    stereo_ensure_dof(div);
+    if (!dof_ensure_program()) return 0;
+
+    int taps = s_fx_dof_taps > 0 ? s_fx_dof_taps : s_fx_dof_samples;
+    if (taps < 1) taps = 1;
+    if (taps > 32) taps = 32;
+    dof_build_taps(taps, s_fx_bokeh_blades, (float) s_fx_bokeh_rot,
+                   (float) s_fx_bokeh_aspect, (float) s_fx_anamorphic);
+
+    float dof_focus = s_fx_dof_auto ? gfx_dof_focus_auto : (float) s_fx_dof_focus;
+    if (dof_focus < 1.0f) dof_focus = 1.0f;
+    int maxblur = s_fx_dof_maxblur < 1 ? 1 : s_fx_dof_maxblur;
+
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
+    glDisable(GL_SCISSOR_TEST);
+    glUseProgram(s_dof_prog);
+
+    static const float quad[] = {
+        -1.0f, -1.0f, 0.0f, 0.0f,
+         1.0f, -1.0f, 1.0f, 0.0f,
+        -1.0f,  1.0f, 0.0f, 1.0f,
+         1.0f,  1.0f, 1.0f, 1.0f,
+    };
+    if (!s_comp_vbo) glGenBuffers(1, &s_comp_vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, s_comp_vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(quad), quad, GL_STREAM_DRAW);
+    glEnableVertexAttribArray(s_dof_apos);
+    glVertexAttribPointer(s_dof_apos, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void *) 0);
+    glEnableVertexAttribArray(s_dof_auv);
+    glVertexAttribPointer(s_dof_auv, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float),
+                          (void *) (2 * sizeof(float)));
+
+    glUniform1i(s_dof_u.src, 0);
+    glUniform1i(s_dof_u.src_depth, 1);
+    glUniform1i(s_dof_u.low_col, 2);
+    glUniform1i(s_dof_u.low_dep, 3);
+    glUniform1i(s_dof_u.low_blur, 4);
+    glUniform2f(s_dof_u.low_texel, 1.0f / (float) s_dof_w, 1.0f / (float) s_dof_h);
+    glUniform2f(s_dof_u.res, (float) s_eye_w, (float) s_eye_h);
+    glUniform4f(s_dof_u.canvas, (float) s_canvas_x, (float) s_canvas_y,
+                (float) s_canvas_w, (float) s_canvas_h);
+    glUniform1f(s_dof_u.div, (float) div);
+    glUniform1f(s_dof_u.nearv, gfx_cam_near);
+    glUniform1f(s_dof_u.farv, gfx_cam_far);
+    glUniform1f(s_dof_u.focus, dof_focus);
+    glUniform1f(s_dof_u.aperture, (float) s_fx_dof_aperture);
+    glUniform1f(s_dof_u.maxblur, (float) maxblur);
+    glUniform1f(s_dof_u.samples, (float) taps);
+    /* One low-res texel covers `div` eye pixels; keep the edge stop at the
+     * same screen-space tolerance the denoiser uses. */
+    glUniform1f(s_dof_u.up_sigma, 0.25f / (float) div);
+    glUniform1f(s_dof_u.bokeh_on, s_fx_bokeh_on ? 1.0f : 0.0f);
+    glUniform1f(s_dof_u.bokeh_aspect, (float) s_fx_bokeh_aspect);
+    glUniform1f(s_dof_u.bokeh_blades, (float) s_fx_bokeh_blades);
+    glUniform1f(s_dof_u.bokeh_anamorphic, (float) s_fx_anamorphic);
+    glUniform1f(s_dof_u.bokeh_cat_eye, (float) s_fx_cat_eye);
+    glUniform1f(s_dof_u.bokeh_highlight, (float) s_fx_bokeh_highlight);
+    glUniform1f(s_dof_u.bokeh_rot, (float) s_fx_bokeh_rot);
+    glUniform1f(s_dof_u.near_mode, (float) s_fx_dof_near);
+    glUniform1f(s_dof_u.coc_tex, s_fx_dof_coc ? 1.0f : 0.0f);
+    glUniform1f(s_dof_u.bokeh_pre, s_fx_dof_bokeh_pre ? 1.0f : 0.0f);
+    glUniform1f(s_dof_u.up_mode, s_fx_dof_up ? 1.0f : 0.0f);
+    glUniform1f(s_dof_u.sharp, (float) s_fx_dof_sharp / 100.0f);
+    if (s_dof_u.tap >= 0) glUniform2fv(s_dof_u.tap, 32, s_dof_tap);
+    if (s_dof_u.mask >= 0) glUniform1fv(s_dof_u.mask, 32, s_dof_mask);
+
+    /* The bilinear dial only changes filtering, not the target size, so the
+     * ensure function cannot see it change.  Re-apply it here. */
+    for (int eye = 0; eye < 2; eye++) {
+        GLenum f = s_fx_dof_bilinear ? GL_LINEAR : GL_NEAREST;
+        glBindTexture(GL_TEXTURE_2D, s_dof_col[eye]);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, f);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, f);
+    }
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    int stage = s_fx_dof_stage;
+    double t0 = 0.0, t1 = 0.0, t2 = 0.0, t3 = 0.0;
+    if (stage) { glFinish(); t0 = dof_now_ms(); }
+
+    /* 1. prepare colour + signed CoC, and packed linear z when needed. */
+    int need_z = (s_fx_dof_up != 0) || (s_fx_dof_near >= 2) || (s_fx_dof_coc == 0);
+    for (int eye = 0; eye < 2; eye++) {
+        if (gfx_single_eye >= 0 && eye != gfx_single_eye) continue;
+        GLuint src = s_dn_valid[eye] ? s_dn_result[eye] : s_eye_tex[eye];
+        glViewport(0, 0, s_dof_w, s_dof_h);
+        glBindFramebuffer(GL_FRAMEBUFFER, s_dof_cfbo[eye]);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, src);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, s_eye_depth[eye]);
+        glUniform1f(s_dof_u.mode, 0.0f);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        if (need_z) {
+            glBindFramebuffer(GL_FRAMEBUFFER, s_dof_dfbo[eye]);
+            glUniform1f(s_dof_u.mode, 1.0f);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        }
+    }
+    if (stage) { glFinish(); t1 = dof_now_ms(); }
+
+    /* 2. gather at reduced resolution.  A blur target with no depth pass reads
+     * garbage if the dials asked for no z; bind a valid texture anyway. */
+    for (int eye = 0; eye < 2; eye++) {
+        if (gfx_single_eye >= 0 && eye != gfx_single_eye) continue;
+        glViewport(0, 0, s_dof_w, s_dof_h);
+        glBindFramebuffer(GL_FRAMEBUFFER, s_dof_bfbo[eye]);
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, s_dof_col[eye]);
+        glActiveTexture(GL_TEXTURE3);
+        glBindTexture(GL_TEXTURE_2D, s_dof_dep[eye]);
+        glUniform1f(s_dof_u.mode, 2.0f);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    }
+    if (stage) { glFinish(); t2 = dof_now_ms(); }
+
+    /* 3. full-res depth-aware upsample, mixed with the sharp scene colour. */
+    for (int eye = 0; eye < 2; eye++) {
+        if (gfx_single_eye >= 0 && eye != gfx_single_eye) continue;
+        GLuint src = s_dn_valid[eye] ? s_dn_result[eye] : s_eye_tex[eye];
+        glViewport(0, 0, s_eye_w, s_eye_h);
+        glBindFramebuffer(GL_FRAMEBUFFER, s_dof_ufbo[eye]);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, src);
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, s_dof_col[eye]);
+        glActiveTexture(GL_TEXTURE3);
+        glBindTexture(GL_TEXTURE_2D, s_dof_dep[eye]);
+        glActiveTexture(GL_TEXTURE4);
+        glBindTexture(GL_TEXTURE_2D, s_dof_bl[eye]);
+        glUniform1f(s_dof_u.mode, 3.0f);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        s_dof_result[eye] = s_dof_up[eye];
+        s_dof_valid[eye] = 1;
+    }
+    if (stage) { glFinish(); t3 = dof_now_ms(); }
+
+    glDisableVertexAttribArray(s_dof_apos);
+    glDisableVertexAttribArray(s_dof_auv);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glUseProgram(0);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    if (stage && (frame_count % 30) == 0) {
+        __android_log_print(ANDROID_LOG_INFO, "SM64FX",
+                "DOFSTAGE prep=%.2f gather=%.2f up=%.2f div=%d taps=%d eye=%dx%d low=%dx%d",
+                t1 - t0, t2 - t1, t3 - t2, div, taps, s_eye_w, s_eye_h,
+                s_dof_w, s_dof_h);
+    }
+    return (s_dof_valid[0] || s_dof_valid[1]) ? 1 : 0;
+}
+
 /* ---------------- Emissive materials + bloom ----------------
  * Tagged draw batches (see GFX_OP_EMISSIVE_MARKER in gfx_pc.h) are copied at
  * draw time and re-drawn into a half-resolution per-eye EMISSIVE buffer. That
@@ -4457,6 +5015,21 @@ static int stereo_fx_pass(void) {
         s_dn_valid[0] = s_dn_valid[1] = 0;
     }
 
+    /* C.DOF reduced-res prepass.  The gather output is finished colour, so the
+     * FX shader's own DOF block stays off; on failure it falls back to the
+     * legacy in-shader full-res gather. */
+    int dof_div = 0;
+    if (s_fx_dof_on && s_fx_dof_half) {
+        int d = s_fx_dof_div < 2 ? 2 : (s_fx_dof_div > 4 ? 4 : s_fx_dof_div);
+        if (stereo_dof_prepass(d)) {
+            dof_div = d;
+        } else {
+            s_dof_valid[0] = s_dof_valid[1] = 0;
+        }
+    } else {
+        s_dof_valid[0] = s_dof_valid[1] = 0;
+    }
+
     /* Crepuscular rays: quarter-res march + blur per eye.  Skipped entirely
      * (no FBO allocation, no draw) when the effect is off. */
     if (s_ray_on) {
@@ -4682,7 +5255,9 @@ static int stereo_fx_pass(void) {
     glUniform1f(s_fx_u.ao_samples, (float)s_fx_ao_samples);
     glUniform1f(s_fx_u.ao_bias, (float)s_fx_ao_bias);
     glUniform1f(s_fx_u.ao_power, (float)s_fx_ao_power);
-    glUniform1f(s_fx_u.dof_on, s_fx_dof_on ? 1.0f : 0.0f);
+    glUniform1f(s_fx_u.dof_on,
+                (s_fx_dof_on && dof_div == 0) ? 1.0f : 0.0f);
+    glUniform1f(s_fx_u.dof_pre, dof_div > 0 ? 1.0f : 0.0f);
     float dof_focus = s_fx_dof_auto ? gfx_dof_focus_auto : (float)s_fx_dof_focus;
     if (dof_focus < 1.0f) dof_focus = 1.0f;
     glUniform1f(s_fx_u.dof_focus, dof_focus);
@@ -4733,9 +5308,11 @@ static int stereo_fx_pass(void) {
         glViewport(0, 0, s_eye_w, s_eye_h);
         glActiveTexture(GL_TEXTURE0);
         /* Reduced-res denoise: the prepass already wrote the mixed result;
-         * hand it to the FX shader as the scene colour. */
+         * hand it to the FX shader as the scene colour.  The DOF prepass runs
+         * on top of that and its finished colour replaces both. */
         glBindTexture(GL_TEXTURE_2D,
-                      s_dn_valid[eye] ? s_dn_result[eye] : s_eye_tex[eye]);
+                      s_dof_valid[eye] ? s_dof_result[eye]
+                      : (s_dn_valid[eye] ? s_dn_result[eye] : s_eye_tex[eye]));
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, s_eye_depth[eye]);
         glUniform1f(s_fx_u.shear, gfx_eye_shear[eye]);
@@ -4966,7 +5543,22 @@ void gfx_opengl_stereo_composite(int w, int h, int full_w, int full_h, int has_u
 
     // Post-process each eye (MXAO / CinematicDOF / SSGI-lite) before weaving.
     // ZBUF is a raw debug view, so it bypasses the FX chain.
+    double fx_t0 = 0.0;
+    if (s_fx_dof_stage) {
+        glFinish();
+        fx_t0 = dof_now_ms();
+    }
     int fx_ready = gfx_stereo_zbuf ? 0 : stereo_fx_pass();
+    if (s_fx_dof_stage) {
+        glFinish();
+        if ((frame_count % 30) == 0) {
+            __android_log_print(ANDROID_LOG_INFO, "SM64FX",
+                    "FXSTAGE fx=%.2f dof=%d half=%d div=%d taps=%d",
+                    dof_now_ms() - fx_t0, s_fx_dof_on, s_fx_dof_half,
+                    s_fx_dof_div,
+                    s_fx_dof_taps > 0 ? s_fx_dof_taps : s_fx_dof_samples);
+        }
+    }
     // Bloom: additive upsample of the blurred emissive buffer into the FX
     // output. Skipped entirely when the chain is off (default).
     if (fx_ready) stereo_bloom_pass();
