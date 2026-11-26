@@ -27,6 +27,37 @@ every tick at HFR), and the element-wise 4×4 blend shrinks fast rotations by
 `ptc bowser` / `ptc hfron` rig are described in
 [`HFR-HELD-OBJECTS.md`](HFR-HELD-OBJECTS.md).
 
+### Camera: FREE-mode black screen + sensitivity picker (worktree `w2-camera-fixes`)
+Code-complete 2026-11-25, not yet compiled or device-verified.
+
+The top-bar `CAM …` cycler did not go black on the vanilla wrap. The third press
+(vanilla → custom → first person → **FREE**) showed a black view *and* labelled
+itself `CAM: VANILLA`, because `camModeName()` had no `case 5`. Two defects:
+
+- The black was the free camera's own entry pose. `custom_camera_freecam_update`
+  converted the inherited look direction with `atan2s(dx, dz)` and
+  `atan2s(dy, horiz)`, but this engine's convention is `(z, x)` and
+  `(horizontal, vertical)` (see `vec3f_get_dist_and_angle`). Any inherited level
+  view therefore came back as pitch `0x4000`, i.e. **straight up**, and the
+  freecam rendered the void above the room.
+- `CAM: VANILLA` while in FREE made that look like "the cycler wrapped and the
+  screen went black" rather than "a new mode is active".
+
+Fixes: correct the conversion, reject an inherited pose that is inside Mario or
+more than 67° off level and seed a behind-Mario pose instead, add the `FREE`
+label, log mode transitions and the freecam entry pose, clear pending
+pinch/drag deltas when leaving FREE, and show a "drag to look / pinch to move"
+hint in FREE. Re-entering FREE now always starts from a usable view.
+
+CAMERA > SETTINGS also gained a persisted **SENSITIVITY** picker at the top:
+LOW/MED/HIGH = 0.6x/1.0x/1.6x band, the existing `Cam sensitivity` slider
+trims inside it, and the effective percent is printed. Keys: `330` band,
+`331` trim, `332` effective readback; the panel slider stays `49`; both are in
+`cmd dump` as `sens=band,trim,effective`. See `README-lumepad-2-fork.md`.
+
+Still to do after the parent's build: device stills for every mode plus the
+wrap, and a check that the picker's persisted values survive a relaunch.
+
 ### Dithered punch-through for an occluded Mario
 Started 2026-11-25 in worktree `occlusion-fade` (not merged).
 
@@ -127,10 +158,10 @@ keep a feature inside its block:
 | `274`-`278` | occluder punch-through (taken) |
 | `280`-`289` | tone mapping + colour grading |
 | `290`-`299` | cam-stick curve + heatmap |
-| `300`-`309` | on-screen layout editor + profiles |
+| `300`-`309` | on-screen layout editor + profiles (taken — see README) |
 | `310`-`319` | grapple targeting debug view |
 | `320`-`329` | wall-run stick vector + cooldown |
-| `330`-`339` | camera sensitivity picker / cycler fix |
+| `330`-`339` | camera sensitivity picker + FREE-mode cycler fix (taken: `330` band, `331` trim, `332` effective readback) |
 | `340`-`349` | feedback outbox (reserved, likely unused) |
 
 ## Known bugs and limits
@@ -141,6 +172,17 @@ keep a feature inside its block:
   not. Wake and unlock before capturing
   (`/media/share/lp2-test/scripts/unlock.sh`). If a capture is black, check
   `dumpsys power | grep mWakefulness` before suspecting the renderer.
+- **…but waking from screen-off can leave the 3D layer genuinely black**
+  (found 2026-11-25, worktree `w2-camera-fixes`). With a healthy scene, sleep
+  the panel (`adb shell input keyevent 26`), wait a few seconds and wake it
+  (`unlock.sh`): the camera/HUD overlay keeps drawing but the game layer is
+  pure black, while `cmd dump` still reports `surfaceValid=true`, a sane
+  `cam=`/`focus=` pair and `cmode=0`. `cmd reinit` does **not** restore it;
+  `HOME` followed by reopening the task does. This is independent of the camera
+  modes and is the most likely source of "the app went black" reports after the
+  panel's 30 s timeout. Suspect the Leia/SDL override surface not re-binding on
+  resume (the "never hide/show the view" workaround covers activity restarts,
+  not sleep); do not "fix" it by restarting the interlacer.
 - **The app sometimes "refuses to die" on relaunch.** Dropbox repeatedly logs
   `ProcessRecord{... com.vdavid003.sm64port} <pid> refused to die, but we need to
   launch ...` — the old process does not exit promptly when the activity is

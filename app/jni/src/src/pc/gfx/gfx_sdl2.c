@@ -224,7 +224,30 @@ Java_com_vdavid003_sm64port_sm64portActivity_nativeSetStereoInt(JNIEnv *env, job
         }
         case 47: gfx_cam_height = (float) value; break;
         case 48: gfx_cam_recentre_pct = (float) value; break;
-        case 49: gfx_cam_sens_pct = (float) value; break;
+        /* 49 is the "Cam sensitivity" slider: the trim inside the band picked
+         * by the LOW/MED/HIGH pills (330).  Both feed gfx_cam_sens_pct, which
+         * is what the camera implementations actually scale by. */
+        case 49: {
+            extern float gfx_cam_sens_trim;
+            extern void gfx_cam_sens_apply(void);
+            gfx_cam_sens_trim = (float) value;
+            gfx_cam_sens_apply();
+            break;
+        }
+        case 330: {
+            extern int gfx_cam_sens_band;
+            extern void gfx_cam_sens_apply(void);
+            gfx_cam_sens_band = (int) value;
+            gfx_cam_sens_apply();
+            break;
+        }
+        case 331: {
+            extern float gfx_cam_sens_trim;
+            extern void gfx_cam_sens_apply(void);
+            gfx_cam_sens_trim = (float) value;
+            gfx_cam_sens_apply();
+            break;
+        }
         case 52: gfx_cam_noclip = value != 0; break;
         case 8: gfx_touch_dx = (float) value * 4.0f; break;    // percent -> px (approx)
         case 9: gfx_touch_dy = (float) value * 4.0f; break;

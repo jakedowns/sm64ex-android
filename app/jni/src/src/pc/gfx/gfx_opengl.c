@@ -2162,6 +2162,22 @@ void gfx_opengl_ssfx_set(int which, int value) {
         case 271: gfx_jet_light_on = value ? 1 : 0; break;
         case 272: gfx_jet_light_intensity = value < 0 ? 0 : (value > 400 ? 400 : value); break;
         case 273: gfx_jet_light_radius = value < 60 ? 60 : (value > 600 ? 600 : value); break;
+        /* Camera sensitivity band / trim (CAMERA > SETTINGS picker).  These are
+         * the same knobs as stereo-int 330/331, routed here so `cmd fx` works. */
+        case 330: {
+            extern int gfx_cam_sens_band;
+            extern void gfx_cam_sens_apply(void);
+            gfx_cam_sens_band = value;
+            gfx_cam_sens_apply();
+            break;
+        }
+        case 331: {
+            extern float gfx_cam_sens_trim;
+            extern void gfx_cam_sens_apply(void);
+            gfx_cam_sens_trim = (float) value;
+            gfx_cam_sens_apply();
+            break;
+        }
         default: return;
     }
     __android_log_print(ANDROID_LOG_INFO, "SM64FX",
@@ -2291,6 +2307,18 @@ int gfx_opengl_ssfx_get(int which) {
         case 271: return gfx_jet_light_on;
         case 272: return gfx_jet_light_intensity;
         case 273: return gfx_jet_light_radius;
+        case 330: {
+            extern int gfx_cam_sens_state(int which);
+            return gfx_cam_sens_state(0);
+        }
+        case 331: {
+            extern int gfx_cam_sens_state(int which);
+            return gfx_cam_sens_state(1);
+        }
+        case 332: {
+            extern int gfx_cam_sens_state(int which);
+            return gfx_cam_sens_state(2);
+        }
     }
     return -1;
 }

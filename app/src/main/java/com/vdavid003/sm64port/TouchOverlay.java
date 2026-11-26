@@ -76,10 +76,6 @@ public class TouchOverlay extends View {
     private final float[][] btnPos = new float[7][2];
     private int buttonPointer = -1;
 
-    private final float radius = 90f;      // button radius
-    private final float stickRadius = 190f;
-    private final float knobRadius = 70f;
-
     private final int[] pressedPointer = {-1, -1, -1, -1, -1, -1, -1};
 
     // C buttons: smaller cluster (up/down/left/right)
@@ -87,33 +83,83 @@ public class TouchOverlay extends View {
     private final String[] cLabels = {"^", "v", "<", ">"};
     private final float[][] cPos = new float[4][2];
     private final int[] cPressed = {-1, -1, -1, -1};
-    private final float cRadius = 58f;
 
     // Camera buttons: X toggles free camera, Y recentres.
     private final int[] camIds = {BTN_CAM, BTN_RECENTER};
     private final String[] camLabels = {"X", "Y"};
     private final float[][] camPos = new float[2][2];
     private final int[] camPressed = {-1, -1};
-    private final float camRadius = 52f;
 
     // Portal gun buttons (P1 = blue, P2 = orange).  The reticle lives in the
     // game UI pass so it can have its own stereo depth.
     private final float[][] portalPos = new float[2][2];
-    private final float portalRadius = 46f;
     private int portalPressed = -1;
     private int portalPointer = -1;
 
     // One-press swap between the portal gun and the grappling hook.
     private final float[] toolPos = new float[2];
-    private final float toolRadius = 46f;
     private boolean toolDown;
     private int toolPointer = -1;
 
     // Hold-to-thrust jetpack button.
     private final float[] jetPos = new float[2];
-    private final float jetRadius = 46f;
     private boolean jetDown;
     private int jetPointer = -1;
+
+    /* --------------------------------------------------------------------
+     * Re-arrangeable layout model.
+     *
+     * Every movable control has a normalised centre (0..1 of the panel
+     * width/height) and a size multiplier. Radii additionally scale with
+     * min(width,height)/1600, so the same profile looks right on a panel
+     * with a different resolution. Profiles live in TouchLayoutStore.
+     * ------------------------------------------------------------------ */
+    public static final int E_STICK = 0, E_A = 1, E_B = 2, E_Z = 3, E_R = 4,
+            E_S = 5, E_L = 6, E_SEL = 7, E_CUP = 8, E_CDN = 9, E_CLF = 10,
+            E_CRT = 11, E_CAMX = 12, E_CAMY = 13, E_P1 = 14, E_P2 = 15,
+            E_TOOL = 16, E_JET = 17, E_MODE = 18, E_RSTICK = 19;
+    public static final int ELEM_COUNT = 20;
+    public static final String[] ELEM_KEYS = {
+            "stick", "a", "b", "z", "r", "s", "l", "sel",
+            "cup", "cdn", "clf", "crt", "camx", "camy", "p1", "p2",
+            "tool", "jet", "mode", "rstick"};
+    public static final String[] ELEM_LABELS = {
+            "STICK", "A", "B", "Z", "R", "S", "L", "SEL",
+            "C-UP", "C-DOWN", "C-LEFT", "C-RIGHT", "CAM-X", "CAM-Y",
+            "P1", "P2", "TOOL", "JET", "MODE", "R-STICK"};
+
+    private final float[] nx = new float[ELEM_COUNT];   // 0..1 of width
+    private final float[] ny = new float[ELEM_COUNT];   // 0..1 of height
+    private final float[] ns = new float[ELEM_COUNT];   // radius multiplier
+    private final float[] factoryX = new float[ELEM_COUNT];
+    private final float[] factoryY = new float[ELEM_COUNT];
+    private final float[] factoryS = new float[ELEM_COUNT];
+
+    private TouchLayoutStore layoutStore;
+    private boolean editMode;
+    private int selectedElem = -1;
+    private int dragElem = -1, dragPointer = -1;
+    private static final int DRAG_NONE = 0, DRAG_MOVE = 1, DRAG_RESIZE = 2;
+    private int dragMode = DRAG_NONE;
+    private float dragOffX, dragOffY, dragStartDist, dragStartScale;
+    private float infoX, infoY;          // last normalised coords (banner)
+    private boolean infoValid;
+    private static final float GRID = 0.0125f;   // snap step (~32 px at 2560)
+    private static final float SCALE_MIN = 0.4f, SCALE_MAX = 2.5f;
+
+    private final android.os.Handler lpHandler =
+            new android.os.Handler(android.os.Looper.getMainLooper());
+    private boolean lpArmed;
+    private float lpDownX, lpDownY;
+    private final Runnable longPressRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (!lpArmed || editMode) return;
+            lpArmed = false;
+            setEditMode(true);
+            android.util.Log.i("SM64Layout", "edit mode via long-press");
+        }
+    };
 
     // Overall opacity of the control layer (0.1 .. 1.0).
     private float overlayAlpha = 1f;
@@ -124,7 +170,6 @@ public class TouchOverlay extends View {
     private int rstickPointer = -1;
     private float rstickX, rstickY, rknobX, rknobY;
     private final float[] modePos = new float[2];
-    private final float modeRadius = 46f;
 
     public TouchOverlay(Context c) {
         super(c);
@@ -132,6 +177,10 @@ public class TouchOverlay extends View {
         setClickable(false);
         // The view must receive touches over the whole panel.
         setWillNotDraw(false);
+        initFactoryLayout();
+        layoutStore = new TouchLayoutStore(c, ELEM_KEYS, nx, ny, ns);
+        layoutStore.applyProfile(layoutStore.active(), ELEM_KEYS, nx, ny, ns);
+        if (btnPos[0][0] == 0 && getWidth() > 0) layoutButtons();
     }
 
     /** Overall opacity of the floating controls (1.0 = fully opaque). */
@@ -152,39 +201,144 @@ public class TouchOverlay extends View {
         invalidate();
     }
 
+    /** Hard-coded factory layout (also the RESET target for the `default`
+     *  profile). See {@link #ELEM_KEYS} for the storage order. */
+    private void initFactoryLayout() {
+        setDef(E_STICK, 0.16f, 0.72f);
+        setDef(E_A, 0.90f, 0.70f);
+        setDef(E_B, 0.81f, 0.77f);
+        setDef(E_Z, 0.94f, 0.58f);
+        setDef(E_R, 0.79f, 0.60f);
+        setDef(E_S, 0.50f, 0.88f);
+        setDef(E_L, 0.90f, 0.84f);
+        setDef(E_SEL, 0.38f, 0.88f);
+        // C cross around 0.68/0.70, spacing from the old 78.3 px at 2560x1600.
+        float dx = 78.3f / 2560f, dy = 78.3f / 1600f;
+        setDef(E_CUP, 0.68f, 0.70f - dy);
+        setDef(E_CDN, 0.68f, 0.70f + dy);
+        setDef(E_CLF, 0.68f - dx, 0.70f);
+        setDef(E_CRT, 0.68f + dx, 0.70f);
+        setDef(E_CAMX, 0.93f, 0.40f);
+        setDef(E_CAMY, 0.84f, 0.32f);
+        setDef(E_P1, 0.93f, 0.27f);
+        setDef(E_P2, 0.84f, 0.19f);
+        setDef(E_TOOL, 0.75f, 0.27f);
+        setDef(E_JET, 0.72f, 0.76f);
+        setDef(E_MODE, 0.68f, 0.88f);
+        setDef(E_RSTICK, 0.84f, 0.74f);
+        System.arraycopy(nx, 0, factoryX, 0, ELEM_COUNT);
+        System.arraycopy(ny, 0, factoryY, 0, ELEM_COUNT);
+        System.arraycopy(ns, 0, factoryS, 0, ELEM_COUNT);
+    }
+
+    private void setDef(int e, float x, float y) {
+        nx[e] = x;
+        ny[e] = y;
+        ns[e] = 1f;
+    }
+
+    private void restoreFactory() {
+        System.arraycopy(factoryX, 0, nx, 0, ELEM_COUNT);
+        System.arraycopy(factoryY, 0, ny, 0, ELEM_COUNT);
+        System.arraycopy(factoryS, 0, ns, 0, ELEM_COUNT);
+    }
+
+    /** Reference size: a 1600-px short edge keeps the old pixel radii. */
+    private float uiScale() {
+        int w = getWidth(), h = getHeight();
+        float m = Math.min(w, h);
+        return m > 0 ? m / 1600f : 1f;
+    }
+
+    private float radius(int i) {
+        return 90f * uiScale() * ns[E_A + i];
+    }
+
+    private float cRadius(int i) {
+        return 58f * uiScale() * ns[E_CUP + i];
+    }
+
+    private float camRadius(int i) {
+        return 52f * uiScale() * ns[E_CAMX + i];
+    }
+
+    private float portalRadius(int i) {
+        return 46f * uiScale() * ns[E_P1 + i];
+    }
+
+    private float toolRadius() {
+        return 46f * uiScale() * ns[E_TOOL];
+    }
+
+    private float jetRadius() {
+        return 46f * uiScale() * ns[E_JET];
+    }
+
+    private float modeRadius() {
+        return 46f * uiScale() * ns[E_MODE];
+    }
+
+    private float stickRadiusPx(int e) {
+        return 190f * uiScale() * ns[e];
+    }
+
+    private float knobRadiusPx(int e) {
+        return 70f * uiScale() * ns[e];
+    }
+
+    private float elemRadiusPx(int e) {
+        switch (e) {
+            case E_STICK:
+            case E_RSTICK:
+                return stickRadiusPx(e);
+            case E_CUP:
+            case E_CDN:
+            case E_CLF:
+            case E_CRT:
+                return cRadius(e - E_CUP);
+            case E_CAMX:
+            case E_CAMY:
+                return camRadius(e - E_CAMX);
+            case E_P1:
+            case E_P2:
+                return portalRadius(e - E_P1);
+            case E_TOOL:
+                return toolRadius();
+            case E_JET:
+                return jetRadius();
+            case E_MODE:
+                return modeRadius();
+            default:
+                return radius(e - E_A);
+        }
+    }
+
+    /** Map the normalised model onto the pixel caches used by the draw/hit code. */
     private void layoutButtons() {
         float w = getWidth(), h = getHeight();
-        btnPos[0][0] = w * 0.90f; btnPos[0][1] = h * 0.70f;   // A
-        btnPos[1][0] = w * 0.81f; btnPos[1][1] = h * 0.77f;   // B
-        btnPos[2][0] = w * 0.94f; btnPos[2][1] = h * 0.58f;   // Z
-        btnPos[3][0] = w * 0.79f; btnPos[3][1] = h * 0.60f;   // R
-        btnPos[4][0] = w * 0.50f; btnPos[4][1] = h * 0.88f;   // START (bottom centre)
-        btnPos[5][0] = w * 0.90f; btnPos[5][1] = h * 0.84f;   // L (below A)
-        btnPos[6][0] = w * 0.38f; btnPos[6][1] = h * 0.88f;   // SELECT/BACK, left of START
+        if (w <= 0 || h <= 0) return;
+        btnPos[0][0] = nx[E_A] * w;   btnPos[0][1] = ny[E_A] * h;
+        btnPos[1][0] = nx[E_B] * w;   btnPos[1][1] = ny[E_B] * h;
+        btnPos[2][0] = nx[E_Z] * w;   btnPos[2][1] = ny[E_Z] * h;
+        btnPos[3][0] = nx[E_R] * w;   btnPos[3][1] = ny[E_R] * h;
+        btnPos[4][0] = nx[E_S] * w;   btnPos[4][1] = ny[E_S] * h;
+        btnPos[5][0] = nx[E_L] * w;   btnPos[5][1] = ny[E_L] * h;
+        btnPos[6][0] = nx[E_SEL] * w; btnPos[6][1] = ny[E_SEL] * h;
 
-        // C-button cluster: cross to the left of A/B
-        float cx = w * 0.68f, cy = h * 0.70f, d = cRadius * 1.35f;
-        cPos[0][0] = cx;       cPos[0][1] = cy - d;   // up
-        cPos[1][0] = cx;       cPos[1][1] = cy + d;   // down
-        cPos[2][0] = cx - d;   cPos[2][1] = cy;       // left
-        cPos[3][0] = cx + d;   cPos[3][1] = cy;       // right
+        cPos[0][0] = nx[E_CUP] * w;   cPos[0][1] = ny[E_CUP] * h;
+        cPos[1][0] = nx[E_CDN] * w;   cPos[1][1] = ny[E_CDN] * h;
+        cPos[2][0] = nx[E_CLF] * w;   cPos[2][1] = ny[E_CLF] * h;
+        cPos[3][0] = nx[E_CRT] * w;   cPos[3][1] = ny[E_CRT] * h;
 
-        // Camera buttons: upper-right, clear of A/B/Z/R.
-        camPos[0][0] = w * 0.93f; camPos[0][1] = h * 0.40f;   // X
-        camPos[1][0] = w * 0.84f; camPos[1][1] = h * 0.32f;   // Y
+        camPos[0][0] = nx[E_CAMX] * w; camPos[0][1] = ny[E_CAMX] * h;
+        camPos[1][0] = nx[E_CAMY] * w; camPos[1][1] = ny[E_CAMY] * h;
 
-        // Portal gun buttons: left of the C cluster, clear of the thumbstick.
-        portalPos[0][0] = w * 0.93f; portalPos[0][1] = h * 0.27f;   // P1 (blue)
-        portalPos[1][0] = w * 0.84f; portalPos[1][1] = h * 0.19f;   // P2 (orange)
+        portalPos[0][0] = nx[E_P1] * w; portalPos[0][1] = ny[E_P1] * h;
+        portalPos[1][0] = nx[E_P2] * w; portalPos[1][1] = ny[E_P2] * h;
 
-        // Tool swap: one button between the camera and portal clusters.
-        toolPos[0] = w * 0.75f; toolPos[1] = h * 0.27f;
-
-        // Jetpack: above the bottom control strip, clear of the tab bar.
-        jetPos[0] = w * 0.72f; jetPos[1] = h * 0.76f;
-
-        // C-buttons / analog-camera toggle, below the C cluster.
-        modePos[0] = w * 0.68f; modePos[1] = h * 0.88f;
+        toolPos[0] = nx[E_TOOL] * w;   toolPos[1] = ny[E_TOOL] * h;
+        jetPos[0] = nx[E_JET] * w;     jetPos[1] = ny[E_JET] * h;
+        modePos[0] = nx[E_MODE] * w;   modePos[1] = ny[E_MODE] * h;
     }
 
     private boolean portalGunHeld() {
@@ -198,20 +352,23 @@ public class TouchOverlay extends View {
     /** Index 0/1 of a portal button hit, else -1. */
     private int hitPortalButton(float x, float y) {
         for (int i = 0; i < 2; i++) {
+            float r = portalRadius(i) * 1.25f;
             float dx = x - portalPos[i][0], dy = y - portalPos[i][1];
-            if (dx * dx + dy * dy <= (portalRadius * 1.25f) * (portalRadius * 1.25f)) return i;
+            if (dx * dx + dy * dy <= r * r) return i;
         }
         return -1;
     }
 
     private boolean hitJetButton(float x, float y) {
+        float r = jetRadius() * 1.25f;
         float dx = x - jetPos[0], dy = y - jetPos[1];
-        return dx * dx + dy * dy <= (jetRadius * 1.25f) * (jetRadius * 1.25f);
+        return dx * dx + dy * dy <= r * r;
     }
 
     private boolean hitToolButton(float x, float y) {
+        float r = toolRadius() * 1.25f;
         float dx = x - toolPos[0], dy = y - toolPos[1];
-        return dx * dx + dy * dy <= (toolRadius * 1.25f) * (toolRadius * 1.25f);
+        return dx * dx + dy * dy <= r * r;
     }
 
     private boolean hitFreecamToggle(float x, float y) {
@@ -223,23 +380,26 @@ public class TouchOverlay extends View {
     }
 
     private boolean hitModeToggle(float x, float y) {
+        float r = modeRadius() * 1.3f;
         float dx = x - modePos[0], dy = y - modePos[1];
-        return dx * dx + dy * dy <= (modeRadius * 1.3f) * (modeRadius * 1.3f);
+        return dx * dx + dy * dy <= r * r;
     }
 
     /** Index into camIds for a camera-button hit, else -1. */
     private int hitCamButton(float x, float y) {
         for (int i = 0; i < camIds.length; i++) {
+            float r = camRadius(i) * 1.3f;
             float dx = x - camPos[i][0], dy = y - camPos[i][1];
-            if (dx * dx + dy * dy <= (camRadius * 1.3f) * (camRadius * 1.3f)) return i;
+            if (dx * dx + dy * dy <= r * r) return i;
         }
         return -1;
     }
 
     private int hitButton(float x, float y) {
         for (int i = 0; i < btnPos.length; i++) {
+            float r = radius(i) * 1.25f;
             float dx = x - btnPos[i][0], dy = y - btnPos[i][1];
-            if (dx * dx + dy * dy <= (radius * 1.25f) * (radius * 1.25f)) return i;
+            if (dx * dx + dy * dy <= r * r) return i;
         }
         return -1;
     }
@@ -250,8 +410,9 @@ public class TouchOverlay extends View {
          * circles must not steal touches from the right analog stick. */
         if (analogMode) return -1;
         for (int i = 0; i < 4; i++) {
+            float r = cRadius(i) * 1.3f;
             float dx = x - cPos[i][0], dy = y - cPos[i][1];
-            if (dx * dx + dy * dy <= (cRadius * 1.3f) * (cRadius * 1.3f)) return i;
+            if (dx * dx + dy * dy <= r * r) return i;
         }
         return -1;
     }
@@ -331,13 +492,28 @@ public class TouchOverlay extends View {
     @Override
     public boolean onTouchEvent(MotionEvent e) {
         lastTouchMs = System.currentTimeMillis();
-        if (controlsHidden) {
+        if (controlsHidden && !editMode) {
             controlsHidden = false;
             invalidate();
         }
         if (btnPos[0][0] == 0) layoutButtons();
         float x = e.getX(), y = e.getY();
         int action = e.getActionMasked();
+
+        if (editMode) {
+            return handleEditTouch(e);
+        }
+
+        /* Long-press (600 ms) anywhere on the overlay opens the layout editor.
+         * A drag or a second finger cancels it, so play is unaffected. */
+        if (action == MotionEvent.ACTION_DOWN) {
+            armLongPress(x, y);
+        } else if (action == MotionEvent.ACTION_MOVE) {
+            if (Math.hypot(x - lpDownX, y - lpDownY) > dp(18f)) cancelLp();
+        } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL
+                || action == MotionEvent.ACTION_POINTER_DOWN) {
+            cancelLp();
+        }
 
         switch (action) {
             case MotionEvent.ACTION_DOWN:
@@ -389,17 +565,22 @@ public class TouchOverlay extends View {
                 } else if (analogMode && px > getWidth() * 0.45f) {
                     rstickActive = true;
                     rstickPointer = id;
-                    rstickX = px;
-                    rstickY = py;
+                    float[] home = stickHome(E_RSTICK, px, py);
+                    rstickX = home[0];
+                    rstickY = home[1];
                     rknobX = px;
                     rknobY = py;
+                    // Keep the knob inside the ring when the base snapped home.
+                    clampKnob(E_RSTICK);
                 } else if (px < getWidth() * 0.45f) {
                     stickActive = true;
                     stickPointer = id;
-                    stickX = px;
-                    stickY = py;
+                    float[] home = stickHome(E_STICK, px, py);
+                    stickX = home[0];
+                    stickY = home[1];
                     knobX = px;
                     knobY = py;
+                    clampKnob(E_STICK);
                 }
                 pushInput();
                 invalidate();
@@ -413,11 +594,12 @@ public class TouchOverlay extends View {
                     int id = e.getPointerId(i);
                     if (id == stickPointer) {
                         float px = e.getX(i), py = e.getY(i);
+                        float sr = stickRadiusPx(E_STICK);
                         float dx = px - stickX, dy = py - stickY;
                         float len = (float) Math.hypot(dx, dy);
-                        if (len > stickRadius) {
-                            dx = dx / len * stickRadius;
-                            dy = dy / len * stickRadius;
+                        if (len > sr) {
+                            dx = dx / len * sr;
+                            dy = dy / len * sr;
                         }
                         knobX = stickX + dx;
                         knobY = stickY + dy;
@@ -425,11 +607,12 @@ public class TouchOverlay extends View {
                         invalidate();
                     } else if (id == rstickPointer) {
                         float px = e.getX(i), py = e.getY(i);
+                        float sr = stickRadiusPx(E_RSTICK);
                         float dx = px - rstickX, dy = py - rstickY;
                         float len = (float) Math.hypot(dx, dy);
-                        if (len > stickRadius) {
-                            dx = dx / len * stickRadius;
-                            dy = dy / len * stickRadius;
+                        if (len > sr) {
+                            dx = dx / len * sr;
+                            dy = dy / len * sr;
                         }
                         rknobX = rstickX + dx;
                         rknobY = rstickY + dy;
@@ -515,15 +698,18 @@ public class TouchOverlay extends View {
     }
 
     private void pushInput() {
+        if (editMode) return;
         int sx = 0, sy = 0;
         if (stickActive) {
-            sx = (int) ((knobX - stickX) / stickRadius * 127f);
-            sy = (int) (-(knobY - stickY) / stickRadius * 127f);
+            float sr = Math.max(1f, stickRadiusPx(E_STICK));
+            sx = (int) ((knobX - stickX) / sr * 127f);
+            sy = (int) (-(knobY - stickY) / sr * 127f);
         }
         int rx = 0, ry = 0;
         if (rstickActive) {
-            rx = (int) ((rknobX - rstickX) / stickRadius * 127f);
-            ry = (int) (-(rknobY - rstickY) / stickRadius * 127f);
+            float sr = Math.max(1f, stickRadiusPx(E_RSTICK));
+            rx = (int) ((rknobX - rstickX) / sr * 127f);
+            ry = (int) (-(rknobY - rstickY) / sr * 127f);
         }
         sm64portActivity.nativeOverlayStick2(rx, ry, rstickActive ? 1 : 0);
         // Buttons are always merged by the native side. The stick only takes
@@ -532,10 +718,58 @@ public class TouchOverlay extends View {
         sm64portActivity.nativeOverlayInput(stickActive ? 1 : 0, sx, sy, buttons);
     }
 
+    /** Snapped base for a thumbstick: the saved home when the thumb lands near
+     *  it, otherwise the touch point (the floating-thumbstick behaviour). */
+    private float[] stickHome(int e, float px, float py) {
+        float hx = nx[e] * getWidth(), hy = ny[e] * getHeight();
+        float r = elemRadiusPx(e) * 2.0f;
+        if ((float) Math.hypot(px - hx, py - hy) <= r) {
+            return new float[]{hx, hy};
+        }
+        return new float[]{px, py};
+    }
+
+    private void clampKnob(int e) {
+        float sr = Math.max(1f, stickRadiusPx(e));
+        float dx, dy;
+        if (e == E_STICK) {
+            dx = knobX - stickX;
+            dy = knobY - stickY;
+        } else {
+            dx = rknobX - rstickX;
+            dy = rknobY - rstickY;
+        }
+        float len = (float) Math.hypot(dx, dy);
+        if (len > sr) {
+            dx = dx / len * sr;
+            dy = dy / len * sr;
+        }
+        if (e == E_STICK) {
+            knobX = stickX + dx;
+            knobY = stickY + dy;
+        } else {
+            rknobX = rstickX + dx;
+            rknobY = rstickY + dy;
+        }
+    }
+
+    private void armLongPress(float x, float y) {
+        cancelLp();
+        lpArmed = true;
+        lpDownX = x;
+        lpDownY = y;
+        lpHandler.postDelayed(longPressRunnable, 600);
+    }
+
+    private void cancelLp() {
+        lpArmed = false;
+        lpHandler.removeCallbacks(longPressRunnable);
+    }
+
     @Override
     protected void onDraw(Canvas c) {
         super.onDraw(c);
-        if (controlsHidden) {
+        if (controlsHidden && !editMode) {
             return;
         }
         if (btnPos[0][0] == 0) layoutButtons();
@@ -550,108 +784,136 @@ public class TouchOverlay extends View {
         boolean grappleEquipped = toolState == 1;
 
         // One layer for the whole control set so "Ctl opacity" can fade it.
+        // The editor always draws at full opacity so handles stay visible.
         int layer = c.saveLayerAlpha(0f, 0f, getWidth(), getHeight(),
-                (int) (overlayAlpha * 255f));
+                editMode ? 255 : (int) (overlayAlpha * 255f));
 
         paint.setStyle(Paint.Style.STROKE);
         paint.setStrokeWidth(6f);
         paint.setColor(0x88FFFFFF);
 
-        if (stickActive) {
-            c.drawCircle(stickX, stickY, stickRadius, paint);
+        if (editMode) {
+            /* Ghost of both thumbstick homes, so they can be positioned even
+             * though the live sticks only appear under a thumb. */
+            int[] homes = {E_STICK, E_RSTICK};
+            for (int e : homes) {
+                float hx = nx[e] * getWidth(), hy = ny[e] * getHeight();
+                float r = stickRadiusPx(e);
+                paint.setStyle(Paint.Style.STROKE);
+                paint.setStrokeWidth(3f);
+                paint.setColor(0x66FFFFFF);
+                c.drawCircle(hx, hy, r, paint);
+                paint.setStyle(Paint.Style.FILL);
+                paint.setColor(0x88FFFFFF);
+                c.drawCircle(hx, hy, Math.max(6f, 10f * uiScale()), paint);
+            }
+        } else if (stickActive) {
+            c.drawCircle(stickX, stickY, stickRadiusPx(E_STICK), paint);
             paint.setStyle(Paint.Style.FILL);
             paint.setColor(0x66FFFFFF);
-            c.drawCircle(knobX, knobY, knobRadius, paint);
+            c.drawCircle(knobX, knobY, knobRadiusPx(E_STICK), paint);
         }
 
         paint.setTextAlign(Paint.Align.CENTER);
-        paint.setTextSize(70f);
         for (int i = 0; i < btnIds.length; i++) {
             boolean down = (buttons & btnIds[i]) != 0;
+            float r = radius(i);
             paint.setStyle(Paint.Style.FILL);
             paint.setColor(down ? 0xCC66FF99 : 0x66FFFFFF);
-            c.drawCircle(btnPos[i][0], btnPos[i][1], radius, paint);
+            c.drawCircle(btnPos[i][0], btnPos[i][1], r, paint);
             paint.setStyle(Paint.Style.STROKE);
             paint.setColor(0xAA000000);
-            c.drawCircle(btnPos[i][0], btnPos[i][1], radius, paint);
+            c.drawCircle(btnPos[i][0], btnPos[i][1], r, paint);
             paint.setStyle(Paint.Style.FILL);
             paint.setColor(Color.BLACK);
-            c.drawText(btnLabels[i], btnPos[i][0], btnPos[i][1] + 25f, paint);
+            paint.setTextSize(70f * uiScale() * ns[E_A + i]);
+            c.drawText(btnLabels[i], btnPos[i][0],
+                    btnPos[i][1] + 25f * uiScale() * ns[E_A + i], paint);
         }
 
-        paint.setTextSize(46f);
-        if (!analogMode) {
+        if (!analogMode || editMode) {
             for (int i = 0; i < 4; i++) {
                 boolean down = (buttons & cIds[i]) != 0;
+                float r = cRadius(i);
                 paint.setStyle(Paint.Style.FILL);
                 paint.setColor(down ? 0xCC66FF99 : 0x55FFFFFF);
-                c.drawCircle(cPos[i][0], cPos[i][1], cRadius, paint);
+                c.drawCircle(cPos[i][0], cPos[i][1], r, paint);
                 paint.setStyle(Paint.Style.STROKE);
                 paint.setColor(0xAA000000);
-                c.drawCircle(cPos[i][0], cPos[i][1], cRadius, paint);
+                c.drawCircle(cPos[i][0], cPos[i][1], r, paint);
                 paint.setStyle(Paint.Style.FILL);
                 paint.setColor(Color.BLACK);
-                c.drawText(cLabels[i], cPos[i][0], cPos[i][1] + 16f, paint);
+                paint.setTextSize(46f * uiScale() * ns[E_CUP + i]);
+                c.drawText(cLabels[i], cPos[i][0],
+                        cPos[i][1] + 16f * uiScale() * ns[E_CUP + i], paint);
             }
         } else if (rstickActive) {
             paint.setStyle(Paint.Style.STROKE);
             paint.setStrokeWidth(6f);
             paint.setColor(0x88FFFFFF);
-            c.drawCircle(rstickX, rstickY, stickRadius, paint);
+            c.drawCircle(rstickX, rstickY, stickRadiusPx(E_RSTICK), paint);
             paint.setStyle(Paint.Style.FILL);
             paint.setColor(0x66FFFFFF);
-            c.drawCircle(rknobX, rknobY, knobRadius, paint);
+            c.drawCircle(rknobX, rknobY, knobRadiusPx(E_RSTICK), paint);
         }
 
         // C-buttons / analog-camera mode toggle.
-        paint.setStyle(Paint.Style.FILL);
-        paint.setColor(analogMode ? 0xCC66FF99 : 0x44FFFFFF);
-        c.drawCircle(modePos[0], modePos[1], modeRadius, paint);
-        paint.setStyle(Paint.Style.STROKE);
-        paint.setColor(0xAA000000);
-        c.drawCircle(modePos[0], modePos[1], modeRadius, paint);
-        paint.setStyle(Paint.Style.FILL);
-        paint.setColor(Color.BLACK);
-        paint.setTextSize(38f);
-        c.drawText(analogMode ? "ANA" : "C", modePos[0], modePos[1] + 13f, paint);
+        {
+            float r = modeRadius();
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(analogMode ? 0xCC66FF99 : 0x44FFFFFF);
+            c.drawCircle(modePos[0], modePos[1], r, paint);
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setColor(0xAA000000);
+            c.drawCircle(modePos[0], modePos[1], r, paint);
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(Color.BLACK);
+            paint.setTextSize(38f * uiScale() * ns[E_MODE]);
+            c.drawText(analogMode ? "ANA" : "C", modePos[0],
+                    modePos[1] + 13f * uiScale() * ns[E_MODE], paint);
+        }
 
         // Camera buttons (X = free camera toggle, Y = recentre). X turns solid
         // green while the free camera is active, so the mode is always visible.
-        paint.setTextSize(48f);
         boolean freeCam = sm64portActivity.nativeGetCamMode() != 0;
         for (int i = 0; i < camIds.length; i++) {
             boolean down = (buttons & camIds[i]) != 0;
             boolean on = (i == 0) && freeCam;
+            float r = camRadius(i);
             paint.setStyle(Paint.Style.FILL);
             paint.setColor(on ? 0xEE33DD55 : (down ? 0xCC66FF99 : 0x44FFFFFF));
-            c.drawCircle(camPos[i][0], camPos[i][1], camRadius, paint);
+            c.drawCircle(camPos[i][0], camPos[i][1], r, paint);
             paint.setStyle(Paint.Style.STROKE);
             paint.setColor(0xAA000000);
-            c.drawCircle(camPos[i][0], camPos[i][1], camRadius, paint);
+            c.drawCircle(camPos[i][0], camPos[i][1], r, paint);
             paint.setStyle(Paint.Style.FILL);
             paint.setColor(Color.BLACK);
-            c.drawText(camLabels[i], camPos[i][0], camPos[i][1] + 17f, paint);
+            paint.setTextSize(48f * uiScale() * ns[E_CAMX + i]);
+            c.drawText(camLabels[i], camPos[i][0],
+                    camPos[i][1] + 17f * uiScale() * ns[E_CAMX + i], paint);
         }
 
         // Portal gun: two colour buttons (the reticle is drawn in-game).
-        if (portalGunHeld() && !grappleEquipped) {
-            paint.setTextSize(38f);
+        if ((portalGunHeld() && !grappleEquipped) || editMode) {
             for (int i = 0; i < 2; i++) {
                 boolean on = portalPressed == i;
+                float r = portalRadius(i);
                 paint.setStyle(Paint.Style.FILL);
                 if (i == 0) {
                     paint.setColor(on ? 0xFF3366FF : 0x993060FF);
                 } else {
                     paint.setColor(on ? 0xFFFF9933 : 0x99FF8020);
                 }
-                c.drawCircle(portalPos[i][0], portalPos[i][1], portalRadius, paint);
+                c.drawCircle(portalPos[i][0], portalPos[i][1], r, paint);
                 paint.setStyle(Paint.Style.STROKE);
                 paint.setColor(0xCCFFFFFF);
-                c.drawCircle(portalPos[i][0], portalPos[i][1], portalRadius, paint);
+                c.drawCircle(portalPos[i][0], portalPos[i][1], r, paint);
                 paint.setStyle(Paint.Style.FILL);
                 paint.setColor(Color.WHITE);
+                paint.setTextSize(38f * uiScale() * ns[E_P1 + i]);
                 c.drawText(i == 0 ? "P1" : "P2",
-                        portalPos[i][0] - 22f, portalPos[i][1] + 14f, paint);
+                        portalPos[i][0] - 22f * uiScale() * ns[E_P1 + i],
+                        portalPos[i][1] + 14f * uiScale() * ns[E_P1 + i], paint);
             }
 
         }
@@ -659,35 +921,37 @@ public class TouchOverlay extends View {
         // Tool swap: always visible.  Green when the grapple is in hand, blue
         // when the portal gun is; a tap toggles and the HUD note confirms.
         {
+            float r = toolRadius();
             paint.setStyle(Paint.Style.FILL);
             paint.setColor(grappleEquipped ? 0xCC33CC66 : 0xCC3366FF);
-            c.drawCircle(toolPos[0], toolPos[1], toolRadius, paint);
+            c.drawCircle(toolPos[0], toolPos[1], r, paint);
             paint.setStyle(Paint.Style.STROKE);
             paint.setColor(0xCCFFFFFF);
             paint.setStrokeWidth(4f);
-            c.drawCircle(toolPos[0], toolPos[1], toolRadius, paint);
+            c.drawCircle(toolPos[0], toolPos[1], r, paint);
             paint.setStrokeWidth(6f);
             paint.setStyle(Paint.Style.FILL);
             paint.setColor(Color.WHITE);
-            paint.setTextSize(30f);
+            paint.setTextSize(30f * uiScale() * ns[E_TOOL]);
             c.drawText(grappleEquipped ? "HOOK" : "GUN",
-                    toolPos[0], toolPos[1] + 11f, paint);
+                    toolPos[0], toolPos[1] + 11f * uiScale() * ns[E_TOOL], paint);
         }
 
         // Jetpack: hold to thrust (equips on the first press).
         {
+            float r = jetRadius();
             paint.setStyle(Paint.Style.FILL);
             paint.setColor(jetDown ? 0xEEFF9933 : 0xAAFF8020);
-            c.drawCircle(jetPos[0], jetPos[1], jetRadius, paint);
+            c.drawCircle(jetPos[0], jetPos[1], r, paint);
             paint.setStyle(Paint.Style.STROKE);
             paint.setColor(0xCCFFFFFF);
             paint.setStrokeWidth(4f);
-            c.drawCircle(jetPos[0], jetPos[1], jetRadius, paint);
+            c.drawCircle(jetPos[0], jetPos[1], r, paint);
             paint.setStrokeWidth(6f);
             paint.setStyle(Paint.Style.FILL);
             paint.setColor(Color.WHITE);
-            paint.setTextSize(30f);
-            c.drawText("JET", jetPos[0], jetPos[1] + 11f, paint);
+            paint.setTextSize(30f * uiScale() * ns[E_JET]);
+            c.drawText("JET", jetPos[0], jetPos[1] + 11f * uiScale() * ns[E_JET], paint);
         }
 
         // Jetpack fuel gauge: bottom-left, outside the opacity layer.
@@ -713,6 +977,10 @@ public class TouchOverlay extends View {
 
         c.restoreToCount(layer);
 
+        if (editMode) {
+            drawEditOverlay(c);
+        }
+
         // The aiming reticle is drawn by the game UI pass (N64 display list)
         // so it gets per-eye stereo depth from the aim-surface distance.
 
@@ -725,6 +993,12 @@ public class TouchOverlay extends View {
             paint.setTextSize(dp(16));
             c.drawText(freecamMove ? "FREE MOVE: ON" : "FREE MOVE: OFF",
                     x0 + dp(10), y0 + dp(29), paint);
+            /* A manual camera with no on-screen affordance reads as a frozen
+             * black screen when it is pointed at open sky. */
+            paint.setTextSize(dp(12));
+            paint.setColor(0xFFCCD6E6);
+            c.drawText("FREE CAM: drag to look, pinch to move",
+                    x0, y0 + h2 + dp(16), paint);
         }
 
         if (fpvActive()) {
@@ -891,6 +1165,379 @@ public class TouchOverlay extends View {
             }
         }
         return true;
+    }
+
+    /* ------------------------------------------------------------------ *
+     * Layout editor
+     * ------------------------------------------------------------------ */
+
+    /** Half-size of the resize grip drawn in the control's bottom-right. */
+    private float gripHalf(int e) {
+        return Math.max(14f, elemRadiusPx(e) * 0.20f);
+    }
+
+    private int hitEditable(float x, float y) {
+        // Grip first, so a grip that pokes into a neighbour stays grabbable.
+        for (int e = 0; e < ELEM_COUNT; e++) {
+            float r = elemRadiusPx(e);
+            float gx = nx[e] * getWidth() + r * 0.95f;
+            float gy = ny[e] * getHeight() + r * 0.95f;
+            float g = gripHalf(e);
+            if (Math.abs(x - gx) <= g && Math.abs(y - gy) <= g) return e;
+        }
+        int best = -1;
+        float bestD = Float.MAX_VALUE;
+        for (int e = 0; e < ELEM_COUNT; e++) {
+            float cx = nx[e] * getWidth(), cy = ny[e] * getHeight();
+            float d = (float) Math.hypot(x - cx, y - cy);
+            if (d <= elemRadiusPx(e) * 1.12f && d < bestD) {
+                best = e;
+                bestD = d;
+            }
+        }
+        return best;
+    }
+
+    private float snapX(float v, int e) {
+        float r = elemRadiusPx(e) / Math.max(1f, getWidth());
+        float lo = Math.min(r, 0.45f), hi = Math.max(1f - r, 0.55f);
+        v = Math.max(lo, Math.min(hi, v));
+        if (Math.abs(v - lo) <= 0.012f) return lo;
+        if (Math.abs(v - hi) <= 0.012f) return hi;
+        if (Math.abs(v - 0.5f) <= 0.008f) return 0.5f;
+        return Math.max(lo, Math.min(hi, Math.round(v / GRID) * GRID));
+    }
+
+    private float snapY(float v, int e) {
+        float r = elemRadiusPx(e) / Math.max(1f, getHeight());
+        float lo = Math.min(r, 0.45f), hi = Math.max(1f - r, 0.55f);
+        v = Math.max(lo, Math.min(hi, v));
+        if (Math.abs(v - lo) <= 0.012f) return lo;
+        if (Math.abs(v - hi) <= 0.012f) return hi;
+        if (Math.abs(v - 0.5f) <= 0.008f) return 0.5f;
+        return Math.max(lo, Math.min(hi, Math.round(v / GRID) * GRID));
+    }
+
+    private boolean handleEditTouch(MotionEvent e) {
+        lastTouchMs = System.currentTimeMillis();
+        int action = e.getActionMasked();
+        switch (action) {
+            case MotionEvent.ACTION_DOWN: {
+                float px = e.getX(), py = e.getY();
+                int hit = hitEditable(px, py);
+                selectedElem = hit;
+                dragElem = hit;
+                dragPointer = e.getPointerId(0);
+                if (hit >= 0) {
+                    float cx = nx[hit] * getWidth(), cy = ny[hit] * getHeight();
+                    float r = elemRadiusPx(hit);
+                    float gx = cx + r * 0.95f, gy = cy + r * 0.95f;
+                    float g = gripHalf(hit);
+                    if (Math.abs(px - gx) <= g && Math.abs(py - gy) <= g) {
+                        dragMode = DRAG_RESIZE;
+                        dragStartDist = Math.max(1f,
+                                (float) Math.hypot(px - cx, py - cy));
+                        dragStartScale = ns[hit];
+                    } else {
+                        dragMode = DRAG_MOVE;
+                        dragOffX = cx - px;
+                        dragOffY = cy - py;
+                    }
+                    infoX = nx[hit];
+                    infoY = ny[hit];
+                    infoValid = true;
+                } else {
+                    dragMode = DRAG_NONE;
+                    dragElem = -1;
+                    dragPointer = -1;
+                }
+                invalidate();
+                return true;
+            }
+            case MotionEvent.ACTION_MOVE: {
+                if (dragElem < 0) return true;
+                int idx = e.findPointerIndex(dragPointer);
+                if (idx < 0) return true;
+                float px = e.getX(idx), py = e.getY(idx);
+                if (dragMode == DRAG_MOVE) {
+                    float cx = px + dragOffX, cy = py + dragOffY;
+                    nx[dragElem] = snapX(cx / Math.max(1f, getWidth()), dragElem);
+                    ny[dragElem] = snapY(cy / Math.max(1f, getHeight()), dragElem);
+                } else if (dragMode == DRAG_RESIZE) {
+                    float cx = nx[dragElem] * getWidth();
+                    float cy = ny[dragElem] * getHeight();
+                    float d = Math.max(1f, (float) Math.hypot(px - cx, py - cy));
+                    float s = dragStartScale * (d / dragStartDist);
+                    ns[dragElem] = Math.max(SCALE_MIN, Math.min(SCALE_MAX, s));
+                }
+                infoX = nx[dragElem];
+                infoY = ny[dragElem];
+                infoValid = true;
+                invalidate();
+                return true;
+            }
+            case MotionEvent.ACTION_UP:
+            case MotionEvent.ACTION_CANCEL:
+            case MotionEvent.ACTION_POINTER_UP: {
+                int id = e.getPointerId(e.getActionIndex());
+                if (editMode && (action != MotionEvent.ACTION_POINTER_UP || id == dragPointer)) {
+                    dragElem = -1;
+                    dragPointer = -1;
+                    dragMode = DRAG_NONE;
+                    persistLayout();
+                    invalidate();
+                }
+                return true;
+            }
+        }
+        return true;
+    }
+
+    /** Draw boxes, names, resize grips and a live coordinate banner. */
+    private void drawEditOverlay(Canvas c) {
+        float w = getWidth(), h = getHeight();
+        float base = Math.max(16f, 20f * uiScale());
+        for (int e = 0; e < ELEM_COUNT; e++) {
+            float cx = nx[e] * w, cy = ny[e] * h, r = elemRadiusPx(e);
+            boolean sel = e == selectedElem;
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(sel ? 4f : 2f);
+            paint.setColor(sel ? 0xFFFFCC33 : 0xBB66CCFF);
+            c.drawRect(cx - r, cy - r, cx + r, cy + r, paint);
+
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(sel ? 0xFFFFCC33 : 0xFF8FD4FF);
+            paint.setTextAlign(Paint.Align.LEFT);
+            paint.setTextSize(base);
+            c.drawText(ELEM_LABELS[e], cx - r, Math.max(base, cy - r - 6f), paint);
+
+            float g = gripHalf(e);
+            float gx = cx + r * 0.95f, gy = cy + r * 0.95f;
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(sel ? 0xFFFFCC33 : 0xFF66CCFF);
+            c.drawRect(gx - g, gy - g, gx + g, gy + g, paint);
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(2f);
+            paint.setColor(0xCC000000);
+            c.drawRect(gx - g, gy - g, gx + g, gy + g, paint);
+        }
+
+        paint.setTextAlign(Paint.Align.LEFT);
+        paint.setTextSize(Math.max(18f, 22f * uiScale()));
+        float pad = 10f;
+        float lh = paint.getTextSize() * 1.35f;
+        String head = "EDIT LAYOUT  -  drag = move, corner grip = resize"
+                + "  |  grid " + Math.round(GRID * 1000f) / 10f + "%";
+        String profile = "profile: " + activeProfile() + "   (DEBUG > SYS > RESET LAYOUT)";
+        String drag = null;
+        if (dragElem >= 0) {
+            int e = dragElem;
+            drag = ELEM_LABELS[e] + "  x=" + String.format(java.util.Locale.US, "%.3f", nx[e])
+                    + "  y=" + String.format(java.util.Locale.US, "%.3f", ny[e])
+                    + "  scale=" + String.format(java.util.Locale.US, "%.2f", ns[e])
+                    + "  px=" + Math.round(nx[e] * w) + "," + Math.round(ny[e] * h)
+                    + "  r=" + Math.round(elemRadiusPx(e));
+        } else if (infoValid && selectedElem >= 0) {
+            int e = selectedElem;
+            drag = ELEM_LABELS[e] + "  x=" + String.format(java.util.Locale.US, "%.3f", nx[e])
+                    + "  y=" + String.format(java.util.Locale.US, "%.3f", ny[e])
+                    + "  scale=" + String.format(java.util.Locale.US, "%.2f", ns[e]);
+        }
+        int lines = drag == null ? 2 : 3;
+        float bw = Math.max(paint.measureText(head), paint.measureText(profile));
+        if (drag != null) bw = Math.max(bw, paint.measureText(drag));
+        bw += pad * 2;
+        float bh = lines * lh + pad;
+        float x0 = dp(8), y0 = dp(8);
+        paint.setStyle(Paint.Style.FILL);
+        paint.setColor(0xCC101820);
+        c.drawRoundRect(x0, y0, x0 + bw, y0 + bh, 12f, 12f, paint);
+        paint.setColor(0xFF66CCFF);
+        c.drawText(head, x0 + pad, y0 + pad + lh * 0.8f, paint);
+        paint.setColor(0xFFAACCFF);
+        c.drawText(profile, x0 + pad, y0 + pad + lh * 1.8f, paint);
+        if (drag != null) {
+            paint.setColor(0xFFFFCC33);
+            c.drawText(drag, x0 + pad, y0 + pad + lh * 2.8f, paint);
+        }
+    }
+
+    /** Start/stop editing. Entering clears any held game input. */
+    public void setEditMode(boolean on) {
+        if (editMode == on) return;
+        editMode = on;
+        cancelLp();
+        if (on) {
+            clearInput();
+            controlsHidden = false;
+            infoValid = false;
+            selectedElem = -1;
+            dragElem = -1;
+            dragPointer = -1;
+            dragMode = DRAG_NONE;
+        } else {
+            persistLayout();
+            selectedElem = -1;
+            dragElem = -1;
+        }
+        invalidate();
+        android.util.Log.i("SM64Layout", "edit mode " + (on ? "ON" : "OFF")
+                + " profile=" + activeProfile());
+    }
+
+    public boolean isEditMode() {
+        return editMode;
+    }
+
+    private void clearInput() {
+        buttons = 0;
+        for (int i = 0; i < pressedPointer.length; i++) pressedPointer[i] = -1;
+        for (int i = 0; i < cPressed.length; i++) cPressed[i] = -1;
+        for (int i = 0; i < camPressed.length; i++) camPressed[i] = -1;
+        stickActive = false;
+        stickPointer = -1;
+        rstickActive = false;
+        rstickPointer = -1;
+        toolDown = false;
+        toolPointer = -1;
+        jetDown = false;
+        jetPointer = -1;
+        portalPressed = -1;
+        portalPointer = -1;
+        camGesture = false;
+        camPtr1 = camPtr2 = -1;
+        camGestureMode = GESTURE_IDLE;
+        try {
+            sm64portActivity.nativeOverlayStick2(0, 0, 0);
+            sm64portActivity.nativeOverlayInput(0, 0, 0, 0);
+            sm64portActivity.nativeJetpack(0);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private void persistLayout() {
+        if (layoutStore != null) {
+            layoutStore.saveActive(ELEM_KEYS, nx, ny, ns);
+        }
+    }
+
+    /** RESET: active profile gets the `default` profile's contents; if it is
+     *  already the default profile, the hard-coded factory layout is used. */
+    public void resetLayout() {
+        if (layoutStore == null) {
+            restoreFactory();
+        } else if (TouchLayoutStore.DEFAULT_PROFILE.equals(layoutStore.active())) {
+            restoreFactory();
+        } else {
+            layoutStore.loadProfile(TouchLayoutStore.DEFAULT_PROFILE,
+                    ELEM_KEYS, nx, ny, ns);
+        }
+        persistLayout();
+        infoValid = false;
+        invalidate();
+        android.util.Log.i("SM64Layout", "layout reset; active=" + activeProfile());
+    }
+
+    public java.util.List<String> listProfiles() {
+        if (layoutStore == null) {
+            java.util.List<String> one = new java.util.ArrayList<>();
+            one.add(TouchLayoutStore.DEFAULT_PROFILE);
+            return one;
+        }
+        return layoutStore.profiles();
+    }
+
+    public String activeProfile() {
+        return layoutStore == null ? TouchLayoutStore.DEFAULT_PROFILE
+                : layoutStore.active();
+    }
+
+    public boolean switchProfile(String name) {
+        if (layoutStore == null || name == null) return false;
+        if (!layoutStore.applyProfile(name, ELEM_KEYS, nx, ny, ns)) return false;
+        infoValid = false;
+        invalidate();
+        return true;
+    }
+
+    public boolean saveProfileAs(String name) {
+        if (layoutStore == null || name == null) return false;
+        boolean ok = layoutStore.saveAs(name, ELEM_KEYS, nx, ny, ns);
+        invalidate();
+        return ok;
+    }
+
+    public boolean renameProfile(String oldName, String newName) {
+        return layoutStore != null && layoutStore.rename(oldName, newName);
+    }
+
+    public boolean deleteProfile(String name) {
+        if (layoutStore == null || !layoutStore.delete(name)) return false;
+        layoutStore.applyProfile(layoutStore.active(), ELEM_KEYS, nx, ny, ns);
+        invalidate();
+        return true;
+    }
+
+    public void exportProfile() {
+        if (layoutStore != null) layoutStore.exportActive();
+    }
+
+    public String externalDir() {
+        return layoutStore == null ? "unavailable" : layoutStore.externalDir();
+    }
+
+    public int elementCount() {
+        return ELEM_COUNT;
+    }
+
+    public String elementName(int i) {
+        return i >= 0 && i < ELEM_COUNT ? ELEM_KEYS[i] : "-";
+    }
+
+    public void setSelectedElement(int i) {
+        selectedElem = i >= 0 && i < ELEM_COUNT ? i : -1;
+        infoValid = false;
+        invalidate();
+    }
+
+    public int selectedElement() {
+        return selectedElem;
+    }
+
+    /** axis 0 = x, 1 = y; values are normalised. */
+    public void setSelectedNorm(int axis, float v) {
+        if (selectedElem < 0) return;
+        if (axis == 0) {
+            nx[selectedElem] = snapX(v, selectedElem);
+        } else {
+            ny[selectedElem] = snapY(v, selectedElem);
+        }
+        infoX = nx[selectedElem];
+        infoY = ny[selectedElem];
+        infoValid = true;
+        persistLayout();
+        invalidate();
+    }
+
+    public void setSelectedScale(float s) {
+        if (selectedElem < 0) return;
+        ns[selectedElem] = Math.max(SCALE_MIN, Math.min(SCALE_MAX, s));
+        persistLayout();
+        invalidate();
+    }
+
+    public String statusLine() {
+        String sel = selectedElem >= 0 ? ELEM_KEYS[selectedElem] : "-";
+        String coords = selectedElem >= 0
+                ? String.format(java.util.Locale.US, "%.3f/%.3f/%.2f",
+                nx[selectedElem], ny[selectedElem], ns[selectedElem])
+                : "-";
+        return "layout=" + activeProfile()
+                + ",profiles=" + listProfiles().size()
+                + ",edit=" + (editMode ? 1 : 0)
+                + ",sel=" + sel + "," + coords
+                + ",elems=" + ELEM_COUNT
+                + ",ext=" + externalDir();
     }
 
     private boolean fpvActive() {

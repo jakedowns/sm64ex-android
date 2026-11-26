@@ -6,6 +6,9 @@
  */
 
 #include <ultra64.h>
+#include <android/log.h>
+
+#define CUSTOMCAM_LOG(...) __android_log_print(ANDROID_LOG_INFO, "SM64Leia", __VA_ARGS__)
 
 #include "sm64.h"
 #include "engine/math_util.h"
@@ -37,7 +40,42 @@ static int s_fcInit;
 float gfx_cam_dist = 700.0f;         // orbit radius, world units
 float gfx_cam_height = 110.0f;       // look-at height above Mario's feet
 float gfx_cam_recentre_pct = 50.0f;  // recentre speed while running
-float gfx_cam_sens_pct = 100.0f;     // right-stick orbit sensitivity
+float gfx_cam_sens_pct = 100.0f;     // right-stick orbit sensitivity (effective)
+
+/* Sensitivity picker (CAMERA > SETTINGS, fx 330/331).
+ *
+ * The panel shows LOW / MED / HIGH, which pick a multiplier band, and the
+ * "Cam sensitivity" slider trims the value inside that band:
+ *
+ *     effective % = trim % * band multiplier
+ *
+ * so the slider never has to be re-ranged when the user wants a much slower or
+ * faster camera.  gfx_cam_sens_pct stays the single value the three camera
+ * implementations multiply their stick deltas by; the band and the trim are
+ * both persisted by the Android panel. */
+int gfx_cam_sens_band = 1;           // 0 LOW, 1 MED, 2 HIGH
+float gfx_cam_sens_trim = 100.0f;    // slider percent (stereo-int key 49)
+static const float s_sensBandMult[3] = { 0.6f, 1.0f, 1.6f };
+
+void gfx_cam_sens_apply(void) {
+    int band = gfx_cam_sens_band;
+    if (band < 0) band = 0;
+    if (band > 2) band = 2;
+    gfx_cam_sens_band = band;
+    if (gfx_cam_sens_trim < 10.0f) gfx_cam_sens_trim = 10.0f;
+    if (gfx_cam_sens_trim > 300.0f) gfx_cam_sens_trim = 300.0f;
+    gfx_cam_sens_pct = gfx_cam_sens_trim * s_sensBandMult[band];
+}
+
+/* band, trim %, effective % - for cmd dump / the panel readout. */
+int gfx_cam_sens_state(int which) {
+    switch (which) {
+        case 0: return gfx_cam_sens_band;
+        case 1: return (int) (gfx_cam_sens_trim + 0.5f);
+        case 2: return (int) (gfx_cam_sens_pct + 0.5f);
+        default: return 0;
+    }
+}
 /* Custom camera: do not pull in when a wall is between Mario and the camera.
  * With OCCLUSION off the occluding PTC wall is hidden completely (see ptc.c),
  * so the view stays on Mario; with OCCLUSION on (debug mode 1-3) the wall is
@@ -247,14 +285,63 @@ void custom_camera_freecam_update(struct Camera *c) {
         return;
     }
     if (!s_fcInit) {
+        /* Start from the pose the previous mode left behind, but only when it
+         * is a usable third-person view.  Entering FREE from FIRST PERSON used
+         * to inherit the eye pose, and the inverse-angle conversion below used
+         * to be passed the arguments in the wrong order: atan2s() here is the
+         * (horizontal, vertical) form (see vec3f_get_dist_and_angle), so every
+         * inherited level view came back as pitch 0x4000, i.e. straight up.
+         * The freecam then opened on the void, which read as "wrapping back to
+         * vanilla went black" (the mode label had no FREE case either). */
         Vec3f d;
-        vec3f_copy(s_fcPos, gLakituState.pos);
-        vec3f_copy(s_fcAnchor, gMarioState->pos);
+        f32 horiz, dist2d;
+        int useInherited = 1;
+
         d[0] = gLakituState.focus[0] - gLakituState.pos[0];
         d[1] = gLakituState.focus[1] - gLakituState.pos[1];
         d[2] = gLakituState.focus[2] - gLakituState.pos[2];
-        s_fcYaw = (s16) atan2s(d[0], d[2]);
-        s_fcPitch = (s16) atan2s(d[1], sqrtf(d[0] * d[0] + d[2] * d[2]));
+        horiz = sqrtf(d[0] * d[0] + d[2] * d[2]);
+        if (horiz < 40.0f) {
+            useInherited = 0;               /* degenerate / inside-head pose */
+        } else {
+            /* Same convention as vec3f_get_dist_and_angle: yaw from (z, x),
+             * pitch from (horizontal, vertical). */
+            s_fcYaw = (s16) atan2s(d[2], d[0]);
+            s_fcPitch = (s16) atan2s(horiz, d[1]);
+            if (s_fcPitch > 0x3000 || s_fcPitch < -0x3000) {
+                useInherited = 0;           /* staring at the sky or the floor */
+            }
+        }
+
+        vec3f_copy(s_fcAnchor, gMarioState->pos);
+        if (useInherited) {
+            vec3f_copy(s_fcPos, gLakituState.pos);
+            dist2d = sqrtf((s_fcPos[0] - s_fcAnchor[0]) * (s_fcPos[0] - s_fcAnchor[0])
+                         + (s_fcPos[2] - s_fcAnchor[2]) * (s_fcPos[2] - s_fcAnchor[2]));
+            if (dist2d < 60.0f) {
+                useInherited = 0;
+            }
+        }
+        if (!useInherited) {
+            f32 back = gfx_cam_dist > 250.0f ? gfx_cam_dist : 250.0f;
+            s16 face = gMarioState->faceAngle[1];
+            /* Camera behind Mario, looking at his chest height. */
+            s_fcPos[0] = s_fcAnchor[0] - sins(face) * back;
+            s_fcPos[1] = s_fcAnchor[1] + gfx_cam_height + 120.0f;
+            s_fcPos[2] = s_fcAnchor[2] - coss(face) * back;
+            if (s_fcPos[1] < 30.0f) s_fcPos[1] = 30.0f;
+            d[0] = s_fcAnchor[0] - s_fcPos[0];
+            d[1] = (s_fcAnchor[1] + gfx_cam_height) - s_fcPos[1];
+            d[2] = s_fcAnchor[2] - s_fcPos[2];
+            horiz = sqrtf(d[0] * d[0] + d[2] * d[2]);
+            s_fcYaw = (s16) atan2s(d[2], d[0]);
+            s_fcPitch = (s16) atan2s(horiz, d[1]);
+        }
+        CUSTOMCAM_LOG("FREECAM enter mode=%d inherited=%d pos=%.0f,%.0f,%.0f "
+                      "yaw=0x%04x pitch=0x%04x",
+                      gfx_cam_mode, useInherited,
+                      s_fcPos[0], s_fcPos[1], s_fcPos[2],
+                      (u16) s_fcYaw, (u16) s_fcPitch);
         s_fcInit = 1;
     }
 
@@ -334,8 +421,16 @@ void custom_camera_apply_mode(int mode) {
     if (mode < 0 || mode > 5) {
         mode = 0;
     }
+    CUSTOMCAM_LOG("CAM %d -> %d", gfx_cam_mode, mode);
     if (mode == 5) {
         s_fcInit = 0;   /* capture the current pose on the next update */
+    } else {
+        /* Do not carry a pending pinch/drag delta into the next FREE entry. */
+        gfx_freecam_nudge = 0.0f;
+        gfx_freecam_ydelta = 0.0f;
+        gfx_freecam_move = 0;
+        gfx_freecam_lx = 0;
+        gfx_freecam_ly = 0;
     }
     if (gfx_cam_mode == 4 && mode != 4 && gMarioObject != NULL) {
         gMarioObject->header.gfx.node.flags &= ~GRAPH_RENDER_INVISIBLE;

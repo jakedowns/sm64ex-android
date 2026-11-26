@@ -209,6 +209,8 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     private TextView camHeadToggle, camGyroToggle;
     private boolean uiPostOn = true;
     private int overlayAlphaPct = 33;
+    /* On-screen control layout editor (DEBUG > SYS > TOUCH LAYOUT). */
+    private TextView layoutEditButton, layoutProfileButton, layoutLayoutStatus;
     // true = the assistant is driving the app: debug line turns red.
     private boolean busyOn;
     private final java.util.List<TextView> fitButtons = new java.util.ArrayList<>();
@@ -234,8 +236,16 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     private int toeValuePct = 0;
     private TextView camStatusView;
     private int sameMode = 0;
-    private int camMode2 = 0;   // 0 vanilla, 1 bettercam, 2 puppycam, 3 custom, 4 first person
-    private TextView[] camModePills = new TextView[5];
+    private int camMode2 = 0;   // 0 vanilla, 1 bettercam, 2 puppycam, 3 custom, 4 first person, 5 free
+    private static final String PREF_CAM_SENS_BAND = "cam_sens_band";
+    private static final String PREF_CAM_SENS_TRIM = "cam_sens_trim";
+    private static final float[] CAM_SENS_MULT = { 0.6f, 1.0f, 1.6f };
+    private static final String[] CAM_SENS_NAMES = { "LOW", "MED", "HIGH" };
+    private int camSensBand = 1;     // 0 LOW 0.6x, 1 MED 1.0x, 2 HIGH 1.6x
+    private int camSensTrim = 100;   // slider percent inside the band
+    private TextView camSensValue;
+    private TextView[] camSensPills = new TextView[CAM_SENS_NAMES.length];
+    private TextView[] camModePills = new TextView[6];
     private float panelDownY = -1;
     private static final int PANEL_BG = 0xCC101010;
     private static final String CHANGELOG =
@@ -409,6 +419,23 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         nativeSetQuickDevMute(quickDevMute ? 1 : 0);
         Log.i(TAG, "QUICK_DEV restored: on=" + quickDevOn + " level=" + quickDevLevel
                 + " mute=" + quickDevMute);
+
+        /* Camera sensitivity picker: band + slider trim, both persisted. */
+        try {
+            android.content.SharedPreferences sp =
+                    getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+            camSensBand = sp.getInt(PREF_CAM_SENS_BAND, 1);
+            camSensTrim = sp.getInt(PREF_CAM_SENS_TRIM, 100);
+        } catch (Throwable t) {
+            camSensBand = 1;
+            camSensTrim = 100;
+        }
+        if (camSensBand < 0) camSensBand = 0;
+        if (camSensBand > 2) camSensBand = 2;
+        if (camSensTrim < 10) camSensTrim = 10;
+        if (camSensTrim > 300) camSensTrim = 300;
+        Log.i(TAG, "CAM_SENS restored: band=" + CAM_SENS_NAMES[camSensBand]
+                + " trim=" + camSensTrim + "%");
 
         try {
             initLeia();
@@ -1680,6 +1707,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         controls.addView(camTop, 0);
 
         controls.addView(makePinchToggle(), 0);
+        addCamSensPicker(controls);
         addCamToggle("WALL NOCLIP", 52, true);
         addOcclusionControls();
 
@@ -1689,7 +1717,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addCamSlider("3D width", 50, 150, 50, " %", 51);
         addCamSlider("Cam height", 0, 400, 110, " u", 47);
         addCamSlider("Cam recentre", 0, 200, 50, " %", 48);
-        addCamSlider("Cam sensitivity", 10, 300, 100, " %", 49);
+        addCamSlider("Cam sensitivity", 10, 300, camSensTrim, " %", 49);
         addCamSlider("HDT strength", 0, 200, hdtStrength, " %", 43);
         addCamSlider("Pivot height", 0, 200, gyroPivot, " cm", 45);
         addCamSlider("Gyro strength", 0, 200, gyroStrength, " %", 44);
@@ -2002,6 +2030,83 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             });
             enhParent().addView(oc);
         }
+        enhColumnTarget = enhPageColumns[3][2];
+        addEnhSection("TOUCH LAYOUT");
+        layoutEditButton = new TextView(this);
+        layoutEditButton.setTextSize(16);
+        layoutEditButton.setPadding(dp(4), dp(8), dp(4), dp(8));
+        layoutEditButton.setOnClickListener(v -> {
+            if (touchOverlay == null) return;
+            touchOverlay.setEditMode(!touchOverlay.isEditMode());
+            refreshLayoutUi();
+        });
+        addCompact(enhParent(), layoutEditButton);
+
+        layoutProfileButton = new TextView(this);
+        layoutProfileButton.setTextSize(16);
+        layoutProfileButton.setTextColor(0xFF66CCFF);
+        layoutProfileButton.setPadding(dp(4), dp(8), dp(4), dp(8));
+        layoutProfileButton.setOnClickListener(v -> {
+            if (touchOverlay == null) return;
+            java.util.List<String> ps = touchOverlay.listProfiles();
+            if (ps.isEmpty()) return;
+            int idx = ps.indexOf(touchOverlay.activeProfile());
+            touchOverlay.switchProfile(ps.get((idx + 1) % ps.size()));
+            refreshLayoutUi();
+        });
+        addCompact(enhParent(), layoutProfileButton);
+
+        layoutLayoutStatus = new TextView(this);
+        layoutLayoutStatus.setTextSize(11);
+        layoutLayoutStatus.setTextColor(0xFF888888);
+        layoutLayoutStatus.setPadding(dp(4), dp(2), dp(4), dp(6));
+        enhParent().addView(layoutLayoutStatus);
+
+        addEnhButton("SAVE AS PROFILE...", () -> {
+            if (touchOverlay == null) return;
+            promptText("Save layout as profile", touchOverlay.activeProfile(), name -> {
+                if (!touchOverlay.saveProfileAs(name)) {
+                    layoutNote("could not save '" + name + "'");
+                }
+                refreshLayoutUi();
+            });
+        });
+        addEnhButton("RENAME PROFILE...", () -> {
+            if (touchOverlay == null) return;
+            if (TouchLayoutStore.DEFAULT_PROFILE.equals(touchOverlay.activeProfile())) {
+                layoutNote("the default profile cannot be renamed");
+                return;
+            }
+            promptText("Rename profile", touchOverlay.activeProfile(), name -> {
+                if (!touchOverlay.renameProfile(touchOverlay.activeProfile(), name)) {
+                    layoutNote("rename failed (name in use?)");
+                }
+                refreshLayoutUi();
+            });
+        });
+        addEnhButton("DELETE PROFILE", () -> {
+            if (touchOverlay == null) return;
+            if (TouchLayoutStore.DEFAULT_PROFILE.equals(touchOverlay.activeProfile())) {
+                layoutNote("the default profile cannot be deleted");
+                return;
+            }
+            String doomed = touchOverlay.activeProfile();
+            touchOverlay.deleteProfile(doomed);
+            refreshLayoutUi();
+            layoutNote("deleted " + doomed);
+        });
+        addEnhButton("RESET LAYOUT", () -> {
+            if (touchOverlay == null) return;
+            touchOverlay.resetLayout();
+            refreshLayoutUi();
+        });
+        addEnhButton("EXPORT / SHARE ACTIVE", () -> {
+            if (touchOverlay == null) return;
+            touchOverlay.exportProfile();
+            refreshLayoutUi();
+            layoutNote("exported to " + touchOverlay.externalDir());
+        });
+        refreshLayoutUi();
         enhColumnTarget = enhPageColumns[3][2];
         addEnhSection("PERFORMANCE");
         {
@@ -2757,7 +2862,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             nativeSetFreecamMove(0);
         }
         updateCamModePills();
-        Log.i(TAG, "camera mode -> " + camModeLabel());
+        Log.i(TAG, "camera mode -> " + camModeName(mode) + " (" + mode + ")");
     }
 
     int getCamMode2() {
@@ -2821,12 +2926,122 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             case 2: return "PUPPYCAM";
             case 3: return "CUSTOM";
             case 4: return "FIRST PERSON";
+            /* FREE had no case, so the header claimed "CAM: VANILLA" while the
+             * manual free camera was driving the view - which read as "the
+             * cycler wrapped back to vanilla and the screen went black". */
+            case 5: return "FREE";
             default: return "VANILLA";
         }
     }
 
     private String camModeLabel() {
         return "CAM MODE: " + camModeName(camMode2);
+    }
+
+    /**
+     * LOW / MED / HIGH sensitivity band, pinned to the top of CAMERA > SETTINGS.
+     *
+     * The band is a multiplier and the "Cam sensitivity" slider trims inside
+     * it, so the effective value is the product.  Both are persisted, and the
+     * effective percent is spelled out because a band label alone does not say
+     * what the camera will actually do.
+     */
+    private void addCamSensPicker(LinearLayout parent) {
+        TextView label = new TextView(this);
+        label.setText("SENSITIVITY");
+        label.setTextSize(12);
+        label.setTextColor(0xFF888888);
+        label.setPadding(dp(4), dp(10), dp(4), dp(4));
+
+        LinearLayout track = new LinearLayout(this);
+        track.setOrientation(LinearLayout.HORIZONTAL);
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(0xFF171B22);
+        bg.setCornerRadius(dp(18));
+        bg.setStroke(dp(1), 0xFF39404E);
+        track.setBackground(bg);
+        track.setPadding(dp(3), dp(3), dp(3), dp(3));
+
+        camSensPills = new TextView[CAM_SENS_NAMES.length];
+        for (int i = 0; i < CAM_SENS_NAMES.length; i++) {
+            TextView pill = new TextView(this);
+            pill.setText(CAM_SENS_NAMES[i] + " " + String.format("%.1fx", CAM_SENS_MULT[i]));
+            pill.setTextSize(11);
+            pill.setGravity(Gravity.CENTER);
+            pill.setPadding(dp(4), dp(8), dp(4), dp(8));
+            final int band = i;
+            pill.setOnClickListener(v -> setCamSensBand(band));
+            track.addView(pill, new LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            camSensPills[i] = pill;
+        }
+
+        camSensValue = new TextView(this);
+        camSensValue.setTextSize(14);
+        camSensValue.setTextColor(0xFFAACCFF);
+        camSensValue.setPadding(dp(4), dp(6), dp(4), dp(4));
+
+        parent.addView(label, 0);
+        parent.addView(track, 1);
+        parent.addView(camSensValue, 2);
+
+        nativeSetStereoInt(330, camSensBand);
+        stereoValues.put(330, camSensBand);
+        updateCamSensPills();
+        refreshCamSensLabel();
+    }
+
+    private int effectiveCamSens(int trim) {
+        return Math.round(trim * CAM_SENS_MULT[Math.max(0, Math.min(2, camSensBand))]);
+    }
+
+    private void setCamSensBand(int band) {
+        camSensBand = Math.max(0, Math.min(2, band));
+        nativeSetStereoInt(330, camSensBand);
+        stereoValues.put(330, camSensBand);
+        updateCamSensPills();
+        refreshCamSensLabel();
+        saveCamSensPrefs();
+        Log.i(TAG, "CAM_SENS band -> " + CAM_SENS_NAMES[camSensBand]
+                + " effective=" + effectiveCamSens(camSensTrim) + "%");
+    }
+
+    private void updateCamSensPills() {
+        for (int i = 0; i < camSensPills.length; i++) {
+            TextView pill = camSensPills[i];
+            if (pill == null) continue;
+            GradientDrawable bg = new GradientDrawable();
+            bg.setCornerRadius(dp(15));
+            if (i == camSensBand) {
+                bg.setColor(0xFF2E6FD8);
+                pill.setTextColor(Color.WHITE);
+                pill.setTypeface(null, Typeface.BOLD);
+            } else {
+                bg.setColor(Color.TRANSPARENT);
+                pill.setTextColor(0xFF9AA3B2);
+                pill.setTypeface(null, Typeface.NORMAL);
+            }
+            pill.setBackground(bg);
+        }
+    }
+
+    private void refreshCamSensLabel() {
+        if (camSensValue == null) return;
+        camSensValue.setText("EFFECTIVE SENSITIVITY: " + effectiveCamSens(camSensTrim)
+                + " %  (" + CAM_SENS_NAMES[camSensBand] + " "
+                + String.format("%.1fx", CAM_SENS_MULT[camSensBand])
+                + " x " + camSensTrim + " %)");
+    }
+
+    private void saveCamSensPrefs() {
+        try {
+            getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                    .putInt(PREF_CAM_SENS_BAND, camSensBand)
+                    .putInt(PREF_CAM_SENS_TRIM, camSensTrim)
+                    .apply();
+        } catch (Throwable t) {
+            Log.w(TAG, "CAM_SENS prefs not saved", t);
+        }
     }
 
     private void addCamSlider(String name, int min, int max, int initial, String unit,
@@ -2848,6 +3063,11 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                 if (key == 43) hdtStrength = v;
                 if (key == 44) gyroStrength = v;
                 if (key == 45) gyroPivot = v;
+                if (key == 49) {
+                    camSensTrim = v;
+                    refreshCamSensLabel();
+                    saveCamSensPrefs();
+                }
             }
             @Override public void onStartTrackingTouch(SeekBar sb) {}
             @Override public void onStopTrackingTouch(SeekBar sb) {}
@@ -3728,6 +3948,182 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         Log.i(TAG, "overlay alpha " + pct);
     }
 
+    /* ------------------------------------------------------------------ *
+     * On-screen layout editor: panel plumbing + headless debug control.
+     * ------------------------------------------------------------------ */
+
+    /** Sync the SYS > TOUCH LAYOUT widgets with the overlay's current state. */
+    private void refreshLayoutUi() {
+        if (layoutEditButton != null && touchOverlay != null) {
+            boolean on = touchOverlay.isEditMode();
+            layoutEditButton.setText("EDIT LAYOUT: " + (on ? "ON" : "OFF"));
+            layoutEditButton.setTextColor(on ? 0xFFFFCC66 : 0xFF888888);
+        }
+        if (layoutProfileButton != null && touchOverlay != null) {
+            layoutProfileButton.setText("PROFILE: " + touchOverlay.activeProfile()
+                    + "  \u25B8");
+        }
+        if (layoutLayoutStatus != null && touchOverlay != null) {
+            layoutLayoutStatus.setText(touchOverlay.listProfiles().size()
+                    + " profiles  -  ext: " + touchOverlay.externalDir());
+        }
+    }
+
+    /** Short status line under the TOUCH LAYOUT buttons (no toast overlay). */
+    private void layoutNote(String text) {
+        if (layoutLayoutStatus != null) {
+            layoutLayoutStatus.setText(text);
+        }
+        Log.i(TAG, "LAYOUT " + text);
+    }
+
+    /** Simple text prompt (profile save/rename). */
+    private void promptText(String title, String initial,
+                            final java.util.function.Consumer<String> done) {
+        final android.widget.EditText input = new android.widget.EditText(this);
+        input.setText(initial == null ? "" : initial);
+        input.setSelectAllOnFocus(true);
+        input.setSingleLine(true);
+        try {
+            new android.app.AlertDialog.Builder(this)
+                    .setTitle(title)
+                    .setView(input)
+                    .setPositiveButton("OK", (d, w) -> {
+                        String s = input.getText().toString().trim();
+                        if (!s.isEmpty()) done.accept(s);
+                    })
+                    .setNegativeButton("CANCEL", null)
+                    .show();
+        } catch (Throwable t) {
+            layoutNote("dialog failed: " + t);
+        }
+    }
+
+    /**
+     * fx keys 300-309: layout editor / profiles.
+     *   300 edit mode on/off        301 reset layout
+     *   302 select element          303 selected x (per-mille)
+     *   304 selected y (per-mille)  305 selected scale (percent)
+     *   306 switch to profile index 307 save as profile p&lt;v&gt;
+     *   308 export active profile   309 log status
+     */
+    private void handleLayoutFx(int k, int v) {
+        if (touchOverlay == null) {
+            Log.w(TAG, "layout fx " + k + " ignored (no overlay)");
+            return;
+        }
+        switch (k) {
+            case 300:
+                touchOverlay.setEditMode(v != 0);
+                break;
+            case 301:
+                touchOverlay.resetLayout();
+                break;
+            case 302:
+                touchOverlay.setSelectedElement(v);
+                break;
+            case 303:
+                touchOverlay.setSelectedNorm(0, v / 1000f);
+                break;
+            case 304:
+                touchOverlay.setSelectedNorm(1, v / 1000f);
+                break;
+            case 305:
+                touchOverlay.setSelectedScale(v / 100f);
+                break;
+            case 306: {
+                java.util.List<String> ps = touchOverlay.listProfiles();
+                if (v >= 0 && v < ps.size()) touchOverlay.switchProfile(ps.get(v));
+                break;
+            }
+            case 307:
+                touchOverlay.saveProfileAs("p" + v);
+                break;
+            case 308:
+                touchOverlay.exportProfile();
+                break;
+            case 309:
+            default:
+                break;
+        }
+        refreshLayoutUi();
+        Log.i(TAG, "FX layout " + k + "=" + v + " " + touchOverlay.statusLine());
+    }
+
+    /** `cmd layout` — string operations for headless testing. */
+    void debugLayout(String action, String profile, String to) {
+        if (touchOverlay == null) {
+            Log.w(TAG, "layout cmd ignored (no overlay)");
+            return;
+        }
+        String a = action == null ? "status" : action;
+        boolean ok = true;
+        switch (a) {
+            case "on":
+            case "edit":
+                touchOverlay.setEditMode(true);
+                break;
+            case "off":
+                touchOverlay.setEditMode(false);
+                break;
+            case "reset":
+                touchOverlay.resetLayout();
+                break;
+            case "save":
+                ok = touchOverlay.saveProfileAs(profile);
+                break;
+            case "switch":
+                ok = touchOverlay.switchProfile(profile);
+                break;
+            case "rename":
+                ok = touchOverlay.renameProfile(profile, to);
+                break;
+            case "delete":
+                ok = touchOverlay.deleteProfile(profile);
+                break;
+            case "export":
+                touchOverlay.exportProfile();
+                break;
+            case "select":
+                try {
+                    touchOverlay.setSelectedElement(Integer.parseInt(profile));
+                } catch (Throwable t) {
+                    ok = false;
+                }
+                break;
+            case "x":
+                try {
+                    touchOverlay.setSelectedNorm(0, Integer.parseInt(profile) / 1000f);
+                } catch (Throwable t) {
+                    ok = false;
+                }
+                break;
+            case "y":
+                try {
+                    touchOverlay.setSelectedNorm(1, Integer.parseInt(profile) / 1000f);
+                } catch (Throwable t) {
+                    ok = false;
+                }
+                break;
+            case "scale":
+                try {
+                    touchOverlay.setSelectedScale(Integer.parseInt(profile) / 100f);
+                } catch (Throwable t) {
+                    ok = false;
+                }
+                break;
+            case "profiles":
+                Log.i(TAG, "LAYOUT profiles=" + touchOverlay.listProfiles()
+                        + " active=" + touchOverlay.activeProfile());
+                break;
+            case "status":
+            default:
+                break;
+        }
+        refreshLayoutUi();
+        Log.i(TAG, "LAYOUT cmd " + a + " ok=" + ok + " " + touchOverlay.statusLine());
+    }
+
     /** Output-layer transform knobs. kind: 0=H% 1=V% 2=Wpx 3=Hshift 4=Vshift */
     private void addOutSlider(String name, int min, int max, int initial, final int kind) {
         final TextView label = new TextView(this);
@@ -4128,7 +4524,9 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                             + "  cam=" + (nativeGetCamMode() != 0 ? "free" : "vanilla"));
                 }
                 if (touchOverlay != null) {
-                    if (forceHudHidden) {
+                    if (touchOverlay.isEditMode()) {
+                        touchOverlay.setControlsHidden(false);
+                    } else if (forceHudHidden) {
                         touchOverlay.setControlsHidden(true);
                     } else {
                         long sinceTouch = System.currentTimeMillis() - TouchOverlay.lastTouchMs;
@@ -4141,6 +4539,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                     }
                     touchOverlay.invalidate();   // refresh gun reticle / P1-P2
                 }
+                refreshLayoutUi();
                 if (portalGunButton != null) {
                     String want = portalGunLabel();
                     if (!want.contentEquals(portalGunButton.getText())) {
@@ -4290,7 +4689,9 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         runOnUiThread(() -> {
             if (debugView != null) {
                 if (touchOverlay != null) {
-                    if (forceHudHidden) {
+                    if (touchOverlay.isEditMode()) {
+                        touchOverlay.setControlsHidden(false);
+                    } else if (forceHudHidden) {
                         touchOverlay.setControlsHidden(true);
                     } else {
                         long sinceTouch = System.currentTimeMillis() - TouchOverlay.lastTouchMs;
@@ -4376,6 +4777,10 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     }
 
     void debugFx(int k, int v) {
+        if (k >= 300 && k <= 309) {
+            handleLayoutFx(k, v);
+            return;
+        }
         nativeSetSSFX(k, v);
         Log.i(TAG, "FX set " + k + "=" + v);
     }
@@ -4733,6 +5138,9 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                     + " soft=" + nativeGetShadow(6) + " taps=" + nativeGetShadow(7)
                     + " range=" + nativeGetShadow(8) + " dbg=" + nativeGetShadow(11));
             Log.i(TAG, nativePtcStatus());
+            if (touchOverlay != null) {
+                Log.i(TAG, "LAYOUT " + touchOverlay.statusLine());
+            }
             Log.i(TAG, "UNCAPPED_TEST=" + nativeGetUncappedTest());
         });
     }

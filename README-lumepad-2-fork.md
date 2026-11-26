@@ -284,10 +284,18 @@ touch overlay:
   stick (**C / ANA** toggle); the stick drives the free camera.
 - Free camera parameters (sensitivity, aggression, pan, degradation) are read
   from the existing bettercam config keys.
-- **CAM MODE** in the CAMERA tab cycles *vanilla → bettercam → puppycam →
-  custom orbit → first person*. First person puts the camera at Mario's eye
-  (hiding his model), steers with the right stick, and eases the yaw back to his
-  facing when the stick is released.
+- **CAM MODE** in the CAMERA tab cycles *vanilla → custom orbit → first person
+  → FREE* (`BETTER` and `PUPPY` are built but hidden from the picker). First
+  person puts the camera at Mario's eye (hiding his model), steers with the
+  right stick, and eases the yaw back to his facing when the stick is released.
+  FREE is a fully manual camera: drag to look, pinch to move, and the left stick
+  drives it while **FREE MOVE** is on. It always enters from a usable
+  third-person pose (behind Mario) instead of inheriting the first-person eye,
+  which used to open onto a black void.
+- **SENSITIVITY (CAMERA > SETTINGS, top):** LOW / MED / HIGH pick a multiplier
+  band (0.6x / 1.0x / 1.6x) and the `Cam sensitivity` slider trims inside it;
+  the effective percent (`trim x band`) is shown under the picker. Both are
+  persisted across launches.
 - **C-up shortcut:** the first C-up press enters the vanilla look camera; while
   that look camera is active, a second C-up press switches to FIRST PERSON.
   Entering first person also drops the Mario-look action so the left stick runs
@@ -610,6 +618,7 @@ the auto distance), SSGI `21`-`25`, SSRTX `70`-`77`, crepuscular rays
 | dynamic lights | `103` count, `104` shadows, `105` intensity, `106` shadow steps, `120`-`122` / `124`-`126` light 0/1 RGB |
 | crepuscular rays | `250` on, `251` intensity %, `252` march length %, `253` decay per step %, `254` sample weight %, `255` samples (8-32), `256` brightness gate %, `257` source light (0-3, 4 = sun), `258` start jitter %, `259` debug (1 shafts, 2 visibility), `260` occlusion bias % |
 | occluder punch-through | `274` mode (0 off, 1 dropout, 2 alpha, 3 cutout), `275` radius px, `276` feather %, `277` dither coverage %, `278` depth bias |
+| camera sensitivity | `330` band (0 LOW 0.6x, 1 MED 1.0x, 2 HIGH 1.6x), `331` slider trim %, `332` reads back the effective % (`330`/`331` are also stereo-int keys; the panel slider is `49`) |
 | light probes | `110` show, `111` spacing, `113` radius, `114` resolution, `115` grid cols (X), `116` grid rows (Y), `117` grid repeats (Z); `112` sets all three axes at once |
 | bokeh / DOF | `160` kernel, `161` aspect %, `162` blades, `163` rotation, `164` anamorphic %, `165` highlight %, `166` cat eye % |
 | rate limit | `200` on, `201` target fps, `202` adaptive, `203` reset stats |
@@ -617,6 +626,30 @@ the auto distance), SSGI `21`-`25`, SSRTX `70`-`77`, crepuscular rays
 | denoiser | `210` alternative path, `211` on, `212` intensity, `213` passes, `214` radius, `215` frames, `216` bounces, `217` test captions, `220` resolution `1/n` (1 = full res, 2-4 = reduced; default 4) |
 | emissive + bloom (GLOW) | `261` bloom on (default **off**), `262` threshold 0-255 (default 48), `263` intensity % (default 120), `264` blur radius (default 3), `265` blur passes 1-3 (default 2), `266` taps 5/9 (default 9), `267` emissive gain % (default 100), `268` debug view (0 off, 1 emissive buffer, 2 bloom buffer), `269` emissive tags on (default on), `270` also bloom scene pixels above threshold (default off) |
 | jetpack light | `271` on (default on), `272` intensity % (default 150), `273` radius in world units (default 220) |
+| touch layout / profiles | `300` edit mode on/off, `301` RESET layout, `302` select element (0-19, see below), `303` selected x (per-mille of width), `304` selected y (per-mille), `305` selected scale % (40-250), `306` activate profile by index, `307` save current as profile `p<v>`, `308` export active profile, `309` log status |
+
+Element indices for `302`: 0 `stick`, 1 `a`, 2 `b`, 3 `z`, 4 `r`, 5 `s`,
+6 `l`, 7 `sel`, 8 `cup`, 9 `cdn`, 10 `clf`, 11 `crt`, 12 `camx`, 13 `camy`,
+14 `p1`, 15 `p2`, 16 `tool`, 17 `jet`, 18 `mode`, 19 `rstick`.
+
+String operations (profile save/switch/rename/delete/export) use the debug
+channel instead of an integer key:
+
+```bash
+B="am broadcast -n com.vdavid003.sm64port/.DebugReceiver -a com.vdavid003.sm64port.CMD"
+adb shell $B --es cmd layout --es action save --es profile wide
+adb shell $B --es cmd layout --es action switch --es profile default
+adb shell $B --es cmd layout --es action rename --es profile wide --es to couch
+adb shell $B --es cmd layout --es action delete --es profile couch
+adb shell $B --es cmd layout --es action status
+```
+
+Layouts are stored as JSON in SharedPreferences (`touch_layout/store`) and
+mirrored to `Android/data/com.vdavid003.sm64port/files/layouts/`:
+`layouts.json` (all profiles), `active.json` and `share-<profile>.json` (the
+active profile). Positions are normalised (0..1) and sizes are multipliers of
+a 1600-px reference radius, so a profile survives a different panel resolution.
+
 
 The denoiser runs at 1/4 resolution by default: the scene colour and depth are
 downsampled to `scene_res/4`, 1-3 edge-aware à-trous passes run there, and a

@@ -13,7 +13,8 @@ import android.util.Log;
  *   adb shell am broadcast -a com.vdavid003.sm64port.CMD --es cmd set --ei k 0 --ei v 400
  *   adb shell am broadcast -a com.vdavid003.sm64port.CMD --es cmd toggle --es name TINT
  *   adb shell am broadcast -a com.vdavid003.sm64port.CMD --es cmd reinit
- *   adb shell am broadcast -a com.vdavid003.sm64port.CMD --es cmd reset
+ *   adb shell am broadcast -a com.vdavid003.sm64port.CMD --es cmd quickdev --ei v 1
+ *   adb shell am broadcast -a com.vdavid003.sm64port.CMD --es cmd layout --es action save --es profile mine
  */
 public class DebugReceiver extends BroadcastReceiver {
     public static final String ACTION = "com.vdavid003.sm64port.CMD";
@@ -103,6 +104,15 @@ public class DebugReceiver extends BroadcastReceiver {
                 int v = intent.getIntExtra("v", 0);
                 a.debugUncapped(v);
                 Log.i(TAG, "CMD uncapped " + v);
+                break;
+            }
+            case "layout": {
+                String action = intent.getStringExtra("action");
+                String profile = intent.getStringExtra("profile");
+                String to = intent.getStringExtra("to");
+                a.debugLayout(action, profile, to);
+                Log.i(TAG, "CMD layout action=" + action + " profile=" + profile
+                        + " to=" + to);
                 break;
             }
             case "quickdev": {
