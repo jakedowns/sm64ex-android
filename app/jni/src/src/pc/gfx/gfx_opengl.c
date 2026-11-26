@@ -2355,6 +2355,14 @@ void gfx_opengl_ssfx_set(int which, int value) {
             movekit_grapple_debug_set(which, value);
             break;
         }
+        /* Cam-stick response curve, deadzone/heatmap, R-shoulder follow
+         * (customcam.c; fx 290-299 is the cam-stick block). */
+        case 290: case 291: case 292: case 293: case 294:
+        case 295: case 296: case 297: case 298: case 299: {
+            extern void custom_camera_stick_fx_set(int which, int value);
+            custom_camera_stick_fx_set(which, value);
+            break;
+        }
         default: return;
     }
     __android_log_print(ANDROID_LOG_INFO, "SM64FX",
@@ -2515,6 +2523,12 @@ int gfx_opengl_ssfx_get(int which) {
         case 310: case 311: case 312: case 313: case 314: case 315: {
             extern int movekit_grapple_debug_get(int which);
             return movekit_grapple_debug_get(which);
+        }
+        /* Cam-stick curve / heatmap / R-follow (customcam.c). */
+        case 290: case 291: case 292: case 293: case 294:
+        case 295: case 296: case 297: case 298: case 299: {
+            extern int custom_camera_stick_fx_get(int which);
+            return custom_camera_stick_fx_get(which);
         }
     }
     return -1;

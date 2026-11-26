@@ -101,6 +101,27 @@ it lands correctly in 3D. **Mario is never hidden by any of these modes:**
 is the hard-edged baseline the dithered modes improve on. Controls: OCCLUSION
 group in the panel (mode, radius, feather, dither, depth bias), `fx 27x`.
 
+### Cam stick: curve, heatmap, vanilla C-stick, R-follow
+Implemented 2026-11-25 in worktree `w2-camstick` (`fx 290`-`299`, CAMERA >
+CAM STICK). Five-point monotone-cubic response curve with a draggable editor and
+a radial heatmap in the on-screen stick circle, vanilla-mode digital C-stick
+mapping, and three R-shoulder follow behaviours (toggle/hold/snap+release) with
+spring/damping sliders. See README "Cam stick: response curve, radial heatmap
+and R-shoulder follow". Open follow-ups: the heatmap is rebuilt only on curve
+changes but the view is still invalidated at 2 Hz by the debug readout (a cached
+bitmap, so ~0 cost); the curve applies to the on-screen stick only, not to a
+paired gamepad's right stick; and the C-up edge that a full push generates in
+vanilla mode is intentional (a real pad does the same) but surprising.
+
+**Device proof still to capture.** The build is in and
+`scripts/camstick-curve-check.py` proves the shipped curve is monotone and that
+a dragged point changes the effective rate (in=56: 48 -> 120 of 127), but the
+panel dropped off Wi-Fi adb during the first device run (30 s screen timeout —
+raise it first, `scripts/camstick-test.sh` now does), so the heatmap still, the
+C-bit table and the three R-follow clips are not captured yet. Run
+`scripts/camstick-test.sh` under the device lock on a woken tablet; artifacts
+to `/media/share/tmp/artifacts/sm64/camstick/`.
+
 ### Merge notes (2026-11-25)
 Merging the three worktrees into the main tree needed real conflict resolution,
 not a fast-forward, and the lessons are worth keeping:

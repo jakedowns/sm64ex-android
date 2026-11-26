@@ -60,6 +60,14 @@ public class DebugReceiver extends BroadcastReceiver {
                 Log.i(TAG, "CMD pad sx=" + sx + " sy=" + sy + " btn=" + buttons + " ms=" + ms);
                 break;
             }
+            case "pad2": {
+                int rx = intent.getIntExtra("rx", 0);
+                int ry = intent.getIntExtra("ry", 0);
+                int ms = intent.getIntExtra("ms", 240);
+                a.debugPad2(rx, ry, ms);
+                Log.i(TAG, "CMD pad2 rx=" + rx + " ry=" + ry + " ms=" + ms);
+                break;
+            }
             case "stereo": {
                 int v = intent.getIntExtra("v", 1);
                 a.debugSetStereo(v);

@@ -171,6 +171,14 @@ public class TouchOverlay extends View {
     private float rstickX, rstickY, rknobX, rknobY;
     private final float[] modePos = new float[2];
 
+    /* Radial heatmap inside the cam-stick base circle.  The bitmap is built
+     * once per curve change and only blitted while the stick is held, so a
+     * still stick costs one drawBitmap (the view is already invalidated at
+     * 2 Hz by the debug readout). */
+    private android.graphics.Bitmap heatBmp;
+    private int heatVer = -1;
+    private int heatRad = -1;
+
     public TouchOverlay(Context c) {
         super(c);
         setFocusable(false);
@@ -697,6 +705,151 @@ public class TouchOverlay extends View {
         return true;
     }
 
+    /** Current cam-stick vector in N64 units (positive x = right, y = up). */
+    private int stickVecX() {
+        return (int) ((rknobX - rstickX) / stickRadiusPx(E_RSTICK) * 127f);
+    }
+
+    private int stickVecY() {
+        return (int) (-(rknobY - rstickY) / stickRadiusPx(E_RSTICK) * 127f);
+    }
+
+    /**
+     * Radial heatmap of the cam-stick response: the colour at radius r is the
+     * effective output rate the curve gives for a raw deflection of r, the
+     * deadzone is a dark disc ringed in white, and the response curve is
+     * overlaid as a small graph so the shape is readable at a glance.
+     */
+    private void drawStickHeatmap(Canvas c, float cx, float cy, float r, int vx, int vy) {
+        if (!StickCurve.heatmap) {
+            return;
+        }
+        int ri = (int) r;
+        if (heatBmp == null || heatVer != StickCurve.version || heatRad != ri) {
+            heatBmp = buildHeatBitmap(ri);
+            heatVer = StickCurve.version;
+            heatRad = ri;
+        }
+        paint.setStyle(Paint.Style.FILL);
+        paint.setFilterBitmap(true);
+        c.drawBitmap(heatBmp, cx - ri, cy - ri, paint);
+        paint.setFilterBitmap(false);
+
+        // Deadzone ring.
+        float dz = StickCurve.deadzonePct / 100f;
+        if (dz > 0.01f) {
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(3f);
+            paint.setColor(0xCCFFFFFF);
+            paint.setPathEffect(new android.graphics.DashPathEffect(
+                    new float[] {10f, 8f}, 0f));
+            c.drawCircle(cx, cy, r * dz, paint);
+            paint.setPathEffect(null);
+            paint.setTextAlign(Paint.Align.CENTER);
+            paint.setTextSize(26f);
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(0xCCFFFFFF);
+            c.drawText("DZ", cx, cy - r * dz - 6f, paint);
+        }
+
+        // Response curve overlay: x = raw deflection, y = effective output,
+        // drawn in the lower-left half of the circle so it stays inside it.
+        {
+            float gx = cx - r * 0.82f;
+            float gy = cy + r * 0.82f;
+            float gs = r * 0.80f;
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(3f);
+            // Linear reference.
+            paint.setColor(0x6688CCFF);
+            paint.setPathEffect(new android.graphics.DashPathEffect(
+                    new float[] {8f, 8f}, 0f));
+            c.drawLine(gx, gy, gx + gs, gy - gs, paint);
+            paint.setPathEffect(null);
+            // Curve.
+            paint.setColor(0xFFFFDD44);
+            android.graphics.Path p = new android.graphics.Path();
+            int steps = 48;
+            for (int i = 0; i <= steps; i++) {
+                float u = i / (float) steps;
+                float e = StickCurve.effective(u);
+                float x = gx + gs * u;
+                float y = gy - gs * e;
+                if (i == 0) p.moveTo(x, y);
+                else p.lineTo(x, y);
+            }
+            c.drawPath(p, paint);
+        }
+
+        // Live stick vector (base -> knob, in effective units) and its numbers.
+        {
+            float len = (float) Math.hypot(vx, vy);
+            float eff = StickCurve.effective(len / 127f);
+            float k = len > 0.5f ? eff * 127f / len : 0f;
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(5f);
+            paint.setColor(0xFF00FFCC);
+            c.drawLine(cx, cy, cx + vx * k * r / 127f, cy - vy * k * r / 127f, paint);
+            paint.setStyle(Paint.Style.FILL);
+            paint.setTextAlign(Paint.Align.CENTER);
+            paint.setTextSize(24f);
+            paint.setColor(0xFF00FFCC);
+            c.drawText(Math.round(eff * 100f) + "%", cx, cy - r - 8f, paint);
+        }
+    }
+
+    private android.graphics.Bitmap buildHeatBitmap(int r) {
+        int d = Math.max(2, r * 2);
+        int[] px = new int[d * d];
+        float rr = r;
+        for (int y = 0; y < d; y++) {
+            float dy = (y - r + 0.5f) / rr;
+            for (int x = 0; x < d; x++) {
+                float dx = (x - r + 0.5f) / rr;
+                float u = (float) Math.sqrt(dx * dx + dy * dy);
+                if (u > 1f) {
+                    px[y * d + x] = 0;
+                    continue;
+                }
+                if (u <= StickCurve.deadzonePct / 100f) {
+                    px[y * d + x] = 0xE0101820;   // dead disc
+                } else {
+                    px[y * d + x] = heatColor(StickCurve.effective(u));
+                }
+            }
+        }
+        return android.graphics.Bitmap.createBitmap(px, d, d,
+                android.graphics.Bitmap.Config.ARGB_8888);
+    }
+
+    /** Blue (slow) -> cyan -> green -> yellow -> red (full rate). */
+    private int heatColor(float e) {
+        float r, g, b;
+        if (e < 0.25f) {
+            float t = e / 0.25f;
+            r = 20f + 20f * t;
+            g = 40f + 150f * t;
+            b = 110f + 90f * t;
+        } else if (e < 0.5f) {
+            float t = (e - 0.25f) / 0.25f;
+            r = 40f + 20f * t;
+            g = 190f + 20f * t;
+            b = 200f - 120f * t;
+        } else if (e < 0.75f) {
+            float t = (e - 0.5f) / 0.25f;
+            r = 60f + 170f * t;
+            g = 210f - 0f * t;
+            b = 80f - 30f * t;
+        } else {
+            float t = (e - 0.75f) / 0.25f;
+            r = 230f + 20f * t;
+            g = 210f - 150f * t;
+            b = 50f - 20f * t;
+        }
+        int a = (int) (110f + 120f * e);   // denser where the output is higher
+        return (a << 24) | ((int) r << 16) | ((int) g << 8) | (int) b;
+    }
+
     private void pushInput() {
         if (editMode) return;
         int sx = 0, sy = 0;
@@ -848,6 +1001,10 @@ public class TouchOverlay extends View {
                         cPos[i][1] + 16f * uiScale() * ns[E_CUP + i], paint);
             }
         } else if (rstickActive) {
+            // Radial heatmap: colour = effective cam rate at that radius, so
+            // the response curve, the deadzone ring and the live vector are
+            // all readable in the stick circle.
+            drawStickHeatmap(c, rstickX, rstickY, stickRadiusPx(E_RSTICK), stickVecX(), stickVecY());
             paint.setStyle(Paint.Style.STROKE);
             paint.setStrokeWidth(6f);
             paint.setColor(0x88FFFFFF);

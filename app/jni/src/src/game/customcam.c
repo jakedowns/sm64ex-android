@@ -22,6 +22,246 @@
 
 int gfx_cam_mode = 0;
 
+/* ------------------------------------------------------------------------- *
+ * Cam-stick response curve + R-shoulder follow (fx keys 290-299).
+ *
+ * The on-screen right stick is shaped here, once, and every consumer reads the
+ * shaped value: the custom orbit camera, the free camera, first person and the
+ * vanilla analog-camera path in camera.c.  The same points are drawn by the
+ * curve editor (StickCurveView.java) and by the radial heatmap inside the stick
+ * circle (TouchOverlay.java), so the picture and the feel are the same data.
+ *
+ * Curve representation: 5 points (px[i], py[i]) with px strictly increasing
+ * from 0 to 1 and py non-decreasing from 0 to 1.  Only the three interior
+ * points are editable; the RC keys pack each as (x << 8) | y with both bytes
+ * 0..255.  Interpolation is Fritsch-Carlson monotone cubic Hermite, so the
+ * response can never invert:
+ *   https://en.wikipedia.org/wiki/Monotone_cubic_interpolation
+ *   (the same tangent limiting as Heckbert's variant described in
+ *    https://signalsmith-audio.co.uk/writing/2021/monotonic-smooth-interpolation/)
+ * ------------------------------------------------------------------------- */
+#define CAM_STICK_POINTS 5
+#define CAM_STICK_KEYS   290
+
+static int   s_stick_curve_on = 1;
+static float s_stick_deadzone = 0.10f;      /* fraction of the stick radius */
+static int   s_stick_heatmap_on = 1;
+static float s_stick_px[CAM_STICK_POINTS] = { 0.00f, 0.25f, 0.50f, 0.75f, 1.00f };
+static float s_stick_py[CAM_STICK_POINTS] = { 0.00f, 0.25f, 0.50f, 0.75f, 1.00f };
+static float s_stick_tan[CAM_STICK_POINTS];
+static int   s_stick_curve_valid;
+
+/* R-shoulder behaviours (fx 298). */
+enum {
+    CAM_FOLLOW_TOGGLE = 0,   /* tap R: follow until tapped again, then hold */
+    CAM_FOLLOW_HOLD   = 1,   /* follow only while R is held */
+    CAM_FOLLOW_SNAP   = 2,   /* tap R: snap behind, any cam-stick input releases */
+};
+static int   s_follow_mode = CAM_FOLLOW_TOGGLE;
+static float s_spring_stiff_pct = 100.0f;
+static float s_spring_damp_pct = 100.0f;
+static int   s_follow_on;        /* toggle state (mode 0) */
+static int   s_snap_armed;       /* mode 2: springing until stick input */
+static int   s_cstick_digital_on = 1;
+
+static void stick_curve_rebuild(void);
+static float stick_curve_eval(float u);
+
+/* Monotone cubic Hermite tangents (Fritsch-Carlson). */
+static void stick_curve_rebuild(void) {
+    float d[CAM_STICK_POINTS - 1];
+    int i;
+
+    for (i = 0; i < CAM_STICK_POINTS - 1; i++) {
+        float h = s_stick_px[i + 1] - s_stick_px[i];
+        d[i] = h > 1e-6f ? (s_stick_py[i + 1] - s_stick_py[i]) / h : 0.0f;
+    }
+    s_stick_tan[0] = d[0];
+    s_stick_tan[CAM_STICK_POINTS - 1] = d[CAM_STICK_POINTS - 2];
+    for (i = 1; i < CAM_STICK_POINTS - 1; i++) {
+        s_stick_tan[i] = (d[i - 1] + d[i]) * 0.5f;
+    }
+    /* Limit the tangents so each segment stays monotone (no overshoot). */
+    for (i = 0; i < CAM_STICK_POINTS - 1; i++) {
+        if (d[i] == 0.0f) {
+            s_stick_tan[i] = 0.0f;
+            s_stick_tan[i + 1] = 0.0f;
+            continue;
+        }
+        {
+            float a = s_stick_tan[i] / d[i];
+            float b = s_stick_tan[i + 1] / d[i];
+            float s = a * a + b * b;
+            if (s > 9.0f) {
+                float t = 3.0f / sqrtf(s);
+                s_stick_tan[i] = t * a * d[i];
+                s_stick_tan[i + 1] = t * b * d[i];
+            }
+        }
+    }
+    s_stick_curve_valid = 1;
+}
+
+static float stick_curve_eval(float u) {
+    int i = 0;
+    float h, t, t2, t3, v;
+
+    if (!s_stick_curve_valid) {
+        stick_curve_rebuild();
+    }
+    if (u <= s_stick_px[0]) return s_stick_py[0];
+    if (u >= s_stick_px[CAM_STICK_POINTS - 1]) return s_stick_py[CAM_STICK_POINTS - 1];
+    while (i < CAM_STICK_POINTS - 2 && u > s_stick_px[i + 1]) {
+        i++;
+    }
+    h = s_stick_px[i + 1] - s_stick_px[i];
+    if (h < 1e-6f) return s_stick_py[i + 1];
+    t = (u - s_stick_px[i]) / h;
+    t2 = t * t;
+    t3 = t2 * t;
+    v = (2.0f * t3 - 3.0f * t2 + 1.0f) * s_stick_py[i]
+      + (t3 - 2.0f * t2 + t) * h * s_stick_tan[i]
+      + (-2.0f * t3 + 3.0f * t2) * s_stick_py[i + 1]
+      + (t3 - t2) * h * s_stick_tan[i + 1];
+    /* Stay inside the segment (guards float error and keeps it monotone). */
+    if (v < s_stick_py[i]) v = s_stick_py[i];
+    if (v > s_stick_py[i + 1]) v = s_stick_py[i + 1];
+    if (v < 0.0f) v = 0.0f;
+    if (v > 1.0f) v = 1.0f;
+    return v;
+}
+
+/* Force the interior points to be strictly ordered in x and non-decreasing in
+ * y, so a dragged point can never fold the curve back on itself. */
+static void stick_curve_sanitise(void) {
+    int i;
+    s_stick_px[0] = 0.0f;
+    s_stick_py[0] = 0.0f;
+    s_stick_px[CAM_STICK_POINTS - 1] = 1.0f;
+    s_stick_py[CAM_STICK_POINTS - 1] = 1.0f;
+    for (i = 1; i < CAM_STICK_POINTS - 1; i++) {
+        if (s_stick_px[i] < s_stick_px[i - 1] + 0.02f) {
+            s_stick_px[i] = s_stick_px[i - 1] + 0.02f;
+        }
+        if (s_stick_py[i] < s_stick_py[i - 1]) {
+            s_stick_py[i] = s_stick_py[i - 1];
+        }
+        if (s_stick_px[i] > 0.98f) s_stick_px[i] = 0.98f;
+        if (s_stick_py[i] > 1.0f) s_stick_py[i] = 1.0f;
+    }
+    s_stick_curve_valid = 0;
+}
+
+/**
+ * Shape an overlay cam-stick vector through the deadzone + response curve.
+ * Direction is preserved; only the magnitude is remapped.  A linear curve with
+ * a zero deadzone is the identity, so this is safe to call unconditionally.
+ */
+void custom_camera_stick_shape2(int *x, int *y) {
+    float vx, vy, mag, u, t, out, k;
+
+    if (!s_stick_curve_on || x == NULL || y == NULL) {
+        return;
+    }
+    vx = (float) *x;
+    vy = (float) *y;
+    mag = sqrtf(vx * vx + vy * vy);
+    if (mag < 0.5f) {
+        *x = 0;
+        *y = 0;
+        return;
+    }
+    u = mag / 127.0f;
+    if (u > 1.0f) u = 1.0f;
+    if (u <= s_stick_deadzone) {
+        *x = 0;
+        *y = 0;
+        return;
+    }
+    t = (u - s_stick_deadzone) / (1.0f - s_stick_deadzone);
+    out = stick_curve_eval(t) * 127.0f;
+    k = out / mag;
+    *x = (int) (vx * k);
+    *y = (int) (vy * k);
+}
+
+void custom_camera_stick_fx_set(int which, int value) {
+    switch (which) {
+        case CAM_STICK_KEYS + 0: s_stick_curve_on = value ? 1 : 0; break;
+        case CAM_STICK_KEYS + 1:
+            s_stick_deadzone = value < 0 ? 0.0f : (value > 90 ? 0.90f : (float) value / 100.0f);
+            break;
+        case CAM_STICK_KEYS + 2: s_stick_heatmap_on = value ? 1 : 0; break;
+        case CAM_STICK_KEYS + 3:
+        case CAM_STICK_KEYS + 4:
+        case CAM_STICK_KEYS + 5: {
+            int i = which - (CAM_STICK_KEYS + 3) + 1;
+            if (value < 0) value = 0;
+            s_stick_px[i] = (float) ((value >> 8) & 0xFF) / 255.0f;
+            s_stick_py[i] = (float) (value & 0xFF) / 255.0f;
+            stick_curve_sanitise();
+            break;
+        }
+        case CAM_STICK_KEYS + 6:
+            s_spring_stiff_pct = value < 10 ? 10.0f : (value > 300 ? 300.0f : (float) value);
+            break;
+        case CAM_STICK_KEYS + 7:
+            s_spring_damp_pct = value < 40 ? 40.0f : (value > 200 ? 200.0f : (float) value);
+            break;
+        case CAM_STICK_KEYS + 8:
+            s_follow_mode = value < 0 ? 0 : (value > 2 ? 2 : value);
+            s_follow_on = 0;
+            s_snap_armed = 0;
+            break;
+        case CAM_STICK_KEYS + 9: s_cstick_digital_on = value ? 1 : 0; break;
+        default: return;
+    }
+    __android_log_print(ANDROID_LOG_INFO, "SM64CamStick",
+                        "fx %d=%d curve=%d dz=%.2f hm=%d p1=%.2f/%.2f p2=%.2f/%.2f "
+                        "p3=%.2f/%.2f spring=%.0f/%.0f rmode=%d cdig=%d",
+                        which, value, s_stick_curve_on, s_stick_deadzone, s_stick_heatmap_on,
+                        s_stick_px[1], s_stick_py[1], s_stick_px[2], s_stick_py[2],
+                        s_stick_px[3], s_stick_py[3], s_spring_stiff_pct, s_spring_damp_pct,
+                        s_follow_mode, s_cstick_digital_on);
+}
+
+int custom_camera_stick_fx_get(int which) {
+    switch (which) {
+        case CAM_STICK_KEYS + 0: return s_stick_curve_on;
+        case CAM_STICK_KEYS + 1: return (int) (s_stick_deadzone * 100.0f + 0.5f);
+        case CAM_STICK_KEYS + 2: return s_stick_heatmap_on;
+        case CAM_STICK_KEYS + 3:
+        case CAM_STICK_KEYS + 4:
+        case CAM_STICK_KEYS + 5: {
+            int i = which - (CAM_STICK_KEYS + 3) + 1;
+            int px = (int) (s_stick_px[i] * 255.0f + 0.5f);
+            int py = (int) (s_stick_py[i] * 255.0f + 0.5f);
+            return (px << 8) | py;
+        }
+        case CAM_STICK_KEYS + 6: return (int) (s_spring_stiff_pct + 0.5f);
+        case CAM_STICK_KEYS + 7: return (int) (s_spring_damp_pct + 0.5f);
+        case CAM_STICK_KEYS + 8: return s_follow_mode;
+        case CAM_STICK_KEYS + 9: return s_cstick_digital_on;
+        default: return 0;
+    }
+}
+
+int custom_camera_stick_deadzone_pct(void) {
+    return (int) (s_stick_deadzone * 100.0f + 0.5f);
+}
+
+int custom_camera_stick_heatmap_on(void) {
+    return s_stick_heatmap_on;
+}
+
+int custom_camera_cstick_digital_on(void) {
+    return s_cstick_digital_on;
+}
+
+int custom_camera_follow_mode(void) {
+    return s_follow_mode;
+}
+
 /* Freecam (mode 5): a completely manual camera.  It never follows, tracks,
  * avoids obstacles or animates on its own; only the right stick (yaw/pitch),
  * the left stick (when FREE MOVE is on) and the pinch/drag gestures move it. */
@@ -97,11 +337,15 @@ static int s_init = 0;
 static s16 s_fpYaw;
 static s16 s_fpPitch;
 
-/* R-trigger "spring" recentre: a critically damped chase of the camera yaw
- * towards directly behind Mario, like a racing-game chase cam. */
+/* R-trigger "spring" recentre: a spring/damped chase of the camera yaw
+ * towards directly behind Mario, like a racing-game chase cam.  The three
+ * behaviours (fx 298) are implemented in custom_camera_update(). */
 static int s_spring;
 static float s_yawVel;
 static u32 s_prevOvlButtons;
+static int s_prevRDown;
+static int s_logThrottle;
+static int s_logPrevYaw;
 
 /* Scripted yaw override (chain finale): eases the camera to a chosen side of
  * Mario without a cut.  Used so the goomba lemming loop is framed. */
@@ -133,8 +377,10 @@ void first_person_camera_update(struct Camera *c) {
         return;
     }
     if (gfx_ovl_analog && gfx_ovl_right_active) {
-        inX = (s16) gfx_ovl_right_x;
-        inY = (s16) gfx_ovl_right_y;
+        int sx = (int) gfx_ovl_right_x, sy = (int) gfx_ovl_right_y;
+        custom_camera_stick_shape2(&sx, &sy);
+        inX = (s16) sx;
+        inY = (s16) sy;
     } else if (gPlayer2Controller != NULL) {
         inX = gPlayer2Controller->stickX;
         inY = gPlayer2Controller->stickY;
@@ -346,8 +592,10 @@ void custom_camera_freecam_update(struct Camera *c) {
     }
 
     if (gfx_ovl_analog && gfx_ovl_right_active) {
-        inX = (s16) gfx_ovl_right_x;
-        inY = (s16) gfx_ovl_right_y;
+        int sx = (int) gfx_ovl_right_x, sy = (int) gfx_ovl_right_y;
+        custom_camera_stick_shape2(&sx, &sy);
+        inX = (s16) sx;
+        inY = (s16) sy;
     }
     {
         f32 sens = gfx_cam_sens_pct / 100.0f;
@@ -523,6 +771,12 @@ void custom_camera_update(struct Camera *c) {
     if (gfx_ovl_analog && gfx_ovl_right_active) {
         inX = (s16) gfx_ovl_right_x;
         inY = (s16) gfx_ovl_right_y;
+        {
+            int sx = inX, sy = inY;
+            custom_camera_stick_shape2(&sx, &sy);
+            inX = (s16) sx;
+            inY = (s16) sy;
+        }
     } else if (gPlayer2Controller != NULL) {
         inX = gPlayer2Controller->stickX;
         inY = gPlayer2Controller->stickY;
@@ -540,20 +794,60 @@ void custom_camera_update(struct Camera *c) {
                                    -0x1C00, 0x3400);
         }
     }
-    /* R shoulder: spring the camera behind Mario.  A strong stiffness with
-     * damping gives the lag/overshoot of a racing chase camera.  R is also the
-     * grapple retract, so leave it alone while the rope is attached. */
+    /* R shoulder: spring the camera behind Mario.
+     *
+     * Three selectable behaviours (fx 298):
+     *   0 TOGGLE - tap R: follow Mario's forward vector (spring/damping) until
+     *              R is tapped again; the offset from that moment is held.
+     *   1 HOLD   - follow only while R is down.
+     *   2 SNAP   - tap R: snap behind him, hold the offset; any cam-stick input
+     *              releases it.
+     * R is also the grapple retract, so leave it alone while the rope is
+     * attached.  The follow only steers the yaw: distance, the noclip pass and
+     * the occlusion punch-through are untouched. */
     {
         extern int movekit_state(void);
         extern u32 gfx_ovl_buttons;
-        u32 now = gfx_ovl_buttons;
-        int pressed = (gPlayer1Controller != NULL
-                       && (gPlayer1Controller->buttonPressed & R_TRIG))
-                   || ((now & R_TRIG) && !(s_prevOvlButtons & R_TRIG));
-        s_prevOvlButtons = now;
-        if (pressed && !(movekit_state() & 8)) {
-            s_spring = 1;
+        u32 now = gfx_ovl_buttons | (gPlayer1Controller != NULL
+                                     ? gPlayer1Controller->buttonDown : 0);
+        int rDown = (now & R_TRIG) != 0;
+        int pressed = rDown && !s_prevRDown;
+        int manual = (inX > 12 || inX < -12 || inY > 12 || inY < -12);
+        int grapple = (movekit_state() & 8) != 0;
+
+        s_prevRDown = rDown;
+        s_prevOvlButtons = gfx_ovl_buttons;
+
+        if (grapple) {
+            s_follow_on = 0;
+            s_snap_armed = 0;
+        } else {
+            switch (s_follow_mode) {
+                case CAM_FOLLOW_HOLD:
+                    s_follow_on = rDown;
+                    s_snap_armed = 0;
+                    break;
+                case CAM_FOLLOW_SNAP:
+                    if (pressed) {
+                        s_snap_armed = 1;
+                        s_yawVel = 0.0f;
+                    }
+                    if (manual) {
+                        s_snap_armed = 0;
+                    }
+                    s_follow_on = 0;
+                    break;
+                case CAM_FOLLOW_TOGGLE:
+                default:
+                    if (pressed) {
+                        s_follow_on = !s_follow_on;
+                        s_yawVel = 0.0f;
+                    }
+                    s_snap_armed = 0;
+                    break;
+            }
         }
+        s_spring = (s_follow_on || s_snap_armed) ? 1 : 0;
     }
 
     if (s_yawHintOn) {
@@ -562,13 +856,24 @@ void custom_camera_update(struct Camera *c) {
         /* s_yaw is the look yaw; a camera behind Mario looks along his facing. */
         s16 behind = gMarioState->faceAngle[1];
         float diff = (float)(s16)(behind - s_yaw);
-        s_yawVel += diff * 0.20f;
-        s_yawVel *= 0.82f;
+        float k = 0.20f * (s_spring_stiff_pct / 100.0f);
+        float d = 1.0f - 0.18f * (s_spring_damp_pct / 100.0f);
+        if (d < 0.30f) d = 0.30f;
+        if (d > 0.995f) d = 0.995f;
+        s_yawVel += diff * k;
+        s_yawVel *= d;
         s_yaw = (s16)(s_yaw + (s16)s_yawVel);
-        if (fabsf(diff) < 80.0f && fabsf(s_yawVel) < 40.0f) {
+        /* TOGGLE/HOLD keep springing so he can turn; SNAP lets go once behind. */
+        if (s_follow_mode == CAM_FOLLOW_SNAP
+            && !s_follow_on
+            && fabsf(diff) < 80.0f && fabsf(s_yawVel) < 40.0f) {
+            s_snap_armed = 0;
             s_spring = 0;
             s_yawVel = 0.0f;
             s_yaw = behind;
+        }
+        if (s_follow_mode == CAM_FOLLOW_HOLD && !s_follow_on) {
+            s_yawVel = 0.0f;
         }
     } else if (inY > 12 || inY < -12) {
         // stick is being used: no auto recentre
@@ -667,4 +972,29 @@ void custom_camera_update(struct Camera *c) {
     gLakituState.yaw = calculate_yaw(target, s_pos);
     c->yaw = gLakituState.yaw;
     c->nextYaw = c->yaw;
+
+    /* Cam-stick telemetry (adb: logcat -s SM64CamStick).  Only while there is
+     * stick or follow activity, and only every 4th frame, so a quiet session
+     * costs nothing and a held stick gives a clean per-frame yaw rate. */
+    {
+        int active = (gfx_ovl_analog && gfx_ovl_right_active) || s_spring;
+        int dyaw = (int)(s16)(s_yaw - s_logPrevYaw);
+        s_logPrevYaw = s_yaw;
+        if (active) {
+            s_logThrottle = 3;
+        }
+        if (active || s_logThrottle > 0) {
+            if (s_logThrottle == 0) {
+                __android_log_print(ANDROID_LOG_INFO, "SM64CamStick",
+                        "CamStick in=%d,%d yaw=%d dyaw=%d pitch=%d spring=%d rmode=%d "
+                        "hold=%d snap=%d stiff=%.0f damp=%.0f",
+                        inX, inY, (int) s_yaw, dyaw, (int) s_pitch, s_spring,
+                        s_follow_mode, s_follow_on, s_snap_armed,
+                        s_spring_stiff_pct, s_spring_damp_pct);
+                s_logThrottle = 3;
+            } else {
+                s_logThrottle--;
+            }
+        }
+    }
 }

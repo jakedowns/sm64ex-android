@@ -468,6 +468,55 @@ writes stills plus `results.tsv` to
 **Known mismatch, drawn on purpose:** the attach ray starts at the camera, not
 at the gun. The fan's apex is therefore behind Mario's head, and the view draws
 the hand → point leg separately so the offset is visible instead of hidden.
+### Cam stick: response curve, radial heatmap and R-shoulder follow
+
+The right-hand analog camera stick has a user-editable response curve, drawn as
+a radial heatmap inside its base circle. Three pieces share one representation
+(`StickCurve.java` / `customcam.c`), so the graph, the heatmap and the actual
+camera can never disagree:
+
+- **Curve**: five points from (0,0) to (1,1); the two ends are pinned and the
+  three interior points are draggable in the CAMERA > **CAM STICK** editor.
+  `x` is clamped between the neighbours and `y` between their values, so the
+  curve is monotonic and cannot invert. Interpolation is Fritsch-Carlson
+  monotone cubic Hermite — the tangent limiting from
+  [Monotone cubic interpolation](https://en.wikipedia.org/wiki/Monotone_cubic_interpolation)
+  (as in Heckbert's variant, described in
+  [Smooth monotonic interpolation](https://signalsmith-audio.co.uk/writing/2021/monotonic-smooth-interpolation/)).
+  `RESET LINEAR` restores a straight line.
+- **Heatmap**: while the stick is held, the base circle shows the effective
+  output rate as a colour ramp (blue = slow, red = full rate), the deadzone as
+  a dark disc ringed in white (`DZ`) and the response curve as a graph. The
+  bitmap is rebuilt only when the curve changes, so a still stick costs one
+  cached `drawBitmap`.
+- **Vanilla digital C-stick**: in CAMERA MODE = vanilla the stick also sets the
+  digital C-button bits a physical right stick sets (`controller_sdl.c`: one
+  bit per axis past 50 %, both bits on a diagonal), so menus, C-button camera
+  snapping and the C-up look camera behave like a real N64 pad. `C-DIGITAL`
+  toggles it.
+- **R shoulder**: `R MODE` picks between `TOGGLE FOLLOW` (tap R: the camera
+  springs behind Mario and keeps following his forward vector until R is
+  tapped again, then holds the offset), `HOLD TO FOLLOW` (only while R is
+  down) and `SNAP+RELEASE` (tap R snaps behind, any cam-stick input releases).
+  The spring only steers yaw, so distance, WALL NOCLIP and OCCLUSION are
+  untouched. `R spring` / `R damping` (default 100/100) tune it.
+
+| fx | meaning | default |
+|---|---|---|
+| 290 | curve enable | 1 |
+| 291 | deadzone, % of the stick radius | 10 |
+| 292 | heatmap enable | 1 |
+| 293/294/295 | interior point n packed `(x<<8)\|y`, 0-255 each | linear |
+| 296 | R spring stiffness, % | 100 |
+| 297 | R damping, % | 100 |
+| 298 | R mode: 0 toggle, 1 hold, 2 snap+release | 0 |
+| 299 | vanilla digital C-stick | 1 |
+
+`cmd dump` reports `camstick:` in the runtime report; the native side logs
+`SM64CamStick` lines (shaped input, per-frame yaw delta, spring state, and the
+vanilla C-bit mask) while the stick or the follow is active. Headless driving:
+`adb shell $B --es cmd pad2 --ei rx 90 --ei ry 0 --ei ms 500`. Reference and
+measured response pairs: `/media/share/tmp/artifacts/sm64/camstick/`.
 
 ---
 

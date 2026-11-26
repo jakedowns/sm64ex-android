@@ -4,6 +4,7 @@
 #include <ultra64.h>
 #include <PR/ultratypes.h>
 #include <PR/gbi.h>
+#include <android/log.h>
 
 #include "config.h"
 #include "sm64.h"
@@ -312,6 +313,40 @@ static void touchscreen_read(OSContPad *pad) {
         }
     }
     pad->button |= (u16)(gfx_ovl_buttons & 0xFFFFu);
+
+    /* Vanilla camera mode: the on-screen cam stick IS the right stick, so it
+     * must set the same digital C-button bits a physical right stick sets in
+     * controller_sdl.c (>50% of full deflection, diagonals included).  That
+     * is what makes menus, C-button camera snapping and the C-up look camera
+     * behave like a real N64 pad.  Analog camera modes keep the smooth analog
+     * feed (camera.c / customcam.c), and fx 299 turns this off for A/B tests. */
+    {
+        extern int gfx_cam_mode;
+        extern int custom_camera_cstick_digital_on(void);
+        extern void custom_camera_stick_shape2(int *x, int *y);
+        static unsigned int sPrevCbits;
+        unsigned int cbits = 0;
+
+        if (gfx_cam_mode == 0 && gfx_ovl_analog && gfx_ovl_right_active
+            && custom_camera_cstick_digital_on()) {
+            int rx = gfx_ovl_right_x, ry = gfx_ovl_right_y;
+            custom_camera_stick_shape2(&rx, &ry);
+            if (rx > 50) cbits |= R_CBUTTONS;
+            else if (rx < -50) cbits |= L_CBUTTONS;
+            if (ry > 50) cbits |= U_CBUTTONS;
+            else if (ry < -50) cbits |= D_CBUTTONS;
+        }
+        if (cbits != sPrevCbits) {
+            __android_log_print(ANDROID_LOG_INFO, "SM64CamStick",
+                    "CamStick cst=0x%04X %s%s%s%s", cbits,
+                    (cbits & U_CBUTTONS) ? "U" : "",
+                    (cbits & D_CBUTTONS) ? "D" : "",
+                    (cbits & L_CBUTTONS) ? "L" : "",
+                    (cbits & R_CBUTTONS) ? "R" : "");
+            sPrevCbits = cbits;
+        }
+        pad->button |= cbits;
+    }
     if (gfx_ovl_active) {
         pad->stick_x = (s8)gfx_ovl_stick_x;
         pad->stick_y = (s8)gfx_ovl_stick_y;

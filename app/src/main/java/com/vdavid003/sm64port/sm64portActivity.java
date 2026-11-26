@@ -404,6 +404,15 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         if (overlayAlphaPct > 100) overlayAlphaPct = 100;
         Log.i(TAG, "overlay opacity restored: " + overlayAlphaPct + "%");
 
+        /* Cam-stick curve, deadzone, R-follow settings: restore and push to
+         * native before the panel is built (the panel sliders read them). */
+        try {
+            StickCurve.load(this);
+            Log.i(TAG, "camstick restored: " + StickCurve.describe());
+        } catch (Throwable t) {
+            Log.w(TAG, "camstick restore failed", t);
+        }
+
         /* QUICK DEV boots before the SDL thread starts native main(), so this is
          * the safe place to hand the persisted toggle to the engine. */
         try {
@@ -1728,6 +1737,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addCamSlider("HDT strength", 0, 200, hdtStrength, " %", 43);
         addCamSlider("Pivot height", 0, 200, gyroPivot, " cm", 45);
         addCamSlider("Gyro strength", 0, 200, gyroStrength, " %", 44);
+        addCamStickControls();
         addCamButton("ASPECT TEST", () -> nativePtcCommand("aspecttest"));
         camStatusView = new TextView(this);
         camStatusView.setTextSize(14);
@@ -2656,6 +2666,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         b.append("cameraMode: ").append(camModeLabel())
          .append(" hdt=").append(hdtOn).append(" gyro=").append(gyroOn)
          .append(" stereo3d=").append(stereoOn).append('\n');
+        b.append("camstick: ").append(StickCurve.describe()).append('\n');
         b.append("gameHud=").append(gameHudOn).append(" captions=").append(debugCapsOn)
          .append(" touch=").append(touchCtlOn).append('\n');
         if (!stereoValues.isEmpty()) {
@@ -3898,6 +3909,167 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         }
     }
 
+    /* ------------------------------------------------------------------ *
+     * CAM STICK: draggable response curve, deadzone, radial heatmap and the
+     * R-shoulder spring/follow behaviours.  All state lives in StickCurve so
+     * the panel, the on-screen heatmap and the native camera share it.
+     * Native keys: fx 290-299 (see StickCurve / customcam.c).
+     * ------------------------------------------------------------------ */
+    private StickCurveView camStickView;
+    private TextView camStickToggle, camStickHeatToggle, camStickDigToggle;
+    private TextView camStickRButton, camStickDzLabel, camStickSpringLabel;
+    private TextView camStickDampLabel;
+    private boolean camStickUpdating;
+
+    private void addCamStickControls() {
+        TextView head = new TextView(this);
+        head.setTextSize(15);
+        head.setTextColor(0xFFAACCFF);
+        head.setPadding(dp(4), dp(10), dp(4), dp(2));
+        head.setText("CAM STICK: curve, deadzone, R-follow");
+        controls.addView(head);
+
+        camStickView = new StickCurveView(this);
+        controls.addView(camStickView, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(230)));
+        {
+            LinearLayout row = addRow();
+            camStickToggle = addActionCell(row, "CURVE: ON", () -> {
+                StickCurve.setEnabled(!StickCurve.enabled);
+                refreshCamStickPanel();
+                refreshTouchOverlay();
+                Log.i(TAG, "CAMSTICK " + StickCurve.describe());
+            });
+            camStickHeatToggle = addActionCell(row, "HEATMAP: ON", () -> {
+                StickCurve.setHeatmap(!StickCurve.heatmap);
+                refreshCamStickPanel();
+                Log.i(TAG, "CAMSTICK " + StickCurve.describe());
+            });
+            camStickDigToggle = addActionCell(row, "C-DIGITAL: ON", () -> {
+                StickCurve.cstickDigital = !StickCurve.cstickDigital;
+                StickCurve.applyCstickDigital();
+                refreshCamStickPanel();
+                Log.i(TAG, "CAMSTICK vanilla C-stick digital=" + StickCurve.cstickDigital);
+            });
+        }
+        {
+            LinearLayout row = addRow();
+            camStickRButton = addActionCell(row, "R MODE", () -> {
+                StickCurve.setRMode((StickCurve.rMode + 1) % 3);
+                refreshCamStickPanel();
+                Log.i(TAG, "CAMSTICK R mode=" + StickCurve.rMode);
+            });
+            addActionCell(row, "RESET LINEAR", () -> {
+                StickCurve.resetLinear();
+                refreshCamStickPanel();
+                refreshTouchOverlay();
+                Log.i(TAG, "CAMSTICK reset to linear");
+            });
+        }
+
+        camStickDzLabel = addCamStickSlider("Stick deadzone", 0, 60,
+                StickCurve.deadzonePct, " %", KEY_STICK_DZ);
+        camStickSpringLabel = addCamStickSlider("R spring", 10, 300,
+                StickCurve.springPct, " %", KEY_STICK_SPRING);
+        camStickDampLabel = addCamStickSlider("R damping", 40, 200,
+                StickCurve.dampingPct, " %", KEY_STICK_DAMP);
+
+        TextView hint = new TextView(this);
+        hint.setTextSize(12);
+        hint.setTextColor(0xFFAACCFF);
+        hint.setPadding(dp(4), 0, dp(4), dp(6));
+        hint.setText("Drag the three green points; the ends are pinned and the"
+                + " curve is clamped monotonic. RESPONSE draws the same curve as"
+                + " the heatmap in the stick circle. R MODE cycles TOGGLE FOLLOW"
+                + " / HOLD / SNAP+RELEASE (see the R-follow section below).");
+        controls.addView(hint);
+        refreshCamStickPanel();
+    }
+
+    /** fx keys owned by this feature (StickCurve.KEY_BASE + n). */
+    private static final int KEY_STICK_DZ = StickCurve.KEY_BASE + 1;
+    private static final int KEY_STICK_SPRING = StickCurve.KEY_BASE + 6;
+    private static final int KEY_STICK_DAMP = StickCurve.KEY_BASE + 7;
+
+    private TextView addCamStickSlider(String name, int min, int max, int initial,
+                                       String unit, final int key) {
+        final TextView label = new TextView(this);
+        label.setTextColor(Color.WHITE);
+        label.setTextSize(14);
+        label.setText(name + ": " + initial + unit);
+        final SeekBar bar = new SeekBar(this);
+        bar.setMax(max - min);
+        bar.setProgress(initial - min);
+        bar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar sb, int progress, boolean fromUser) {
+                if (!fromUser || camStickUpdating) {
+                    return;
+                }
+                int v = progress + min;
+                label.setText(name + ": " + v + unit);
+                if (key == KEY_STICK_DZ) {
+                    StickCurve.setDeadzone(v);
+                } else if (key == KEY_STICK_SPRING) {
+                    StickCurve.setSpring(v);
+                } else {
+                    StickCurve.setDamping(v);
+                }
+                refreshTouchOverlay();
+            }
+            @Override public void onStartTrackingTouch(SeekBar sb) {}
+            @Override public void onStopTrackingTouch(SeekBar sb) {}
+        });
+        addToGrid(label, bar);
+        return label;
+    }
+
+    /** Re-label the cam-stick controls after a programmatic change. */
+    void refreshCamStickPanel() {
+        camStickUpdating = true;
+        if (camStickToggle != null) {
+            camStickToggle.setText("CURVE: " + (StickCurve.enabled ? "ON" : "OFF"));
+            camStickToggle.setTextColor(StickCurve.enabled ? 0xFF66FF99 : 0xFF888888);
+        }
+        if (camStickHeatToggle != null) {
+            camStickHeatToggle.setText("HEATMAP: " + (StickCurve.heatmap ? "ON" : "OFF"));
+            camStickHeatToggle.setTextColor(StickCurve.heatmap ? 0xFF66FF99 : 0xFF888888);
+        }
+        if (camStickDigToggle != null) {
+            camStickDigToggle.setText("C-DIGITAL: " + (StickCurve.cstickDigital ? "ON" : "OFF"));
+            camStickDigToggle.setTextColor(
+                    StickCurve.cstickDigital ? 0xFF66FF99 : 0xFF888888);
+        }
+        if (camStickRButton != null) {
+            final String[] names = { "TOGGLE FOLLOW", "HOLD TO FOLLOW", "SNAP+RELEASE" };
+            camStickRButton.setText("R MODE: " + names[StickCurve.rMode]);
+        }
+        if (camStickDzLabel != null) {
+            camStickDzLabel.setText("Stick deadzone: " + StickCurve.deadzonePct + " %");
+        }
+        if (camStickSpringLabel != null) {
+            camStickSpringLabel.setText("R spring: " + StickCurve.springPct + " %");
+        }
+        if (camStickDampLabel != null) {
+            camStickDampLabel.setText("R damping: " + StickCurve.dampingPct + " %");
+        }
+        camStickUpdating = false;
+        if (camStickView != null) {
+            camStickView.invalidate();
+        }
+    }
+
+    /** Bridge for StickCurve.pushNative() (nativeSetSSFX is private here). */
+    void stickFx(int key, int value) {
+        nativeSetSSFX(key, value);
+    }
+
+    void refreshTouchOverlay() {
+        if (touchOverlay != null) {
+            touchOverlay.invalidate();
+        }
+    }
+
     private void applyFxToggle(TextView b, String name, int key, boolean on) {
         b.setText(name + ": " + (on ? "ON" : "OFF"));
         b.setTextColor(on ? 0xFF66FF99 : 0xFF888888);
@@ -5033,6 +5205,17 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                     () -> nativeOverlayInput(1, sx, sy, 0), dur);
             Log.i(TAG, "PAD sx=" + sx + " sy=" + sy + " btn=0x"
                     + Integer.toHexString(buttons) + " ms=" + dur);
+        });
+    }
+
+    /** Pulse the on-screen CAM stick (analog camera stick) for headless tests. */
+    void debugPad2(int rx, int ry, int ms) {
+        final int dur = ms <= 0 ? 240 : ms;
+        runOnUiThread(() -> {
+            nativeOverlayStick2(rx, ry, 1);
+            new android.os.Handler(getMainLooper()).postDelayed(
+                    () -> nativeOverlayStick2(rx, ry, 0), dur);
+            Log.i(TAG, "PAD2 rx=" + rx + " ry=" + ry + " ms=" + dur);
         });
     }
 
