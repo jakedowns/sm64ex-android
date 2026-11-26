@@ -556,11 +556,59 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         captionOverlay.setSizePct(captionSizePct);
         captionOverlay.setOpacityPct(captionOpacityPct);
         captionOverlay.setVisibility(forceHudHidden ? View.GONE : View.VISIBLE);
-        layout.addView(captionOverlay, new RelativeLayout.LayoutParams(
+        RelativeLayout.LayoutParams lp = new RelativeLayout.LayoutParams(
                 RelativeLayout.LayoutParams.MATCH_PARENT,
-                RelativeLayout.LayoutParams.MATCH_PARENT));
+                RelativeLayout.LayoutParams.MATCH_PARENT);
+        /* Insert directly above the game surface, never at the end: a re-attach
+         * must not put the caption above the debug panel or the feedback bar
+         * (drawing order is child order in this RelativeLayout). */
+        int leiaIdx = leiaView != null ? layout.indexOfChild(leiaView) : -1;
+        if (leiaIdx >= 0) {
+            layout.addView(captionOverlay, leiaIdx + 1, lp);
+        } else {
+            layout.addView(captionOverlay, lp);
+        }
         weaverLog("CaptionOverlay attached (" + (captionJavaOn ? "JAVA" : "GAME FONT")
-                + " size=" + captionSizePct + "% opacity=" + captionOpacityPct + "%)");
+                + " size=" + captionSizePct + "% opacity=" + captionOpacityPct + "%)"
+                + " parent=" + layout.getClass().getSimpleName()
+                + " idx=" + layout.indexOfChild(captionOverlay) + "/" + layout.getChildCount()
+                + " native=" + captionNativeMode());
+    }
+
+    /** Native caption owner, -2 if the call fails (never throws into a log). */
+    private int captionNativeMode() {
+        try {
+            return nativeGetCaptionMode();
+        } catch (Throwable t) {
+            return -2;
+        }
+    }
+
+    /**
+     * Make sure the caption view exists and is attached to the current layout.
+     * onResume, setStereoMode and `cmd captions` call this so a Leia/3D surface
+     * change, an activity recreation or a replaced layout cannot leave the
+     * overlay detached while the native glyphs stay suppressed (or vice versa).
+     */
+    private void ensureCaptionOverlay() {
+        if (!(mLayout instanceof ViewGroup)) {
+            return;
+        }
+        ViewGroup layout = (ViewGroup) mLayout;
+        if (captionOverlay != null && captionOverlay.getParent() == layout) {
+            return;
+        }
+        if (captionOverlay != null) {
+            Log.w(TAG, "caption overlay was detached from "
+                    + (captionOverlay.getParent() == null
+                        ? "no parent" : captionOverlay.getParent().getClass().getSimpleName())
+                    + "; re-attaching");
+            if (captionOverlay.getParent() instanceof ViewGroup) {
+                ((ViewGroup) captionOverlay.getParent()).removeView(captionOverlay);
+            }
+            captionOverlay = null;
+        }
+        installCaptionOverlay(layout);
     }
 
     private void initLeia() throws Exception {
@@ -752,7 +800,19 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         }, 200);
 
         leiaView.setSingleViewMode(false);
-        weaverLog("setSingleViewMode(false); initLeia complete");
+        /* The interlacer is now bound in its 3D mode; re-assert caption
+         * ownership as the last step so nothing in the Leia/3D setup can
+         * leave the native glyphs in charge. The caption view keeps its slot
+         * directly above the game surface, so touch controls, the feedback
+         * bar and the debug panel all still draw over it. */
+        nativeSetCaptionMode(captionJavaOn ? 1 : 0);
+        if (captionOverlay != null) {
+            captionOverlay.setJavaMode(captionJavaOn);
+        }
+        weaverLog("setSingleViewMode(false); initLeia complete; CAPTIONS "
+                + (captionJavaOn ? "JAVA" : "GAME FONT")
+                + " native=" + captionNativeMode()
+                + " overlay=" + (captionOverlay != null ? 1 : 0));
     }
 
     private void weaverLog(String message) {
@@ -4097,19 +4157,25 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         captionJavaOn = on < 0 ? !captionJavaOn : on != 0;
         nativeSetCaptionMode(captionJavaOn ? 1 : 0);
         try {
+            /* commit(), not apply(): the shell path can force-stop immediately
+             * after the broadcast and an async write would be lost, which is
+             * how a 3D capture came back in GAME FONT after a restart. */
             getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
-                    .putBoolean(PREF_CAPTION_JAVA, captionJavaOn).apply();
+                    .putBoolean(PREF_CAPTION_JAVA, captionJavaOn).commit();
         } catch (Throwable t) {
             Log.w(TAG, "CAPTIONS pref not saved", t);
         }
         final boolean java = captionJavaOn;
         runOnUiThread(() -> {
+            ensureCaptionOverlay();
             if (captionOverlay != null) {
                 captionOverlay.setJavaMode(java);
             }
             refreshCaptionsUi();
         });
-        Log.i(TAG, "CAPTIONS " + (captionJavaOn ? "JAVA" : "GAME FONT"));
+        Log.i(TAG, "CAPTIONS " + (captionJavaOn ? "JAVA" : "GAME FONT")
+                + " native=" + captionNativeMode()
+                + " overlay=" + (captionOverlay != null ? 1 : 0));
     }
 
     private void setCaptionSizePct(int pct) {
@@ -5708,7 +5774,19 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         if (leiaView != null) {
             leiaView.setSingleViewMode(!on);
         }
-        Log.i(TAG, "stereo mode " + (on ? "3D" : "2D"));
+        /* 3D/2D switches the Leia surface between woven and single-view; that
+         * path is where caption ownership was observed to fall back to the
+         * game font (the overlay was still JAVA). Re-assert it right here so
+         * the switch cannot change who draws the text in either direction. */
+        nativeSetCaptionMode(captionJavaOn ? 1 : 0);
+        ensureCaptionOverlay();
+        if (captionOverlay != null) {
+            captionOverlay.setJavaMode(captionJavaOn);
+        }
+        Log.i(TAG, "stereo mode " + (on ? "3D" : "2D")
+                + " captions=" + (captionJavaOn ? "JAVA" : "GAME FONT")
+                + " native=" + captionNativeMode()
+                + " overlay=" + (captionOverlay != null ? 1 : 0));
     }
 
     private void startDebugReadout(LinearLayout panel) {
@@ -5982,6 +6060,19 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         }
         if (leiaView != null) reapplySourceSize();
         applyPanelRefresh(fpsMode == 0 ? 30 : fpsMode == 1 ? 60 : 120);
+        /* The game/Leia surface can be recreated around a resume (and the
+         * native statics with it), so re-assert caption ownership here and
+         * make sure the overlay is still in the live layout. */
+        nativeSetCaptionMode(captionJavaOn ? 1 : 0);
+        ensureCaptionOverlay();
+        if (captionOverlay != null) {
+            captionOverlay.setJavaMode(captionJavaOn);
+            captionOverlay.setSizePct(captionSizePct);
+            captionOverlay.setOpacityPct(captionOpacityPct);
+        }
+        Log.i(TAG, "CAPTIONS resume: " + (captionJavaOn ? "JAVA" : "GAME FONT")
+                + " native=" + captionNativeMode()
+                + " overlay=" + (captionOverlay != null ? 1 : 0));
     }
 
     @Override
@@ -6472,6 +6563,10 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
 
     void debugDump() {
         runOnUiThread(() -> {
+            /* First and unconditional: caption ownership is the thing that
+             * cannot be checked from a screenshot when the wrong font is
+             * showing, and it must print even with no caption active. */
+            Log.i(TAG, captionsDebugLine());
             Log.i(TAG, "DUMP drawable=" + nativeGetDrawableWidth() + "x" + nativeGetDrawableHeight()
                     + " eyeW=" + nativeGetEyeWidth() + " st=" + nativeGetStereoEnabled()
                     + " fps=" + nativeGetFps()
@@ -6518,19 +6613,73 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                     + " range=" + nativeGetShadow(8) + " dbg=" + nativeGetShadow(11)
                     + " fb=" + FeedbackOutbox.count(this));
             Log.i(TAG, nativePtcStatus());
-            /* Caption strings reach scripts without a screenshot: the native
-             * publisher is the same one the overlay reads. */
-            Log.i(TAG, "CAPTIONS mode=" + (captionJavaOn ? "java" : "game")
-                    + " native=" + nativeGetCaptionMode()
-                    + " size=" + captionSizePct + " opacity=" + captionOpacityPct
-                    + " main=\"" + nativeGetCaptionText(0) + "\""
-                    + " small=\"" + nativeGetCaptionText(1) + "\"");
             if (touchOverlay != null) {
                 Log.i(TAG, "LAYOUT " + touchOverlay.statusLine());
             }
             Log.i(TAG, "UNCAPPED_TEST=" + nativeGetUncappedTest());
             logPanelMetrics();
         });
+    }
+
+    /**
+     * One line that answers "who is drawing the captions right now".
+     *
+     * Unlike the rest of `cmd dump` it reads nothing else, guards every JNI
+     * call, and prints even when both caption strings are empty. It also
+     * reports where the overlay sits in the live view tree (attached, visible,
+     * child index, and the Leia view's index) so a 3D layering problem is
+     * visible in logcat instead of guessed from a screenshot.
+     */
+    private String captionsDebugLine() {
+        String main = "";
+        String small = "";
+        int nativeMode;
+        try {
+            nativeMode = nativeGetCaptionMode();
+        } catch (Throwable t) {
+            nativeMode = -2;
+        }
+        try {
+            main = nativeGetCaptionText(0);
+        } catch (Throwable t) {
+            main = "<err>";
+        }
+        try {
+            small = nativeGetCaptionText(1);
+        } catch (Throwable t) {
+            small = "<err>";
+        }
+
+        int vis = -1, idx = -1, count = -1, leiaIdx = -2, panelIdx = -2;
+        String parent = "none";
+        if (captionOverlay != null) {
+            vis = captionOverlay.getVisibility();
+            android.view.ViewParent p = captionOverlay.getParent();
+            if (p instanceof ViewGroup) {
+                ViewGroup vg = (ViewGroup) p;
+                parent = vg.getClass().getSimpleName();
+                idx = vg.indexOfChild(captionOverlay);
+                count = vg.getChildCount();
+            }
+        }
+        if (leiaView != null) {
+            android.view.ViewParent p = leiaView.getParent();
+            leiaIdx = (p instanceof ViewGroup) ? ((ViewGroup) p).indexOfChild(leiaView) : -1;
+        }
+        if (tuningPanelView != null) {
+            android.view.ViewParent p = tuningPanelView.getParent();
+            panelIdx = (p instanceof ViewGroup) ? ((ViewGroup) p).indexOfChild(tuningPanelView) : -1;
+        }
+        return "CAPTIONS mode=" + (captionJavaOn ? "java" : "game")
+                + " native=" + nativeMode
+                + " size=" + captionSizePct + " opacity=" + captionOpacityPct
+                + " stereo3d=" + (stereoOn ? 1 : 0)
+                + " build=" + buildBranch()
+                + " overlay=" + (captionOverlay != null ? 1 : 0)
+                + " vis=" + vis + " idx=" + idx + "/" + count
+                + " parent=" + parent
+                + " leiaIdx=" + leiaIdx + " panelIdx=" + panelIdx
+                + " main=\"" + main + "\" small=\"" + small + "\"";
     }
 
     /**

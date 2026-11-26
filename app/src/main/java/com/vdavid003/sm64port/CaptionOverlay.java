@@ -6,6 +6,7 @@ import android.graphics.Paint;
 import android.graphics.Typeface;
 import android.os.Handler;
 import android.os.Looper;
+import android.util.Log;
 import android.view.View;
 
 /**
@@ -25,6 +26,7 @@ import android.view.View;
  * GAME FONT when a shot has to carry the caption text.
  */
 class CaptionOverlay extends View {
+    private static final String TAG = "SM64Leia";
     /** 66 ms ≈ 15 Hz: fast enough for a caption change, cheap enough to idle. */
     private static final long POLL_MS = 66;
 
@@ -48,6 +50,7 @@ class CaptionOverlay extends View {
     private String smallText = "";
     private int mainX = 160, mainY = 160, mainScaleMilli = 500;
     private int smallX = 160, smallY = 160, smallScaleMilli = 250;
+    private int modeReasserts;
 
     private final Runnable poll = new Runnable() {
         @Override
@@ -135,7 +138,46 @@ class CaptionOverlay extends View {
         super.onDetachedFromWindow();
     }
 
+    /**
+     * Keep the native draw suppression in sync with this view's mode.
+     *
+     * The flag lives in the game's statics and is normally set by the activity,
+     * but a Leia/3D surface change (or a restarted engine) can leave it at the
+     * game-font default while the overlay still thinks it owns the text. That
+     * is the 3D regression: the caption reappeared in HUD glyphs while
+     * captions were set to JAVA. Re-asserting here is one integer comparison
+     * per poll, converges within 66 ms, and also turns suppression back OFF
+     * when GAME FONT is selected, so the two can never disagree.
+     */
+    private void syncNativeMode() {
+        int want = javaMode ? 1 : 0;
+        int have;
+        try {
+            have = sm64portActivity.nativeGetCaptionMode();
+        } catch (Throwable t) {
+            return;
+        }
+        if (have == want) {
+            return;
+        }
+        try {
+            sm64portActivity.nativeSetCaptionMode(want);
+        } catch (Throwable t) {
+            return;
+        }
+        modeReasserts++;
+        /* First fix is interesting; afterwards only a heartbeat so a logcat
+         * tail is not flooded by a persistent mismatch. */
+        if (modeReasserts == 1 || (modeReasserts % 150) == 0) {
+            Log.w(TAG, "CAPTIONS native mode " + have + " != " + want
+                    + " -> re-asserted " + want + " count=" + modeReasserts);
+        }
+    }
+
     private void pollOnce() {
+        /* Runs in both modes: JAVA re-suppresses the native glyphs, GAME FONT
+         * re-enables them. Checked before the early return. */
+        syncNativeMode();
         if (!javaMode || getWindowVisibility() != VISIBLE) {
             return;
         }

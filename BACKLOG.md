@@ -101,6 +101,21 @@ space at zero parallax, so it does not follow the UI-depth / UI-size / UI-box
 stereo sliders the way the native caption inside the UI pass did; at the
 default 0 px / 100 % they coincide.
 
+**3D follow-up (2026-11-26).** A 3D capture showed the game font again while
+captions were set to JAVA. The 3D shots came from a different APK than the 2D
+one (branch label `HEAD` vs `master`) and had no `CAPTIONS` dump line at all,
+i.e. that run did not have the feature; but three real weak points were fixed
+anyway: `caption_java` was written with `apply()` (a force-stop right after the
+command could lose it, so a restart read the old GAME FONT), the native flag was
+only set in `onCreate` (a Leia/3D surface change or recreated engine could leave
+it at 0), and the overlay poll now compares `nativeGetCaptionMode()` against its
+own mode every 66 ms and re-asserts it — so the two can never disagree. The
+mode is also re-applied in `onResume`, in `setStereoMode` and at the end of
+`initLeia`, the overlay re-attaches if it is no longer in the live layout, `cmd
+captions` commits the pref, and `cmd dump`'s first line is now unconditional:
+`CAPTIONS mode=… native=… stereo3d=… build=… overlay=… vis=… idx=…/… parent=…
+leiaIdx=… panelIdx=… main="…" small="…"`.
+
 Still to capture on hardware: JAVA vs GAME FONT at one fixed caption (PTC level
 38, e.g. `ptc light show` or `ptc momentum`), each in 2D and over the Leia 3D
 view, plus one panel-open still to prove the overlay sits below the panel.
