@@ -430,6 +430,45 @@ whole-wall hide is suppressed while OCCLUSION is on, so the wall stays visible
 and the circular hole is the only mechanism. Proof stills (four modes, stereo
 and camwall) live in `/media/share/tmp/artifacts/sm64/occlusion/`.
 
+### Grapple targeting debug view (ENH > MOVE)
+
+Shows what a grapple press would do **right now**: the targeting fan, the
+surface point it would hook, that surface's normal, and the distance, coloured
+green (would attach), amber (surface exists but is past the range) or red (no
+surface). Off by default; `fx 310 1`, or **GRAPPLE TARGET VIEW** on ENH > MOVE.
+
+The view and the attach share one resolver in `movekit.c`:
+
+- The **axis ray** is cast first from `gLakituState.pos` along
+  `focus - pos` with `range` length. That is the historical attach path,
+  unchanged, and it wins unconditionally.
+- Only if the axis misses are rings of samples cast **inside the fan
+  half-angle** (inner ring at ½ the angle first, nearest hit wins). A press
+  therefore resolves exactly where the view points.
+- The surface filter is the attach's own: `find_surface_on_ray` with
+  `surf->object == NULL`. No second raycast implementation exists.
+- The **aim ray starts at the camera, not at the gun** (see below). The view
+  draws that ray plus a dim hand → point leg, which is the rope the attach will
+  actually draw, so the two origins are both visible.
+
+Dials: `310` view, `311` half-angle x0.1 deg (`0` = old single-ray behaviour),
+`312` ring rays, `313` HUD line (green debug line: yaw/pitch, fan, winning ray
+angle, distance, point), `314` range units, `315` out-of-range probe
+multiplier. `cmd dump` appends
+`grp=on,status,ray_deg,dist,x,y,z` (status 0 none, 1 would attach, 2 out of
+range; `dist` is the surface distance). Geometry is world space, inside the
+scene part of the master display list, so it is correct in 2D and stereo.
+
+Reproduce the whole visual check in one device-lock hold with
+`scripts/grapple-debug-test.sh` (it drives `ptc gdbg1`-`gdbg4`, fixed-camera
+rigs for wall / sky / out-of-range / oblique, and the fire comparison) and
+writes stills plus `results.tsv` to
+`/media/share/tmp/artifacts/sm64/grapple-debug/`.
+
+**Known mismatch, drawn on purpose:** the attach ray starts at the camera, not
+at the gun. The fan's apex is therefore behind Mario's head, and the view draws
+the hand → point leg separately so the offset is visible instead of hidden.
+
 ---
 
 ## Controls
@@ -481,6 +520,7 @@ while the UI range is replayed so the HUD does not sway.
 | Crepuscular rays | **off** (opt-in) | RAYS tab / `cmd toggle --es name RAYS` |
 | Occluder punch-through | **off** (mode 0) | CAMERA > SETTINGS / `fx 274` |
 | Tone map + colour grade | **off** (opt-in) | GRADE tab / `fx 280` |
+| Grapple targeting debug view | **off** | ENH > MOVE / `fx 310` |
 | MXAO / C.DOF / SSGI | off | their tabs |
 
 - **Stay in level after a star** (default on): normal stars take the vanilla
@@ -753,6 +793,7 @@ active profile). Positions are normalised (0..1) and sizes are multipliers of
 a 1600-px reference radius, so a profile survives a different panel resolution.
 | tone map + grading (GRADE) | `280` master (default **off**), `281` tonemap (0 linear, 1 Reinhard, 2 ACES, 3 filmic), `282` exposure EV×100, `283` white point % (100-400), `284` look (0 none, 1 sepia, 2 cool, 3 warm, 4 bleach, 5 cel, 6 LUT), `285` look strength %, `286` saturation %, `287` contrast %, `288` tint (-cool/+warm), `289` split pre/post debug |
 | painting ripple | `350` interpolate the rippling painting's mesh on presented frames (default **on**); `0` restores the old per-sim-tick stepping for A/B captures |
+| grapple targeting debug | `310` view on (default **off**), `311` fan half-angle x0.1 deg (default `80` = 8.0°), `312` fan ring rays (default 8), `313` HUD line (default off), `314` range in world units (default 3400), `315` out-of-range probe x0.1 (default `40` = 4x) |
 
 The denoiser runs at 1/4 resolution by default: the scene colour and depth are
 downsampled to `scene_res/4`, 1-3 edge-aware à-trous passes run there, and a

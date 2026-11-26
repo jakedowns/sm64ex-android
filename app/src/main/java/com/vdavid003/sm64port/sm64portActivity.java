@@ -1781,6 +1781,12 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addEnhSlider("Wallrun relax ticks", 0, 30, 5, v -> nativeSetSSFX(323, v));
         addEnhToggle("GRAPPLE (L)", 4, true);
         addEnhToggle("JETPACK (L)", 5, false);
+        addEnhSection("GRAPPLE DEBUG");
+        addEnhFxToggle("GRAPPLE TARGET VIEW", 310, false);
+        addEnhFxToggle("GRAPPLE HUD LINE", 313, false);
+        addEnhSlider("fan half-angle x0.1 deg", 0, 890, 80, v -> debugFx(311, v));
+        addEnhSlider("fan rays", 2, 16, 8, v -> debugFx(312, v));
+        addEnhSlider("grapple range units", 100, 6000, 3400, v -> debugFx(314, v));
         final TextView fuelUp = new TextView(this);
         fuelUp.setText("FUEL TANK L" + (nativeGetFuelTier() + 1));
         fuelUp.setTextSize(16);
@@ -3325,6 +3331,28 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         });
         addCompact(enhParent(), b);
         nativeSetEnh(key, initial ? 1 : 0);
+        return b;
+    }
+
+    /** Toggle on the ENH page that drives an `fx` key via nativeSetSSFX
+     *  (used by the grapple targeting debug view, fx 310/313). */
+    private TextView addEnhFxToggle(String name, final int key, boolean initial) {
+        final TextView b = new TextView(this);
+        boolean on = nativeGetSSFX(key) != 0;
+        b.setText(name + ": " + (on ? "ON" : "OFF"));
+        b.setTextSize(16);
+        b.setTextColor(on ? 0xFF66FF99 : 0xFF888888);
+        b.setPadding(dp(4), dp(8), dp(4), dp(8));
+        b.setOnClickListener(v -> {
+            boolean now = b.getCurrentTextColor() != 0xFF66FF99;
+            b.setText(name + ": " + (now ? "ON" : "OFF"));
+            b.setTextColor(now ? 0xFF66FF99 : 0xFF888888);
+            debugFx(key, now ? 1 : 0);
+        });
+        addCompact(enhParent(), b);
+        if (on != initial) {
+            debugFx(key, initial ? 1 : 0);
+        }
         return b;
     }
 

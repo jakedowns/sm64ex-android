@@ -2348,6 +2348,13 @@ void gfx_opengl_ssfx_set(int which, int value) {
             gfx_paint_interp = value ? 1 : 0;
             break;
         }
+        /* Grapple targeting debug view: the values live in movekit.c next to
+         * the aim resolver, so the drawn fan and the real attach share them. */
+        case 310: case 311: case 312: case 313: case 314: case 315: {
+            extern void movekit_grapple_debug_set(int which, int value);
+            movekit_grapple_debug_set(which, value);
+            break;
+        }
         default: return;
     }
     __android_log_print(ANDROID_LOG_INFO, "SM64FX",
@@ -2504,6 +2511,10 @@ int gfx_opengl_ssfx_get(int which) {
         case 325: case 326: case 327: case 328: case 329: {
             extern int movekit_dial_get(int which);
             return movekit_dial_get(which);
+        }
+        case 310: case 311: case 312: case 313: case 314: case 315: {
+            extern int movekit_grapple_debug_get(int which);
+            return movekit_grapple_debug_get(which);
         }
     }
     return -1;

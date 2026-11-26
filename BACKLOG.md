@@ -188,8 +188,36 @@ vs `f_light_on` / `c_bloom`.
 
 ---
 
-### Reserved fx key ranges (registered 2026-11-25)
-Parallel agents must not invent ranges. Claim one here before adding dials, and
+### Grapple targeting debug view — shipped 2026-11-25 (worktree `w2-grapple-debug`)
+One resolver in `movekit.c` (`grapple_aim_resolve`) now feeds both the attach
+and a world-space debug view: targeting fan, resolved surface point + normal,
+distance, and a green/amber/red validity colour, plus `grp=` in `cmd dump`
+(`fx 310`-`315`, off by default). The axis ray is cast first and wins, so every
+pre-existing attach point is unchanged; the fan is only a fallback for misses.
+Open follow-ups:
+
+- **The attach ray starts at the camera, not at the gun.** `gLakituState.pos`
+  is the origin, so the hook can attach to something to the side of Mario's
+  muzzle, and the drawn fan apex is behind his head. The view draws the hand →
+  point rope leg next to it, which makes the offset obvious. Moving the origin
+  to the muzzle (the portal gun's approach) is a gameplay change and was not
+  made.
+- **The fan is one ring pair, not a solid cone.** Two rings (½ angle, full
+  angle) at `312` samples each; a surface between spokes can still be missed.
+- **Range is measured from the camera.** `314` tunes the attach range, so it is
+  a gameplay dial, not just a view option.
+- **Device verification is still outstanding.** The first pass built cleanly
+  (`libmain.so` carries the rig + HUD strings) but the tablet's Wi-Fi adb link
+  dropped before the capture batch (`adb devices` empty, host could not route
+  to `192.168.1.207`). Run
+  `AGENT_TABLET_MUTE=1 AGENT_NO_SLEEP=1 scripts/agent-lock.sh device --timeout 900
+  --reason "grapple debug" -- scripts/grapple-debug-test.sh`
+  and check `results.tsv` for `a_wall_valid`/`d_floor_valid` = `grp=1,1,...`,
+  `b_out_of_range` = `grp=1,2,...`, `c_sky_no_surface` = `grp=1,0,...`. The
+  b/d pair is the same pose with `fx 314` changed, so the colour change is
+  isolated.
+
+### Reserved fx key ranges (registered 2026-11-25)Parallel agents must not invent ranges. Claim one here before adding dials, and
 keep a feature inside its block:
 
 | range | owner |

@@ -38,6 +38,17 @@ void movekit_wr_clear(void);
  *  329 along-run tangential bonus %. */
 void movekit_dial_set(int which, int value);
 int movekit_dial_get(int which);
+/** Grapple targeting debug view dials (fx 310-315).
+ *  310 view on/off (default off), 311 fan half-angle in 0.1 deg (default 80),
+ *  312 fan ring samples (default 8), 313 HUD line (default off),
+ *  314 range in world units (default 3400), 315 out-of-range probe x0.1. */
+void movekit_grapple_debug_set(int which, int value);
+int  movekit_grapple_debug_get(int which);
+/** Resolve the current aim with the same query the attach uses.
+ *  Returns 0 no surface, 1 would attach, 2 surface but out of range.
+ *  `dist` is the surface distance, `ray_deg` the winning fan sample's angle
+ *  off the aim axis (0 = centre ray), `hit` the resolved world point. */
+int movekit_grapple_aim_state(float *dist, float *ray_deg, float hit[3]);
 /** Force the "use" trigger on for automated tests (0 = release). */
 void movekit_force_trigger(int on);
 void movekit_force_retract(int on);

@@ -8,6 +8,7 @@
 
 #include <ultra64.h>
 #include <math.h>
+#include <stdio.h>
 
 #include "sm64.h"
 #include "movekit.h"
@@ -122,6 +123,45 @@ static int s_thrusting;      /* jetpack fired this tick */
 static int s_fx_tick;
 static Vec3f s_anchor;
 static Vec3f s_from;
+
+/* ------------------------------------------------- grapple aiming / debug */
+/*
+ * The grapple resolves its anchor through one function (grapple_aim_resolve)
+ * that both the fire path and the targeting debug view call.  The debug view
+ * therefore draws the exact query a press would run: same origin, same range,
+ * same fan, same surface filter.  Nothing here is a second implementation.
+ *
+ * Aim axis: camera position -> camera focus, as it has always been.  The ray
+ * starts at the CAMERA, not at the gun; the debug view draws the hand -> point
+ * leg too, because that is the rope the attach will actually draw.
+ *
+ * Fan: the axis ray is cast first and wins unconditionally, so every shot that
+ * attached before this change still attaches at the same point.  Only when the
+ * axis misses are rings of samples inside the half-angle cast (inner ring
+ * first, nearest hit wins).  `fx 311 0` restores the pure single-ray behaviour.
+ */
+#define GRP_NONE    0   /* nothing within the probe distance */
+#define GRP_ATTACH  1   /* would attach */
+#define GRP_RANGE   2   /* surface exists but is past the range */
+
+static int   s_grp_dbg;                       /* fx 310: view on/off (off) */
+static float s_grp_half_deg = 8.0f;           /* fx 311: half-angle, 0.1 deg */
+static int   s_grp_rays = 8;                  /* fx 312: ring samples */
+static int   s_grp_hud;                       /* fx 313: HUD line (off) */
+static float s_grp_range = GRAPPLE_RANGE;     /* fx 314: range in units */
+static float s_grp_probe = 4.0f;              /* fx 315: probe x0.1, 4.0x */
+
+typedef struct {
+    Vec3f origin;    /* ray origin the attach uses (camera) */
+    Vec3f axis;      /* normalised centre direction */
+    Vec3f hit;       /* endpoint: attach point, far point, or range end */
+    Vec3f normal;    /* surface normal at `hit` (0 when none) */
+    f32   dist;      /* origin -> hit */
+    f32   beyond;    /* distance of the far surface when status == RANGE */
+    f32   rayDeg;    /* winning sample's angle off the axis, degrees */
+    int   sample;    /* 0 axis, >0 fan ring sample, -1 none */
+    int   status;
+} GrappleAim;
 
 /* ------------------------------------------------------------------ maths */
 
@@ -487,6 +527,169 @@ s16 movekit_camera_roll(void) {
 
 /* --------------------------------------------------------- grapple/jetpack */
 
+/* One collision query: exactly what the attach has always done (ray length =
+ * range, object-backed surfaces rejected).  Returns 1 on a usable surface. */
+static int grp_cast(Vec3f origin, Vec3f dir_unit, f32 length,
+                    struct Surface **surf_out, Vec3f hit_out) {
+    struct Surface *surf = NULL;
+    Vec3f ray, from;
+
+    from[0] = origin[0];
+    from[1] = origin[1];
+    from[2] = origin[2];
+    ray[0] = dir_unit[0] * length;
+    ray[1] = dir_unit[1] * length;
+    ray[2] = dir_unit[2] * length;
+    find_surface_on_ray(from, ray, &surf, hit_out);
+    if (surf == NULL || surf->object != NULL) {
+        return 0;
+    }
+    *surf_out = surf;
+    return 1;
+}
+
+/* Orthonormal basis around the aim axis (right, up). */
+static void grp_basis(const Vec3f axis, Vec3f right, Vec3f up) {
+    Vec3f worldUp;
+
+    worldUp[0] = 0.0f;
+    worldUp[1] = 1.0f;
+    worldUp[2] = 0.0f;
+    vcross(right, axis, worldUp);
+    if (vdot(right, right) < 0.0001f) {
+        right[0] = 1.0f;
+        right[1] = 0.0f;
+        right[2] = 0.0f;
+    }
+    vnorm(right);
+    vcross(up, right, axis);
+    vnorm(up);
+}
+
+static f32 grp_dist(const Vec3f a, const Vec3f b) {
+    Vec3f d;
+    d[0] = b[0] - a[0];
+    d[1] = b[1] - a[1];
+    d[2] = b[2] - a[2];
+    return sqrtf(vdot(d, d));
+}
+
+/* Resolve the aim the way the attach does.  Callers: grapple_update (fire) and
+ * the debug draw / status / HUD.  `s_grp_*` are the live tuning values. */
+static void grapple_aim_resolve(GrappleAim *a) {
+    Vec3f right, up, sample, hit;
+    struct Surface *surf = NULL;
+    f32 half;
+
+    a->sample = -1;
+    a->dist = 0.0f;
+    a->beyond = 0.0f;
+    a->rayDeg = 0.0f;
+    a->status = GRP_NONE;
+    vec3f_copy(a->origin, gLakituState.pos);
+    a->axis[0] = gLakituState.focus[0] - gLakituState.pos[0];
+    a->axis[1] = gLakituState.focus[1] - gLakituState.pos[1];
+    a->axis[2] = gLakituState.focus[2] - gLakituState.pos[2];
+    if (vdot(a->axis, a->axis) < 0.0001f) {
+        vec3f_copy(a->hit, a->origin);
+        a->normal[0] = a->normal[1] = a->normal[2] = 0.0f;
+        return;
+    }
+    vnorm(a->axis);
+    a->normal[0] = a->normal[1] = a->normal[2] = 0.0f;
+
+    /* 1. Centre ray.  This is the historical attach path, untouched. */
+    if (grp_cast(a->origin, a->axis, s_grp_range, &surf, hit)) {
+        vec3f_copy(a->hit, hit);
+        a->normal[0] = surf->normal.x;
+        a->normal[1] = surf->normal.y;
+        a->normal[2] = surf->normal.z;
+        vnorm(a->normal);
+        a->dist = grp_dist(a->origin, hit);
+        a->sample = 0;
+        a->status = GRP_ATTACH;
+        return;
+    }
+
+    /* 2. Fan fallback: two rings inside the half-angle, inner ring first, so
+     *    the winner is always the sample closest to the axis. */
+    half = s_grp_half_deg * 0.017453292f;
+    if (half > 1.5533f) half = 1.5533f;   /* 89 degrees */
+    if (half > 0.0001f && s_grp_rays >= 2) {
+        int rays = s_grp_rays > 16 ? 16 : s_grp_rays;
+        static const f32 ringScale[2] = { 0.5f, 1.0f };
+
+        grp_basis(a->axis, right, up);
+        for (int r = 0; r < 2; r++) {
+            f32 ang = half * ringScale[r];
+            f32 ca = cosf(ang);
+            f32 sa = sinf(ang);
+            int best = -1;
+            f32 bestDist = 1.0e30f;
+            Vec3f bestHit = { 0.0f, 0.0f, 0.0f };
+
+            for (int i = 0; i < rays; i++) {
+                f32 th = 6.2831853f * (f32) i / (f32) rays;
+                f32 ct = cosf(th);
+                f32 st = sinf(th);
+
+                sample[0] = a->axis[0] * ca + (right[0] * ct + up[0] * st) * sa;
+                sample[1] = a->axis[1] * ca + (right[1] * ct + up[1] * st) * sa;
+                sample[2] = a->axis[2] * ca + (right[2] * ct + up[2] * st) * sa;
+                vnorm(sample);
+                if (!grp_cast(a->origin, sample, s_grp_range, &surf, hit)) {
+                    continue;
+                }
+                {
+                    f32 d = grp_dist(a->origin, hit);
+                    if (d < bestDist) {
+                        bestDist = d;
+                        best = i;
+                        vec3f_copy(bestHit, hit);
+                        a->normal[0] = surf->normal.x;
+                        a->normal[1] = surf->normal.y;
+                        a->normal[2] = surf->normal.z;
+                        vnorm(a->normal);
+                    }
+                }
+            }
+            if (best >= 0) {
+                vec3f_copy(a->hit, bestHit);
+                a->dist = bestDist;
+                a->rayDeg = ang / 0.017453292f;
+                a->sample = 1 + r * rays + best;
+                a->status = GRP_ATTACH;
+                return;
+            }
+        }
+    }
+
+    /* 3. Nothing inside range: probe further along the axis so the view can
+     *    tell "out of range" from "no surface at all". */
+    {
+        f32 probe = s_grp_range * s_grp_probe;
+        if (probe > s_grp_range + 1.0f
+            && grp_cast(a->origin, a->axis, probe, &surf, hit)) {
+            vec3f_copy(a->hit, hit);
+            a->normal[0] = surf->normal.x;
+            a->normal[1] = surf->normal.y;
+            a->normal[2] = surf->normal.z;
+            vnorm(a->normal);
+            a->beyond = grp_dist(a->origin, hit);
+            a->dist = s_grp_range;
+            a->status = GRP_RANGE;
+            return;
+        }
+    }
+
+    /* 4. Open sky.  Endpoint is the range limit so the view has something to
+     *    draw; there is no surface, so no marker and no normal. */
+    a->hit[0] = a->origin[0] + a->axis[0] * s_grp_range;
+    a->hit[1] = a->origin[1] + a->axis[1] * s_grp_range;
+    a->hit[2] = a->origin[2] + a->axis[2] * s_grp_range;
+    a->dist = s_grp_range;
+}
+
 static void grapple_update(struct MarioState *m, u32 pressed, u32 down, u32 retract) {
     if (!s_grapple_on) {
         s_attached = 0;
@@ -494,26 +697,17 @@ static void grapple_update(struct MarioState *m, u32 pressed, u32 down, u32 retr
     }
 
     if (pressed) {
-        Vec3f dir, hit;
-        struct Surface *surf = NULL;
+        GrappleAim aim;
 
-        dir[0] = gLakituState.focus[0] - gLakituState.pos[0];
-        dir[1] = gLakituState.focus[1] - gLakituState.pos[1];
-        dir[2] = gLakituState.focus[2] - gLakituState.pos[2];
-        vnorm(dir);
-        dir[0] *= GRAPPLE_RANGE;
-        dir[1] *= GRAPPLE_RANGE;
-        dir[2] *= GRAPPLE_RANGE;
-
-        find_surface_on_ray(gLakituState.pos, dir, &surf, hit);
-        if (surf != NULL && surf->object == NULL) {
-            vec3f_copy(s_anchor, hit);
+        grapple_aim_resolve(&aim);
+        if (aim.status == GRP_ATTACH) {
+            vec3f_copy(s_anchor, aim.hit);
             s_from[0] = m->pos[0];
             s_from[1] = m->pos[1] + 60.0f;
             s_from[2] = m->pos[2];
-            s_rope_len = sqrtf((hit[0] - m->pos[0]) * (hit[0] - m->pos[0])
-                             + (hit[1] - (m->pos[1] + 60.0f)) * (hit[1] - (m->pos[1] + 60.0f))
-                             + (hit[2] - m->pos[2]) * (hit[2] - m->pos[2]));
+            s_rope_len = sqrtf((aim.hit[0] - m->pos[0]) * (aim.hit[0] - m->pos[0])
+                             + (aim.hit[1] - (m->pos[1] + 60.0f)) * (aim.hit[1] - (m->pos[1] + 60.0f))
+                             + (aim.hit[2] - m->pos[2]) * (aim.hit[2] - m->pos[2]));
             s_attached = 1;
         }
     }
@@ -816,6 +1010,241 @@ static void mk_flush(void) {
      * batch) and keep adding quads afterwards. */
 }
 
+/* ------------------------------------------- grapple targeting debug view */
+/*
+ * World-space debug geometry (fx 310).  Drawn inside movekit_render(), i.e. in
+ * the 3D scene part of the master display list, so it is replayed per eye and
+ * lands at the same world position in 2D and in stereo.  Static vertex storage
+ * (like ptc_scene.c); the renderer copies nothing, so it must be rebuilt every
+ * frame, which it is.
+ */
+#define GRP_DRAW_MAX_QUADS 96
+static Vtx s_grp_vtx[GRP_DRAW_MAX_QUADS * 4];
+static int s_grp_quads;
+
+static void grp_emit(const Vec3f a, const Vec3f b, const Vec3f c, const Vec3f d,
+                     u8 r, u8 g, u8 bl, u8 al) {
+    Vtx *v;
+
+    if (s_grp_quads >= GRP_DRAW_MAX_QUADS) {
+        return;
+    }
+    v = &s_grp_vtx[s_grp_quads * 4];
+    fill_vtx(&v[0], a[0], a[1], a[2], r, g, bl, al);
+    fill_vtx(&v[1], b[0], b[1], b[2], r, g, bl, al);
+    fill_vtx(&v[2], c[0], c[1], c[2], r, g, bl, al);
+    fill_vtx(&v[3], d[0], d[1], d[2], r, g, bl, al);
+    s_grp_quads++;
+}
+
+static void grp_flush(void) {
+    Gfx *h = gDisplayListHead;
+    int i = 0;
+
+    while (i < s_grp_quads) {
+        int q = s_grp_quads - i;
+        if (q > 16) q = 16;
+        gSPVertex(h++, s_grp_vtx + i * 4, q * 4, 0);
+        for (int k = 0; k < q; k++) {
+            int b = k * 4;
+            gSP2Triangles(h++, b, b + 1, b + 2, 0, b, b + 2, b + 3, 0);
+        }
+        i += q;
+    }
+    gDisplayListHead = h;
+    s_grp_quads = 0;
+}
+
+/* Thin camera-facing ribbon from a to b. */
+static void grp_line(const Vec3f a, const Vec3f b, f32 halfw, const Vec3f eye,
+                     u8 r, u8 g, u8 bl, u8 al) {
+    Vec3f d, mid, view, perp, A, B, C, D;
+    f32 len;
+
+    d[0] = b[0] - a[0];
+    d[1] = b[1] - a[1];
+    d[2] = b[2] - a[2];
+    len = sqrtf(vdot(d, d));
+    if (len < 0.5f || halfw <= 0.0f) {
+        return;
+    }
+    mid[0] = (a[0] + b[0]) * 0.5f;
+    mid[1] = (a[1] + b[1]) * 0.5f;
+    mid[2] = (a[2] + b[2]) * 0.5f;
+    view[0] = eye[0] - mid[0];
+    view[1] = eye[1] - mid[1];
+    view[2] = eye[2] - mid[2];
+    vcross(perp, d, view);
+    if (vdot(perp, perp) < 0.0001f) {
+        return;
+    }
+    vnorm(perp);
+    perp[0] *= halfw;
+    perp[1] *= halfw;
+    perp[2] *= halfw;
+
+    A[0] = a[0] + perp[0]; A[1] = a[1] + perp[1]; A[2] = a[2] + perp[2];
+    B[0] = b[0] + perp[0]; B[1] = b[1] + perp[1]; B[2] = b[2] + perp[2];
+    C[0] = b[0] - perp[0]; C[1] = b[1] - perp[1]; C[2] = b[2] - perp[2];
+    D[0] = a[0] - perp[0]; D[1] = a[1] - perp[1]; D[2] = a[2] - perp[2];
+    /* Counter-clockwise seen from the camera (A, D, C, B), so the ribbon also
+     * survives a pass that leaves G_CULL_BACK on. */
+    grp_emit(A, D, C, B, r, g, bl, al);
+}
+
+/* Cross in the surface plane + a spike along the normal. */
+static void grp_marker(const Vec3f p, const Vec3f n, const Vec3f eye, f32 scale,
+                       u8 r, u8 g, u8 bl) {
+    Vec3f t1, t2, up, base, a, b;
+    f32 w = scale * 0.10f;
+    if (w < 0.6f) w = 0.6f;
+
+    up[0] = 0.0f; up[1] = 1.0f; up[2] = 0.0f;
+    vcross(t1, n, up);
+    if (vdot(t1, t1) < 0.0001f) {
+        t1[0] = 1.0f; t1[1] = 0.0f; t1[2] = 0.0f;
+    }
+    vnorm(t1);
+    vcross(t2, t1, n);
+    vnorm(t2);
+
+    /* Lift off the surface so the cross does not z-fight with it. */
+    base[0] = p[0] + n[0] * 2.0f;
+    base[1] = p[1] + n[1] * 2.0f;
+    base[2] = p[2] + n[2] * 2.0f;
+
+    a[0] = base[0] - t1[0] * scale; a[1] = base[1] - t1[1] * scale; a[2] = base[2] - t1[2] * scale;
+    b[0] = base[0] + t1[0] * scale; b[1] = base[1] + t1[1] * scale; b[2] = base[2] + t1[2] * scale;
+    grp_line(a, b, w, eye, r, g, bl, 0xF0);
+    a[0] = base[0] - t2[0] * scale; a[1] = base[1] - t2[1] * scale; a[2] = base[2] - t2[2] * scale;
+    b[0] = base[0] + t2[0] * scale; b[1] = base[1] + t2[1] * scale; b[2] = base[2] + t2[2] * scale;
+    grp_line(a, b, w, eye, r, g, bl, 0xF0);
+
+    b[0] = base[0] + n[0] * scale * 1.8f;
+    b[1] = base[1] + n[1] * scale * 1.8f;
+    b[2] = base[2] + n[2] * scale * 1.8f;
+    grp_line(base, b, w * 0.8f, eye, r, g, bl, 0xB0);
+}
+
+static void grapple_draw_debug(struct MarioState *m) {
+    GrappleAim aim;
+    Vec3f eye, right, up, pts[17], from;
+    u8 cr, cg, cb;
+    f32 fanLen, wFan, wAxis, ang, ca, sa, markerScale;
+    int rays;
+
+    grapple_aim_resolve(&aim);
+    if (aim.status == GRP_ATTACH) {
+        cr = 0x3C; cg = 0xFF; cb = 0x6E;      /* green: would attach */
+    } else if (aim.status == GRP_RANGE) {
+        cr = 0xFF; cg = 0xB4; cb = 0x28;      /* amber: surface, out of range */
+    } else {
+        cr = 0xFF; cg = 0x4C; cb = 0x4C;      /* red: no surface */
+    }
+
+    /* Own state: vertex colours (G_SHADE) and both faces visible, so the
+     * ribbons do not vanish when a previous pass left culling on.  The XLU
+     * Z-buffered mode from movekit_render's prologue still applies, so the
+     * fan is occluded by real geometry - which is the point of the view. */
+    gSPClearGeometryMode(gDisplayListHead++, G_CULL_FRONT | G_CULL_BACK);
+    gSPSetGeometryMode(gDisplayListHead++, G_ZBUFFER | G_SHADE);
+
+    vec3f_copy(eye, gLakituState.pos);
+    rays = s_grp_rays < 3 ? 3 : (s_grp_rays > 16 ? 16 : s_grp_rays);
+
+    /* Fan length: stop at the resolved point rather than always at max range,
+     * so the cone reads as "this is the volume that resolves here". */
+    fanLen = (aim.status == GRP_ATTACH) ? aim.dist * 1.05f : s_grp_range;
+    if (fanLen > s_grp_range) fanLen = s_grp_range;
+    if (fanLen < 60.0f) fanLen = 60.0f;
+    wFan = fanLen * 0.0012f;
+    if (wFan < 0.8f) wFan = 0.8f;
+    if (wFan > 4.0f) wFan = 4.0f;
+    wAxis = wFan * 1.6f;
+
+    /* Cone boundary: spokes from the (camera) apex plus the rim ring. */
+    ang = s_grp_half_deg * 0.017453292f;
+    if (ang > 1.5533f) ang = 1.5533f;
+    if (ang > 0.004f) {
+        grp_basis(aim.axis, right, up);
+        ca = cosf(ang);
+        sa = sinf(ang);
+        for (int i = 0; i < rays; i++) {
+            f32 th = 6.2831853f * (f32) i / (f32) rays;
+            f32 ct = cosf(th);
+            f32 st = sinf(th);
+            Vec3f d;
+
+            d[0] = aim.axis[0] * ca + (right[0] * ct + up[0] * st) * sa;
+            d[1] = aim.axis[1] * ca + (right[1] * ct + up[1] * st) * sa;
+            d[2] = aim.axis[2] * ca + (right[2] * ct + up[2] * st) * sa;
+            vnorm(d);
+            pts[i][0] = aim.origin[0] + d[0] * fanLen;
+            pts[i][1] = aim.origin[1] + d[1] * fanLen;
+            pts[i][2] = aim.origin[2] + d[2] * fanLen;
+            grp_line(aim.origin, pts[i], wFan, eye, cr, cg, cb, 0x50);
+        }
+        for (int i = 0; i < rays; i++) {
+            grp_line(pts[i], pts[(i + 1) % rays], wFan * 0.85f, eye, cr, cg, cb, 0x44);
+        }
+    }
+
+    /* Axis ray, up to the attach point / range limit. */
+    {
+        Vec3f end;
+        f32 len = (aim.status == GRP_ATTACH) ? aim.dist : s_grp_range;
+
+        end[0] = aim.origin[0] + aim.axis[0] * len;
+        end[1] = aim.origin[1] + aim.axis[1] * len;
+        end[2] = aim.origin[2] + aim.axis[2] * len;
+        grp_line(aim.origin, end, wAxis, eye, cr, cg, cb, 0x70);
+    }
+
+    /* Off-axis winner: the sample the fan picked instead of the axis. */
+    if (aim.status == GRP_ATTACH && aim.sample > 0) {
+        grp_line(aim.origin, aim.hit, wAxis, eye, cr, cg, cb, 0xE0);
+    }
+
+    /* Surface point + normal. */
+    if (aim.status != GRP_NONE) {
+        markerScale = aim.status == GRP_RANGE ? aim.beyond * 0.018f : aim.dist * 0.018f;
+        if (markerScale < 14.0f) markerScale = 14.0f;
+        if (markerScale > 90.0f) markerScale = 90.0f;
+        grp_marker(aim.hit, aim.normal, eye, markerScale, cr, cg, cb);
+    }
+
+    /* The leg the rope will actually draw: hand -> anchor.  The attach ray
+     * starts at the camera, so this is where the hook visibly leaves Mario. */
+    if (aim.status == GRP_ATTACH && m != NULL) {
+        from[0] = m->pos[0];
+        from[1] = m->pos[1] + 60.0f;
+        from[2] = m->pos[2];
+        grp_line(from, aim.hit, wFan * 0.7f, eye, 0x9A, 0xB0, 0xD0, 0x70);
+        grp_line(from, aim.origin, wFan * 0.5f, eye, 0x60, 0x68, 0x78, 0x40);
+    }
+
+    /* Optional HUD line (fx 313).  The green debug line is ours while on. */
+    if (s_grp_hud) {
+        extern void gfx_set_debug_note(const char *s);
+        char buf[160];
+        f32 yaw = atan2f(aim.axis[2], aim.axis[0]) / 0.017453292f;
+        f32 pitch = atan2f(aim.axis[1],
+                           sqrtf(aim.axis[0] * aim.axis[0] + aim.axis[2] * aim.axis[2]))
+                  / 0.017453292f;
+        const char *state = aim.status == GRP_ATTACH ? "ATTACH"
+                          : (aim.status == GRP_RANGE ? "RANGE" : "NO SURFACE");
+
+        snprintf(buf, sizeof(buf),
+                 "GRP %s yaw=%.1f pitch=%.1f fan=%.1f ray=%.1f d=%.0f p=%.0f,%.0f,%.0f",
+                 state, yaw, pitch, s_grp_half_deg, aim.rayDeg,
+                 aim.status == GRP_RANGE ? aim.beyond : aim.dist,
+                 aim.hit[0], aim.hit[1], aim.hit[2]);
+        gfx_set_debug_note(buf);
+    }
+
+    grp_flush();
+}
+
 void movekit_render(void) {
     Mat4 ident;
     Mtx *mtx;
@@ -1071,6 +1500,12 @@ void movekit_render(void) {
 
     mk_flush();
 
+    /* Grapple targeting debug view (fx 310).  Same Z-buffer/render mode as the
+     * rope above; drawn after it so the marker is on top of the rope. */
+    if (s_grp_dbg) {
+        grapple_draw_debug(m);
+    }
+
     gSPClearGeometryMode(gDisplayListHead++, G_ZBUFFER);
 }
 
@@ -1151,6 +1586,55 @@ int movekit_dial_get(int which) {
         case 329: return s_wr_along_bonus;
     }
     return -1;
+}
+
+/* ------------------------------------------- grapple debug dial accessors */
+/* fx 310-315 land here from gfx_opengl_ssfx_set/get.  Kept in movekit.c so the
+ * debug view and the attach read the same variables. */
+void movekit_grapple_debug_set(int which, int value) {
+    switch (which) {
+        case 310: s_grp_dbg = value ? 1 : 0; break;
+        case 311:
+            s_grp_half_deg = value < 0 ? 0.0f : (value > 890 ? 89.0f : (f32) value * 0.1f);
+            break;
+        case 312: s_grp_rays = value < 2 ? 2 : (value > 16 ? 16 : value); break;
+        case 313: s_grp_hud = value ? 1 : 0; break;
+        case 314:
+            s_grp_range = value < 100 ? 100.0f : (value > 6000 ? 6000.0f : (f32) value);
+            break;
+        case 315:
+            s_grp_probe = value < 10 ? 1.0f : (value > 100 ? 10.0f : (f32) value * 0.1f);
+            break;
+        default: break;
+    }
+}
+
+int movekit_grapple_debug_get(int which) {
+    switch (which) {
+        case 310: return s_grp_dbg;
+        case 311: return (int) (s_grp_half_deg * 10.0f + 0.5f);
+        case 312: return s_grp_rays;
+        case 313: return s_grp_hud;
+        case 314: return (int) (s_grp_range + 0.5f);
+        case 315: return (int) (s_grp_probe * 10.0f + 0.5f);
+    }
+    return 0;
+}
+
+/* Live aim for the status line / HUD: 0 none, 1 would attach, 2 out of range.
+ * Fills the distance and the resolved point when the caller asks for them. */
+int movekit_grapple_aim_state(float *dist, float *ray_deg, float hit[3]) {
+    GrappleAim aim;
+
+    grapple_aim_resolve(&aim);
+    if (dist != NULL) *dist = aim.status == GRP_RANGE ? aim.beyond : aim.dist;
+    if (ray_deg != NULL) *ray_deg = aim.rayDeg;
+    if (hit != NULL) {
+        hit[0] = aim.hit[0];
+        hit[1] = aim.hit[1];
+        hit[2] = aim.hit[2];
+    }
+    return aim.status;
 }
 
 void movekit_upgrade(int which) {

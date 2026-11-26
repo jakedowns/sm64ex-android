@@ -4206,6 +4206,85 @@ static void ptc_annex_grapple(void) {
     s_annexMode = 3;
 }
 
+/* Grapple targeting debug rig (fx 310, scripts/grapple-debug-test.sh): places
+ * Mario and a fixed free camera so the aim ray has a known outcome.
+ *   1 wall   annex corridor, camera looking at the opposite wall (valid)
+ *   2 sky    open chamber, camera pitched up (no surface)
+ *   3 far    chamber floor from high up (range-limited by fx 314)
+ *   4 3d     long oblique floor hit in the open chamber (depth / stereo check)
+ * The camera is fixed with custom_camera_set_freelook, so the aim is entirely
+ * determined by the numbers below and does not drift while Mario falls. */
+static void ptc_gdbg_rig(int mode) {
+    extern void custom_camera_apply_mode(int mode);
+    extern void custom_camera_set_freelook(int on, const Vec3f pos, const Vec3f focus);
+    Vec3f cp, cf;
+
+    ptc_annex_reset();
+    movekit_set_flag(1, 1);
+    movekit_set_flag(2, 0);
+    movekit_tool_set(1);          /* grapple in hand: L fires it */
+    movekit_force_trigger(0);
+
+    switch (mode) {
+        case 1:
+            ptc_annex_place(-2250.0f, 260.0f, 300.0f, 0x4000);
+            cp[0] = -2295.0f; cp[1] = 320.0f; cp[2] = 300.0f;
+            cf[0] = -1900.0f; cf[1] = 290.0f; cf[2] = 300.0f;
+            break;
+        case 2:
+            /* Above the chamber's walls and ceiling, looking straight up: no
+             * geometry overhead, so the aim has to report NO SURFACE. */
+            ptc_annex_place(0.0f, 300.0f, -300.0f, 0x0000);
+            cp[0] = 0.0f; cp[1] = 1600.0f; cp[2] = -300.0f;
+            cf[0] = 0.0f; cf[1] = 3200.0f; cf[2] = -300.0f;
+            break;
+        case 3:
+            /* Floor ~750 units below the camera, inside the room so the ray
+             * does not have to pass through a ceiling. */
+            ptc_annex_place(0.0f, 200.0f, 0.0f, 0x0000);
+            cp[0] = 0.0f; cp[1] = 700.0f; cp[2] = -400.0f;
+            cf[0] = 0.0f; cf[1] = -800.0f; cf[2] = 200.0f;
+            break;
+        default:
+            /* Long, oblique floor hit (~1600 units) in the open chamber: the
+             * fan reads as a cone in 3D instead of a near-field cross. */
+            ptc_annex_place(0.0f, 300.0f, -300.0f, 0x0000);
+            cp[0] = -700.0f; cp[1] = 700.0f; cp[2] = -1000.0f;
+            cf[0] = 0.0f; cf[1] = 100.0f; cf[2] = 50.0f;
+            break;
+    }
+    custom_camera_apply_mode(3);
+    custom_camera_set_freelook(1, cp, cf);
+    gfx_set_debug_note("GRAPPLE DEBUG RIG: fixed camera, aim is the camera ray");
+}
+
+static void ptc_gdbg_off(void) {
+    extern void custom_camera_apply_mode(int mode);
+    extern void custom_camera_set_freelook(int on, const Vec3f pos, const Vec3f focus);
+    movekit_force_trigger(0);
+    custom_camera_set_freelook(0, NULL, NULL);
+    custom_camera_apply_mode(0);
+}
+
+/* Free camera for the rig without a rebuild:
+ *   ptc gdbgcp "-2290,300,300:-1900,280,300"   camera x,y,z : focus x,y,z
+ * Lets a session aim the rig at anything on the tablet while iterating. */
+static void ptc_gdbg_cam(const char *args) {
+    extern void custom_camera_apply_mode(int mode);
+    extern void custom_camera_set_freelook(int on, const Vec3f pos, const Vec3f focus);
+    Vec3f cp, cf;
+
+    if (args == NULL
+        || sscanf(args, " %f , %f , %f : %f , %f , %f",
+                  &cp[0], &cp[1], &cp[2], &cf[0], &cf[1], &cf[2]) != 6) {
+        return;
+    }
+    movekit_set_flag(1, 1);
+    movekit_tool_set(1);
+    custom_camera_apply_mode(3);
+    custom_camera_set_freelook(1, cp, cf);
+}
+
 static void ptc_annex_jetpack(void) {
     ptc_annex_reset();
     movekit_set_flag(2, 1);              /* equip the jetpack (and refill) */
@@ -4867,6 +4946,16 @@ extern int gfx_cam_mode;
         ptc_annex_reset();                          /* release the trigger */
     } else if (strcmp(action, "grapple") == 0) {
         ptc_annex_grapple();
+    } else if (strcmp(action, "gdbgfire") == 0) {
+        movekit_force_trigger(1);        /* press edge: the real attach runs */
+    } else if (strcmp(action, "gdbgstop") == 0) {
+        movekit_force_trigger(0);
+    } else if (strcmp(action, "gdbgoff") == 0) {
+        ptc_gdbg_off();
+    } else if (strncmp(action, "gdbgcp", 6) == 0) {
+        ptc_gdbg_cam(action + 6);
+    } else if (strncmp(action, "gdbg", 4) == 0) {
+        ptc_gdbg_rig(action[4] >= '1' && action[4] <= '4' ? action[4] - '0' : 1);
     } else if (strncmp(action, "povcam", 6) == 0) {
         extern void gfx_set_debug_note(const char *s);
 extern int gfx_cam_mode;
@@ -4927,6 +5016,9 @@ void ptc_format_status(char *buf, int len) {
     Vec3f pb = { 0, 0, 0 }, nb = { 0, 0, 0 };
     struct MarioState *m = gMarioState;
     float pcamD = 0.0f, pcamA = 0.0f;
+    int grpStatus = 0;
+    float grpDist = 0.0f, grpRayDeg = 0.0f;
+    float grpHit[3] = { 0.0f, 0.0f, 0.0f };
     extern void portal_last_camera_jump(float *dist, float *angleDeg);
     extern int gfx_opengl_light_state(int which);
     extern int gfx_opengl_denoise_state(int which);
@@ -4948,6 +5040,13 @@ void ptc_format_status(char *buf, int len) {
     int hasA = portal_get(0, pa, na);
     int hasB = portal_get(1, pb, nb);
     custom_camera_debug(cdbg);
+
+    /* Grapple targeting: resolved with the same query the attach uses, so the
+     * status field cannot disagree with what a press would hook. */
+    {
+        extern int movekit_grapple_aim_state(float *dist, float *ray_deg, float hit[3]);
+        grpStatus = movekit_grapple_aim_state(&grpDist, &grpRayDeg, grpHit);
+    }
 
     if (buf == NULL || len <= 0) {
         return;
@@ -4972,7 +5071,7 @@ void ptc_format_status(char *buf, int len) {
              "mpw=%d,%d,%d,%d,%d,%d,%d fc=%d,%d,%d,%d cg=%d,%.0f,%.0f,%.0f,0x%x "
              "slowmo=%d,%d,%d rays=%d,%d,%d glow=%d,%d,%d,%d,%d occl=%d,%d,%d "
              "qd=%d,%d,%d lvl=%d sens=%d,%d,%d wr=%d,%d,%d,%d,%d,%.2f,%.2f "
-             "grade=%d,%d,%d,%d",
+             "grade=%d,%d,%d,%d grp=%d,%d,%.1f,%.0f,%.0f,%.0f,%.0f",
              gCurrLevelNum, gCurrAreaIndex, s_phase, s_testMode, s_testActive, s_failed, s_failReason,
              s_starCollected[0], s_starCollected[1], ptc_star_visible(), portal_count(), s_shotA, s_shotB, g_portal_debug,
              g_portal_view.active, g_portal_view.source, portal_view_enabled(),
@@ -5054,7 +5153,9 @@ void ptc_format_status(char *buf, int len) {
              movekit_wr_state(5), movekit_wr_state(6),
              movekit_wr_last_vel(0), movekit_wr_last_vel(1),
              gfx_opengl_ssfx_get(280), gfx_opengl_ssfx_get(281),
-             gfx_opengl_ssfx_get(284), gfx_opengl_ssfx_get(285));
+             gfx_opengl_ssfx_get(284), gfx_opengl_ssfx_get(285),
+             gfx_opengl_ssfx_get(310), grpStatus, grpRayDeg, grpDist,
+             grpHit[0], grpHit[1], grpHit[2]);
 
     {
         size_t used = strlen(buf);
