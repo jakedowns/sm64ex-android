@@ -2506,7 +2506,14 @@ void gfx_opengl_ssfx_set(int which, int value) {
         case 101: s_fx_mb_strength = value < 0 ? 0 : (value > 300 ? 300 : value); break;
         case 102: s_fx_mb_samples = value < 1 ? 1 : (value > 16 ? 16 : value); break;
         /* Deferred dynamic lights. */
-        case 103: s_light_count = value < 0 ? 0 : (value > 4 ? 4 : value); break;
+        /* 103 claims the four light slots for a direct caller, exactly like the
+         * PTC lightshow does; without the manual flag the per-frame gameplay
+         * registry resets the count straight back to 0 on the next frame. */
+        case 103: {
+            extern void gfx_opengl_light_count(int count);
+            gfx_opengl_light_count(value);
+            break;
+        }
         case 104: s_light_shadows = value ? 1 : 0; break;
         case 105: s_light_intensity = value < 0 ? 0 : (value > 300 ? 300 : value); break;
         case 106: s_light_shadow_steps = value < 0 ? 0 : (value > 8 ? 8 : value); break;
