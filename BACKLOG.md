@@ -11,6 +11,33 @@ that is finished gets deleted here, not ticked.
 
 ## In progress
 
+### Camera below the ground: COLLIDE / CLIP (worktree `w3-cam-ground`)
+Code-complete 2026-11-26, not yet built or device-verified (the parent applies
+the patch to the main tree and builds centrally).
+
+The custom orbit camera used to collide with everything: the pull-in ray
+(`find_surface_on_ray`) shortened the orbit distance for a floor or ceiling and
+a final `find_floor` clamp lifted it 80 units above the floor. **GROUND** on
+CAMERA > SETTINGS, directly under **WALL NOCLIP**, is now a persisted
+`COLLIDE` / `CLIP` picker:
+
+- `COLLIDE` (default) is the historical behaviour, unchanged.
+- `CLIP` identifies floors and ceilings by surface normal (`|normal.y| > 0.7`,
+  not object type, so PTC geometry works too), re-casts past each horizontal
+  hit until it finds a wall, and skips both floor clamps: the custom camera's
+  own and `update_lakitu`'s (`camera.c`, gated on mode 3 + CLIP). Walls and
+  steep slopes still collide; `gfx_cam_noclip` keeps its own "hide the wall"
+  meaning and still wins when on.
+
+Dial: `fx 360` (0 COLLIDE, 1 CLIP); `cmd dump` ends with
+`camclip=collide|clip`. FREE/puppycam are untouched (FREE never collided).
+
+Stills to capture after the parent's build, from one fixed pose: `fx 360 0`
+(camera pulled up above the floor) vs `fx 360 1` (camera under the floor with
+the world still rendering correctly), plus one wall case with `fx 360 1` to
+show the camera still pulling in. Artifacts:
+`/media/share/tmp/artifacts/sm64/cam-ground/`.
+
 ### Wave 2 (ten-feature request) — merged 2026-11-26, device pass pending
 All nine worktrees are applied to the main tree and the combined build is green.
 Not yet verified on hardware because the tablet dropped off Wi-Fi adb and needs a
@@ -283,6 +310,8 @@ keep a feature inside its block:
 | `330`-`339` | camera sensitivity picker + FREE-mode cycler fix (taken: `330` band, `331` trim, `332` effective readback) |
 | `340`-`349` | feedback outbox (reserved, likely unused) |
 | `350`-`359` | painting ripple presentation-time interpolation (taken) |
+| `360`-`369` | camera vs ground COLLIDE/CLIP (taken: `360` mode, `361`-`369` free) |
+| `370`-`379` | UI layout box + skybox fine-tune (taken: `370` scale X %, `371` scale Y %, `372` offset X %, `373` offset Y %; `374`-`379` free) |
 
 ## Known bugs and limits
 

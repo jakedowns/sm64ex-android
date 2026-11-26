@@ -9,6 +9,7 @@
 #include "segment2.h"
 #include "level_update.h"
 #include "geo_misc.h"
+#include "pc/gfx/gfx_pc.h"   /* skybox tag for the scene-ortho fine-tune */
 
 
 /**
@@ -265,7 +266,9 @@ void *create_skybox_ortho_matrix(s8 player) {
  * Creates the skybox's display list, then draws the 3x3 grid of tiles.
  */
 Gfx *init_skybox_display_list(s8 player, s8 background, s8 colorIndex) {
-    s32 dlCommandCount = 5 + (3 * 3) * 7; // 5 for the start and end, plus 9 skybox tiles
+    // Two extra commands for the renderer's skybox tag (fx 370-373 apply only
+    // to this range; the HUD and any other 2D draw must not move).
+    s32 dlCommandCount = 7 + (3 * 3) * 7; // start/end + skybox tag on/off, plus 9 skybox tiles
     void *skybox = alloc_display_list(dlCommandCount * sizeof(Gfx));
     Gfx *dlist = skybox;
 
@@ -277,7 +280,9 @@ Gfx *init_skybox_display_list(s8 player, s8 background, s8 colorIndex) {
         gSPDisplayList(dlist++, dl_skybox_begin);
         gSPMatrix(dlist++, VIRTUAL_TO_PHYSICAL(ortho), G_MTX_PROJECTION | G_MTX_MUL | G_MTX_NOPUSH);
         gSPDisplayList(dlist++, dl_skybox_tile_tex_settings);
+        gfx_sp_skybox_marker(&dlist, 1);
         draw_skybox_tile_grid(&dlist, background, player, colorIndex);
+        gfx_sp_skybox_marker(&dlist, 0);
         gSPDisplayList(dlist++, dl_skybox_end);
         gSPEndDisplayList(dlist);
     }

@@ -5036,6 +5036,7 @@ void ptc_format_status(char *buf, int len) {
     portal_last_camera_jump(&pcamD, &pcamA);
     extern int camera_portal_remap_count(void);
     extern void custom_camera_debug(int out[8]);
+    extern int custom_camera_ground_clip(void);
     int cdbg[8] = { 0 };
     int hasA = portal_get(0, pa, na);
     int hasB = portal_get(1, pb, nb);
@@ -5071,7 +5072,7 @@ void ptc_format_status(char *buf, int len) {
              "mpw=%d,%d,%d,%d,%d,%d,%d fc=%d,%d,%d,%d cg=%d,%.0f,%.0f,%.0f,0x%x "
              "slowmo=%d,%d,%d rays=%d,%d,%d glow=%d,%d,%d,%d,%d occl=%d,%d,%d "
              "qd=%d,%d,%d lvl=%d sens=%d,%d,%d wr=%d,%d,%d,%d,%d,%.2f,%.2f "
-             "grade=%d,%d,%d,%d grp=%d,%d,%.1f,%.0f,%.0f,%.0f,%.0f",
+             "grade=%d,%d,%d,%d grp=%d,%d,%.1f,%.0f,%.0f,%.0f,%.0f camclip=%s",
              gCurrLevelNum, gCurrAreaIndex, s_phase, s_testMode, s_testActive, s_failed, s_failReason,
              s_starCollected[0], s_starCollected[1], ptc_star_visible(), portal_count(), s_shotA, s_shotB, g_portal_debug,
              g_portal_view.active, g_portal_view.source, portal_view_enabled(),
@@ -5155,7 +5156,8 @@ void ptc_format_status(char *buf, int len) {
              gfx_opengl_ssfx_get(280), gfx_opengl_ssfx_get(281),
              gfx_opengl_ssfx_get(284), gfx_opengl_ssfx_get(285),
              gfx_opengl_ssfx_get(310), grpStatus, grpRayDeg, grpDist,
-             grpHit[0], grpHit[1], grpHit[2]);
+             grpHit[0], grpHit[1], grpHit[2],
+             custom_camera_ground_clip() ? "clip" : "collide");
 
     {
         size_t used = strlen(buf);
@@ -5176,6 +5178,15 @@ void ptc_format_status(char *buf, int len) {
         if (used + 2 < (size_t)len) {
             buf[used++] = ' ';
             painting_interp_status(buf + used, len - (int)used);
+        }
+    }
+    {
+        /* UI layout box + size, then the four skybox dials (fx 58/59/370-373). */
+        extern void gfx_ui_status(char *buf, int len);
+        size_t used = strlen(buf);
+        if (used + 2 < (size_t)len) {
+            buf[used++] = ' ';
+            gfx_ui_status(buf + used, len - (int)used);
         }
     }
 }

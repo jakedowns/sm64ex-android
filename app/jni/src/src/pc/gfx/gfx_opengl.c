@@ -76,6 +76,10 @@ extern int gfx_emissive_strength;
  * frame's camera view*projection and Mario's centre/front world points; the
  * per-eye shear/toe/flip is applied here when the uniforms are uploaded. */
 extern int gfx_ui_pass;
+extern float gfx_sky_scale_x;
+extern float gfx_sky_scale_y;
+extern float gfx_sky_off_x;
+extern float gfx_sky_off_y;
 extern int gfx_portal_pass;
 extern int gfx_stereo_enabled;
 extern int gfx_stereo_2d;
@@ -2144,6 +2148,12 @@ void gfx_opengl_ssfx_set(int which, int value) {
         case 25: s_fx_gi_rays = value < 1 ? 1 : (value > 8 ? 8 : value); break;
         case 31: s_fx_debug = value < 0 ? 0 : (value > 9 ? 9 : value); break;
         case 32: s_fx_normal_flip = value ? 1 : 0; break;
+        /* Skybox fine-tune (fx 370-373): stored here so `cmd fx` and the panel
+         * share one key space; gfx_pc.c applies them to skybox vertices only. */
+        case 370: gfx_sky_scale_x = (float) value / 100.0f; break;
+        case 371: gfx_sky_scale_y = (float) value / 100.0f; break;
+        case 372: gfx_sky_off_x = (float) value; break;
+        case 373: gfx_sky_off_y = (float) value; break;
         /* SSRTX screen-space ray-traced reflections. */
         case 70: s_fx_ssrtx_on = value ? 1 : 0; break;
         case 71: s_fx_ssrtx_intensity = value < 0 ? 0 : (value > 300 ? 300 : value); break;
@@ -2348,6 +2358,13 @@ void gfx_opengl_ssfx_set(int which, int value) {
             gfx_paint_interp = value ? 1 : 0;
             break;
         }
+        /* Camera vs ground (customcam.c; fx 360): 0 = COLLIDE with floors and
+         * ceilings (default), 1 = CLIP through them (walls still collide). */
+        case 360: {
+            extern int gfx_cam_ground_clip;
+            gfx_cam_ground_clip = value ? 1 : 0;
+            break;
+        }
         /* Grapple targeting debug view: the values live in movekit.c next to
          * the aim resolver, so the drawn fan and the real attach share them. */
         case 310: case 311: case 312: case 313: case 314: case 315: {
@@ -2394,6 +2411,10 @@ int gfx_opengl_ssfx_get(int which) {
         case 25: return s_fx_gi_rays;
         case 31: return s_fx_debug;
         case 32: return s_fx_normal_flip;
+        case 370: return (int) (gfx_sky_scale_x * 100.0f + 0.5f);
+        case 371: return (int) (gfx_sky_scale_y * 100.0f + 0.5f);
+        case 372: return (int) gfx_sky_off_x;
+        case 373: return (int) gfx_sky_off_y;
         case 70: return s_fx_ssrtx_on;
         case 71: return s_fx_ssrtx_intensity;
         case 72: return s_fx_ssrtx_distance;
@@ -2477,6 +2498,7 @@ int gfx_opengl_ssfx_get(int which) {
         case 277: return s_occl_cover;
         case 278: return s_occl_bias;
         case 350: { extern int gfx_paint_interp; return gfx_paint_interp; }
+        case 360: { extern int gfx_cam_ground_clip; return gfx_cam_ground_clip ? 1 : 0; }
         case 200: { extern int gfx_rate_enabled; return gfx_rate_enabled; }
         case 201: { extern int gfx_rate_target_fps; return gfx_rate_target_fps; }
         case 202: { extern int gfx_rate_adaptive; return gfx_rate_adaptive; }

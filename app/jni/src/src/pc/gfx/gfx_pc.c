@@ -147,7 +147,9 @@ static struct RSP {
     float MP_matrix[4][4];
     float P_matrix[4][4];
     /* Perspective projections already encode the canvas aspect.  The legacy
-     * 4:3 x-correction must only be applied to ortho (2D/UI/skybox) vertices. */
+     * 4:3 x-correction must only be applied to ortho vertices, and within
+     * those only to the UI-after-post range (gfx_ui_pass); the skybox/scene
+     * ortho is not UI. */
     bool proj_is_perspective;
     // Shadow pass: object -> light clip (modelview * camera inverse * light VP).
     float shadow_MP_matrix[4][4];
@@ -303,6 +305,10 @@ int gfx_splat_density = 35;
 int gfx_splat_shape = 0;   /* 0 radial, 1 paint strokes */
 int gfx_splat_active = 0;
 
+/* Skybox tag (GFX_OP_SKYBOX_MARKER): set while the background tiles are being
+ * turned into vertices, so the scene-ortho fine-tune cannot leak anywhere. */
+int gfx_skybox_active = 0;
+
 void gfx_sp_splat_marker(int on) {
     extern Gfx *gDisplayListHead;
     Gfx *cmd;
@@ -340,6 +346,19 @@ void gfx_sp_emissive_marker(uint32_t packed) {
     cmd = gDisplayListHead++;
     cmd->words.w0 = ((uint32_t)GFX_OP_EMISSIVE_MARKER) << 24;
     cmd->words.w1 = packed;
+}
+
+void gfx_sp_skybox_marker(Gfx **dlist, int on) {
+    Gfx *cmd;
+
+    if (dlist == NULL || *dlist == NULL) {
+        /* Called outside display-list generation (debug path): apply now. */
+        gfx_skybox_active = on ? 1 : 0;
+        return;
+    }
+    cmd = (*dlist)++;
+    cmd->words.w0 = ((uint32_t)GFX_OP_SKYBOX_MARKER) << 24;
+    cmd->words.w1 = on ? 1u : 0u;
 }
 
 // --- Per-frame world-space light registry ---------------------------------
@@ -1654,25 +1673,51 @@ static void gfx_sp_pop_matrix(uint32_t count) {
     }
 }
 
-/* 4:3 UI fit with square pixels:
- * - wide canvas: keep the height and compress x (pillarbox)
- * - narrow canvas: keep the width and compress y (letterbox), so dialog
- *   boxes and HUD text are never cropped at tall aspect settings. */
+/* UI layout, applied ONLY to the UI-after-post range (gfx_ui_pass) - never to
+ * the skybox or any 2D scene background.  Both axes get the same factor, so
+ * neither the box nor the size slider can distort the content:
+ * - UI size: content scale inside the layout box.
+ * - UI box:  the centred layout box the UI is laid out in, as a fraction of
+ *   the panel.  100% is the full-bleed canvas, 50% a centred half-size box
+ *   (pillar/letterboxed by the remaining margin), 133% covers a 16:9 panel
+ *   with a 4:3-safe HUD.  A width-only scale would stretch text and icons;
+ *   the SM64 HUD is absolutely positioned, so "reflow" can only mean
+ *   uniform scale about the centre. */
 float gfx_ui_fit_scale = 1.60f;   // UI size %, 100 = exact 4:3 fit
-/* UI bounding box width, % of the screen.  The old code always squeezed the
- * HUD into a 4:3 box on wide screens, so corner icons never reached the edges.
- * 100% binds the UI canvas to the full panel width without stretching it. */
-float gfx_ui_box_pct = 100.0f;
+float gfx_ui_box_pct = 100.0f;    // UI layout box width, % of the screen
+
+/* Skybox fine-tune, scene-ortho only (tagged by GFX_OP_SKYBOX_MARKER).
+ * Neutral 100/100/0/0 leaves the skybox at its game-native size: the UI
+ * box/size dials no longer stretch it. */
+float gfx_sky_scale_x = 1.0f;     // fx 370, percent / 100
+float gfx_sky_scale_y = 1.0f;     // fx 371
+float gfx_sky_off_x = 0.0f;       // fx 372, percent of the screen (NDC += /100)
+float gfx_sky_off_y = 0.0f;       // fx 373
+
+static float gfx_ui_box(void) {
+    return gfx_ui_box_pct / 100.0f;
+}
 
 static float gfx_ui_x_fit(void) {
-    float a = (float)gfx_current_dimensions.width / (float)gfx_current_dimensions.height;
-    float base = (a < (4.0f / 3.0f)) ? 1.0f : 1.0f;   /* no aspect squeeze */
-    return base * (gfx_ui_box_pct / 100.0f) * gfx_ui_fit_scale;
+    return gfx_ui_box() * gfx_ui_fit_scale;
 }
 
 static float gfx_ui_y_fit(void) {
     float a = (float)gfx_current_dimensions.width / (float)gfx_current_dimensions.height;
-    return (a < (4.0f / 3.0f) ? a / (4.0f / 3.0f) : 1.0f) * gfx_ui_fit_scale;
+    return (a < (4.0f / 3.0f) ? a / (4.0f / 3.0f) : 1.0f) * gfx_ui_box() * gfx_ui_fit_scale;
+}
+
+/* One-line readout for `cmd dump`: box, size, then the four skybox dials.
+ * Kept out of ptc.c's giant format string so the UI fields cannot desync the
+ * argument list there. */
+void gfx_ui_status(char *buf, int len) {
+    if (buf == NULL || len <= 0) {
+        return;
+    }
+    snprintf(buf, (size_t)len, "uibox=%.0f,%.0f,%.0f,%.0f,%.0f,%.0f",
+             gfx_ui_box_pct, gfx_ui_fit_scale * 100.0f,
+             gfx_sky_scale_x * 100.0f, gfx_sky_scale_y * 100.0f,
+             gfx_sky_off_x, gfx_sky_off_y);
 }
 
 static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx *vertices) {
@@ -1708,20 +1753,28 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx *verti
 
         if (!gfx_shadow_pass) {
             if (!rsp.proj_is_perspective) {
-                /* 2D/UI ortho only: the 3D perspective already has the aspect.
+                /* 2D ortho splits in two at gGfxUiStart:
+                 * - UI-after-post (gfx_ui_pass): HUD, dialogs, menus, captions,
+                 *   transitions.  Only this range gets UI box/size, and both
+                 *   axes get the same factor so nothing is stretched.
+                 * - scene ortho: the skybox/background.  It is NOT UI: it gets
+                 *   only its own fine-tune (fx 370-373) and the panel height
+                 *   calibration, exactly as before.
                  * Gameplay only - the intro/logo/file-select are a 4:3
-                 * presentation and must stay at 100% (a 160% UI size used to
-                 * blow the PRESS START text up over the logo). */
+                 * presentation and must stay at 100%. */
                 if (gCurrAreaIndex > 0) {
-                    x *= gfx_ui_x_fit();
                     if (gfx_ui_pass) {
+                        x *= gfx_ui_x_fit();
                         y *= gfx_ui_y_fit();
+                    } else {
+                        if (gfx_skybox_active) {
+                            x = x * gfx_sky_scale_x + gfx_sky_off_x * 0.01f;
+                            y = y * gfx_sky_scale_y + gfx_sky_off_y * 0.01f;
+                        }
+                        if (gfx_geo_y_scale != 1.0f) {
+                            y *= gfx_geo_y_scale;
+                        }
                     }
-                }
-                /* The skybox/2D scene ortho gets the panel correction too;
-                 * the UI pass stays at native 1:1. */
-                if (!gfx_ui_pass && gCurrAreaIndex > 0 && gfx_geo_y_scale != 1.0f) {
-                    y *= gfx_geo_y_scale;
                 }
             } else if (gCurrAreaIndex > 0) {
                 /* Panel/weave calibration: gameplay 3D only.  The intro
@@ -2406,7 +2459,11 @@ static void gfx_draw_rectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_t lr
     {
         float depthPx = gfx_reticle_pass ? g_portal_reticle_depth_px
                                          : gfx_ui_depth_px;
-        if ((gfx_ui_pass || gfx_reticle_pass) && depthPx != 0.0f) {
+        /* Per-eye depth needs the half-width eye buffer scale; with stereo off
+         * the divisor is 1, which would turn one px of UI depth into a
+         * screen-wide shift (the flat path used to run the UI with
+         * gfx_ui_pass == 0, which masked this). */
+        if (gfx_stereo_enabled && (gfx_ui_pass || gfx_reticle_pass) && depthPx != 0.0f) {
             float uiShift = gfx_stereo_eye_sign * depthPx * 2.0f
                           / (float) gfx_stereo_eye_width;
             ulxf += uiShift;
@@ -2669,6 +2726,11 @@ static void gfx_run_dl_range(Gfx* cmd, Gfx* end) {
                 }
                 break;
             }
+            case GFX_OP_SKYBOX_MARKER: {
+                /* Background/skybox tag: scene-ortho fine-tune only. */
+                gfx_skybox_active = cmd->words.w1 != 0;
+                break;
+            }
             case (uint8_t)G_ENDDL:
                 return;
 #ifdef F3DEX_GBI_2
@@ -2826,6 +2888,7 @@ static void gfx_sp_reset() {
     rsp.lights_changed = true;
     rsp.proj_is_perspective = true;
     gfx_splat_active = 0;
+    gfx_skybox_active = 0;
 }
 
 void gfx_get_dimensions(uint32_t *width, uint32_t *height) {
@@ -3179,7 +3242,12 @@ void gfx_run(Gfx *commands) {
                 gfx_rapi->unload_shader(rendering_state.shader_program);
                 rendering_state.shader_program = NULL;
             }
+            /* Same UI/scene split as the stereo path.  Without this the flat
+             * path ran the HUD with gfx_ui_pass == 0, so the UI box/size only
+             * scaled x there (and the skybox took the UI x scale). */
+            gfx_ui_pass = 1;
             gfx_run_dl_range(gGfxUiStart, NULL);
+            gfx_ui_pass = 0;
         } else {
             gfx_run_dl(commands);
             gfx_flush();

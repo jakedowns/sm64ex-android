@@ -45,6 +45,10 @@ void gfx_sp_splat_marker(int on);
 //
 // w1 layout: r<<24 | g<<16 | b<<8 | strength, strength 0 = end of tagged batch.
 #define GFX_OP_EMISSIVE_MARKER 0x3e   // unused F3DEX opcode; only this renderer sees it
+/* Skybox tag: brackets the background tiles so the scene-ortho fine-tune
+ * (fx 370-373) can never touch the HUD or any other 2D draw. Same reason as
+ * the splat/emissive markers: the tag has to survive per-eye replays. */
+#define GFX_OP_SKYBOX_MARKER 0x3d
 #define GFX_EMISSIVE_PACK(r, g, b, s) \
     ((((uint32_t)(r) & 0xFF) << 24) | (((uint32_t)(g) & 0xFF) << 16) \
      | (((uint32_t)(b) & 0xFF) << 8) | ((uint32_t)(s) & 0xFF))
@@ -54,6 +58,17 @@ extern int gfx_emissive_rgb[3];      // 0..255 emission colour of that batch
 extern int gfx_emissive_strength;    // == gfx_emissive_active (0 outside a batch)
 
 void gfx_sp_emissive_marker(uint32_t packed);
+void gfx_sp_skybox_marker(Gfx **dlist, int on);
+
+/* Skybox fine-tune (fx 370-373), applied to tagged skybox vertices only,
+ * after the projection. Neutral = 1.0 / 0.0. */
+extern float gfx_sky_scale_x;   // percent / 100
+extern float gfx_sky_scale_y;
+extern float gfx_sky_off_x;     // percent of the screen, added in NDC
+extern float gfx_sky_off_y;
+
+/* `uibox=<box>,<size>,<skyx>,<skyy>,<skyox>,<skyoy>` for `cmd dump`. */
+void gfx_ui_status(char *buf, int len);
 
 // --- Per-frame world-space light registry ---------------------------------
 // Gameplay registers lights while it builds the display list (before gfx_run);

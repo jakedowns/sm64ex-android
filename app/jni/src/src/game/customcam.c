@@ -323,6 +323,21 @@ int gfx_cam_sens_state(int which) {
  * the surroundings readable.  Toggle in the CAMERA tab / adb key 52. */
 int gfx_cam_noclip = 1;
 
+/* Camera vs ground (CAMERA > SETTINGS, fx 360).
+ *
+ * 0 COLLIDE - the pre-existing behaviour: floors and ceilings are ordinary
+ *              collision surfaces, so they push the camera up and in.
+ * 1 CLIP    - floor and ceiling surfaces (|normal.y| > 0.7) are ignored by the
+ *              camera collision and by the floor clamp, so the camera can sit
+ *              under the floor or above the ceiling.  Walls (and steep slopes)
+ *              still collide.  Independent of gfx_cam_noclip, which hides a
+ *              wall in front of Mario rather than letting the camera pass. */
+int gfx_cam_ground_clip = 0;
+
+int custom_camera_ground_clip(void) {
+    return gfx_cam_ground_clip ? 1 : 0;
+}
+
 static s16 s_yaw;
 static s16 s_pitch = 0x1800;
 static f32 s_dist() { return gfx_cam_dist; }
@@ -720,6 +735,70 @@ static f32 clamps(f32 v, f32 lo, f32 hi) {
     return v;
 }
 
+/* A floor or ceiling, by the usual |normal.y| threshold.  Anything shallower
+ * is a wall or a steep slope, and keeps colliding in CLIP mode.  This uses the
+ * surface normal rather than the surface type/partition, so it works for level
+ * geometry, dynamic platforms and the PTC meshes alike. */
+static int cam_surface_is_flat(const struct Surface *s) {
+    return s != NULL && fabsf(s->normal.y) > 0.7f;
+}
+
+/**
+ * Camera pull-in raycast that lets floors/ceilings through.
+ *
+ * find_surface_on_ray() returns the nearest hit of any kind, so a horizontal
+ * hit is skipped by re-casting from just past it with the remaining length,
+ * until a wall is found or the orbit ray runs out.  On return *hit_surf is the
+ * first wall hit (or NULL) and hit_pos its position, exactly like
+ * find_surface_on_ray().
+ */
+static void cam_cast_ray_through_ground(Vec3f orig, Vec3f dir,
+                                        struct Surface **hit_surf, Vec3f hit_pos) {
+    Vec3f from, seg, nd, hit;
+    f32 total, travelled = 0.0f;
+    int guard = 0;
+
+    *hit_surf = NULL;
+    total = vec3f_length(dir);
+    if (total < 1.0f) {
+        return;
+    }
+    vec3f_copy(nd, dir);
+    vec3f_normalize(nd);
+
+    while (travelled < total && guard++ < 8) {
+        f32 segLen = total - travelled;
+        f32 dx, dy, dz, step;
+        struct Surface *s = NULL;
+
+        from[0] = orig[0] + nd[0] * travelled;
+        from[1] = orig[1] + nd[1] * travelled;
+        from[2] = orig[2] + nd[2] * travelled;
+        seg[0] = nd[0] * segLen;
+        seg[1] = nd[1] * segLen;
+        seg[2] = nd[2] * segLen;
+
+        find_surface_on_ray(from, seg, &s, hit);
+        if (s == NULL) {
+            return;
+        }
+        if (!cam_surface_is_flat(s)) {
+            *hit_surf = s;
+            vec3f_copy(hit_pos, hit);
+            return;
+        }
+        /* Skip this floor/ceiling: continue one unit past the hit. */
+        dx = hit[0] - from[0];
+        dy = hit[1] - from[1];
+        dz = hit[2] - from[2];
+        step = sqrtf(dx * dx + dy * dy + dz * dz) + 1.0f;
+        if (step < 1.0f) {
+            step = 1.0f;
+        }
+        travelled += step;
+    }
+}
+
 /**
  * Traditional third-person orbit: the camera sits behind/above Mario, the right
  * stick (or the overlay analog stick) orbits it, it slowly drifts back behind
@@ -916,6 +995,11 @@ void custom_camera_update(struct Camera *c) {
         s_pos[1] += (desired[1] - s_pos[1]) * camK;
         s_pos[2] += (desired[2] - s_pos[2]) * camK;
         surf = NULL;
+    } else if (gfx_cam_ground_clip) {
+        /* CLIP: floors and ceilings are transparent to the camera, so the
+         * camera can go under the floor or above the ceiling; walls still
+         * pull it in.  gfx_cam_noclip above still wins outright. */
+        cam_cast_ray_through_ground(target, rayHit, &surf, s_pos);
     } else {
         find_surface_on_ray(target, rayHit, &surf, s_pos);
     }
@@ -941,8 +1025,9 @@ void custom_camera_update(struct Camera *c) {
         s_pos[2] += (desired[2] - s_pos[2]) * camK;
     }
 
-    // Never let the camera go under the floor.
-    {
+    // Never let the camera go under the floor (COLLIDE only: CLIP exists to
+    // let it do exactly that).
+    if (!gfx_cam_ground_clip) {
         struct Surface *floor = NULL;
         f32 floorY = find_floor(s_pos[0], s_pos[1] + 200.0f, s_pos[2], &floor);
         if (floor != NULL && s_pos[1] < floorY + 80.0f) {

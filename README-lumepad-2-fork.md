@@ -345,6 +345,15 @@ text labels, transitions, native touch controls, borders).
   AO/DOF/GI neither blur the HUD nor bleed HUD colours into the scene.
 - The UI range skips the stereo shear, so the HUD is screen-locked by default
   (`UIPAR` restores the old sheared UI).
+- **UI layout box (`fx 59`) and UI size (`fx 58`) apply to the UI range only.**
+  Both scale the UI canvas uniformly about the centre, so they can never
+  stretch text, icons or dialogs: box 100% is full-bleed, 50% a centred
+  half-size box, 133% covers a 16:9 panel with a 4:3-safe HUD. The skybox and
+  any other 2D scene background are outside the range and keep their scale.
+- **Skybox fine-tune (`fx 370`-`373`).** Scale X/Y and offset X/Y are applied
+  only to the vertices bracketed by the renderer-local `GFX_OP_SKYBOX_MARKER`
+  tag emitted by `init_skybox_display_list()`. Neutral is 100/100/0/0.
+  Status readout: `uibox=<box>,<size>,<skyx>,<skyy>,<skyox>,<skyoy>`.
 - `UIBUF` shows the captured UI buffer for verification.
 - Pipeline state caches (shader, viewport, scissor, depth, blend) are invalidated
   after the post pass so the next frame re-applies them.
@@ -429,6 +438,29 @@ reports `occl=mode,radius,feather`. With WALL NOCLIP on, the PTC demo's
 whole-wall hide is suppressed while OCCLUSION is on, so the wall stays visible
 and the circular hole is the only mechanism. Proof stills (four modes, stereo
 and camwall) live in `/media/share/tmp/artifacts/sm64/occlusion/`.
+
+### Camera vs ground (CAMERA > SETTINGS)
+
+**GROUND** sits directly under **WALL NOCLIP** and decides whether the custom
+orbit camera collides with the floor and ceiling or clips through them:
+
+| Mode | Behaviour |
+|---|---|
+| `COLLIDE` (default) | the historical camera: a floor pulls it up (the `find_floor` clamp) and a ceiling/floor in the pull-in ray shortens the orbit distance |
+| `CLIP` | floors and ceilings are ignored by the camera collision, so it can sit under the floor or above the ceiling; walls still collide |
+
+Floor/ceiling is identified by surface normal (`|normal.y| > 0.7`), not by
+object type or partition, so level geometry, moving platforms and the PTC
+meshes behave the same. In CLIP the pull-in ray re-casts past each horizontal
+hit until it finds a wall (or runs out of orbit distance), and both floor
+clamps are skipped: the custom camera's own `find_floor` clamp and the engine's
+`update_lakitu` one (`camera.c`). `gfx_cam_noclip` keeps its own meaning (hide
+the wall in front of Mario) and still wins when it is on. The mode is persisted
+and read back in `cmd dump` as `camclip=collide|clip`.
+
+`fx 360`: `0` = COLLIDE, `1` = CLIP. Reproduce from the same pose with
+`cmd fx 360 1` for the under-floor view and `cmd fx 360 0` for the pulled-up
+view; a wall case with `cmd fx 360 1` proves walls still collide.
 
 ### Grapple targeting debug view (ENH > MOVE)
 
@@ -798,7 +830,9 @@ in-scale %, `15` ZBUF, `16` wireframe, `17` toe %, `18` aspect %, `19` no cull,
 FX knobs (`cmd fx`): AO `1`-`6`, DOF `11`-`15` (`16` auto focus, `17` reports
 the auto distance), SSGI `21`-`25`, SSRTX `70`-`77`, crepuscular rays
 `250`-`260`, tone map + grading `280`-`289`, wall-run jump-off `320`-`329`,
-normal flip `32`.
+camera vs ground `360`, normal flip `32`.
+normal flip `32`, skybox fine-tune `370`-`373` (UI size/box are the stereo
+keys `58`/`59`, i.e. `cmd set`, because `fx 50`-`61` are shadow knobs).
 
 | group | keys |
 | --- | --- |
@@ -813,6 +847,7 @@ normal flip `32`.
 | bokeh / DOF | `160` kernel, `161` aspect %, `162` blades, `163` rotation, `164` anamorphic %, `165` highlight %, `166` cat eye % |
 | rate limit | `200` on, `201` target fps, `202` adaptive, `203` reset stats |
 | slow motion | `241` sim speed `1/n` (1-8, 1 = normal), `242` sub-frame interpolation (1 = re-present the last display list at k/n of the step; 0 = old stop-motion), `243` diagnostic: always present `t=1` (step end) while still re-presenting |
+| UI layout + skybox | UI size/box: stereo keys `58`/`59` (`cmd set`; fx `50`-`61` are shadows); skybox `cmd fx` `370` scale X %, `371` scale Y %, `372` offset X %, `373` offset Y % (scene ortho only, neutral at 100/100/0/0) |
 | denoiser | `210` alternative path, `211` on, `212` intensity, `213` passes, `214` radius, `215` frames, `216` bounces, `217` test captions, `220` resolution `1/n` (1 = full res, 2-4 = reduced; default 4) |
 | emissive + bloom (GLOW) | `261` bloom on (default **off**), `262` threshold 0-255 (default 48), `263` intensity % (default 120), `264` blur radius (default 3), `265` blur passes 1-3 (default 2), `266` taps 5/9 (default 9), `267` emissive gain % (default 100), `268` debug view (0 off, 1 emissive buffer, 2 bloom buffer), `269` emissive tags on (default on), `270` also bloom scene pixels above threshold (default off) |
 | jetpack light | `271` on (default on), `272` intensity % (default 150), `273` radius in world units (default 220) |
@@ -842,6 +877,7 @@ active profile). Positions are normalised (0..1) and sizes are multipliers of
 a 1600-px reference radius, so a profile survives a different panel resolution.
 | tone map + grading (GRADE) | `280` master (default **off**), `281` tonemap (0 linear, 1 Reinhard, 2 ACES, 3 filmic), `282` exposure EV×100, `283` white point % (100-400), `284` look (0 none, 1 sepia, 2 cool, 3 warm, 4 bleach, 5 cel, 6 LUT), `285` look strength %, `286` saturation %, `287` contrast %, `288` tint (-cool/+warm), `289` split pre/post debug |
 | painting ripple | `350` interpolate the rippling painting's mesh on presented frames (default **on**); `0` restores the old per-sim-tick stepping for A/B captures |
+| camera vs ground | `360` 0 = `COLLIDE` (default; floors/ceilings push the camera up/in), 1 = `CLIP`: floor and ceiling surfaces (`|normal.y| > 0.7`) are ignored, so the camera can go under the floor or above the ceiling; walls still collide. Status: `camclip=collide\|clip` |
 | grapple targeting debug | `310` view on (default **off**), `311` fan half-angle x0.1 deg (default `80` = 8.0°), `312` fan ring rays (default 8), `313` HUD line (default off), `314` range in world units (default 3400), `315` out-of-range probe x0.1 (default `40` = 4x) |
 
 The denoiser runs at 1/4 resolution by default: the scene colour and depth are

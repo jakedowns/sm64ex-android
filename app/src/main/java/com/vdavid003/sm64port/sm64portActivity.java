@@ -264,12 +264,16 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     private int camMode2 = 0;   // 0 vanilla, 1 bettercam, 2 puppycam, 3 custom, 4 first person, 5 free
     private static final String PREF_CAM_SENS_BAND = "cam_sens_band";
     private static final String PREF_CAM_SENS_TRIM = "cam_sens_trim";
+    private static final String PREF_CAM_GROUND_CLIP = "cam_ground_clip";
     private static final float[] CAM_SENS_MULT = { 0.6f, 1.0f, 1.6f };
     private static final String[] CAM_SENS_NAMES = { "LOW", "MED", "HIGH" };
+    private static final String[] CAM_GROUND_NAMES = { "COLLIDE", "CLIP" };
     private int camSensBand = 1;     // 0 LOW 0.6x, 1 MED 1.0x, 2 HIGH 1.6x
     private int camSensTrim = 100;   // slider percent inside the band
+    private int camGroundClip = 0;   // 0 COLLIDE (default), 1 CLIP through floors/ceilings
     private TextView camSensValue;
     private TextView[] camSensPills = new TextView[CAM_SENS_NAMES.length];
+    private TextView[] camGroundPills = new TextView[CAM_GROUND_NAMES.length];
     private TextView[] camModePills = new TextView[6];
     private float panelDownY = -1;
     private static final int PANEL_BG = 0xCC101010;
@@ -478,6 +482,17 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         if (camSensTrim > 300) camSensTrim = 300;
         Log.i(TAG, "CAM_SENS restored: band=" + CAM_SENS_NAMES[camSensBand]
                 + " trim=" + camSensTrim + "%");
+
+        /* Camera vs ground: COLLIDE (default) or CLIP through floors/ceilings.
+         * Pushed to native by addCamGroundClipRow() when the panel is built. */
+        try {
+            camGroundClip = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                    .getInt(PREF_CAM_GROUND_CLIP, 0);
+        } catch (Throwable t) {
+            camGroundClip = 0;
+        }
+        if (camGroundClip != 1) camGroundClip = 0;
+        Log.i(TAG, "CAM_GROUND restored: " + CAM_GROUND_NAMES[camGroundClip]);
 
         try {
             initLeia();
@@ -1342,6 +1357,30 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         // Task rule: an enable/show toggle is the first control on the page,
         // above every slider. GESTURES is the stereo page's enable switch.
         addAboveGrid(makePinchToggle(), ViewGroup.LayoutParams.WRAP_CONTENT);
+        // SKYBOX FINE-TUNE: the skybox is scene geometry, not UI, so the two UI
+        // sliders above never touch it.  These four dials (fx 370-373) do, and
+        // only the skybox; neutral by default, RESET restores it.
+        beginSection("SKYBOX FINE-TUNE", false);
+        addSlider("Sky scale X", 50, 200, 100, " %", 370);
+        addSlider("Sky scale Y", 50, 200, 100, " %", 371);
+        addSlider("Sky offset X", -100, 100, 0, " %", 372);
+        addSlider("Sky offset Y", -100, 100, 0, " %", 373);
+        {
+            LinearLayout skyRow = addRow();
+            TextView skyReset = new TextView(this);
+            skyReset.setText("\u25B8 RESET SKYBOX");
+            skyReset.setTextSize(14);
+            skyReset.setTextColor(0xFFFF9966);
+            skyReset.setPadding(dp(4), dp(6), dp(4), dp(6));
+            skyReset.setOnClickListener(v -> {
+                setCamValue(370, 100);
+                setCamValue(371, 100);
+                setCamValue(372, 0);
+                setCamValue(373, 0);
+            });
+            addCompact(skyRow, skyReset);
+        }
+        endSection();
         // Hidden for now (kept for later): V%, W-px, H-shift%, V-shift.
         outVal[1] = 100; outVal[3] = 0; outVal[4] = 0;
         startDebugReadout(panel);
@@ -1869,6 +1908,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addAboveGrid(makePinchToggle(), ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.MATCH_PARENT);
         addCamToggle("WALL NOCLIP", 52, true);
+        addCamGroundClipRow();
 
         addCamSlider("Cam distance", 1, 1500, 700, " u", 46);
         addCamSlider("FOV %", 1, 400, 100, " %", 20);
@@ -3251,6 +3291,97 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                     .apply();
         } catch (Throwable t) {
             Log.w(TAG, "CAM_SENS prefs not saved", t);
+        }
+    }
+
+    /**
+     * COLLIDE / CLIP camera-vs-ground row, directly under WALL NOCLIP on
+     * CAMERA > SETTINGS.
+     *
+     * COLLIDE (default) is the historical camera: floor and ceiling surfaces
+     * push it up/in. CLIP ignores those surfaces so the camera can go under
+     * the floor or above the ceiling; walls still collide. This is independent
+     * of WALL NOCLIP, which hides the wall in front of Mario instead.
+     * Native key: fx 360 (customcam.c), persisted here.
+     */
+    private void addCamGroundClipRow() {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(2), dp(1), dp(8), dp(1));
+
+        TextView label = new TextView(this);
+        label.setText(glyph("CAM GROUND") + " GROUND");
+        label.setTextSize(13);
+        label.setTextColor(0xFF888888);
+        label.setPadding(dp(2), 0, dp(6), 0);
+        row.addView(label, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        LinearLayout track = new LinearLayout(this);
+        track.setOrientation(LinearLayout.HORIZONTAL);
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(0xFF171B22);
+        bg.setCornerRadius(dp(14));
+        bg.setStroke(dp(1), 0xFF39404E);
+        track.setBackground(bg);
+        track.setPadding(dp(2), dp(2), dp(2), dp(2));
+
+        camGroundPills = new TextView[CAM_GROUND_NAMES.length];
+        for (int i = 0; i < CAM_GROUND_NAMES.length; i++) {
+            TextView pill = new TextView(this);
+            pill.setText(CAM_GROUND_NAMES[i]);
+            pill.setTextSize(11);
+            pill.setGravity(Gravity.CENTER);
+            pill.setPadding(dp(6), dp(5), dp(6), dp(5));
+            final int mode = i;
+            pill.setOnClickListener(v -> setCamGroundClip(mode, true));
+            track.addView(pill, new LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            camGroundPills[i] = pill;
+        }
+        row.addView(track, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        addAboveGrid(row, 0);
+        setCamGroundClip(camGroundClip, false);
+    }
+
+    private void setCamGroundClip(int mode, boolean persist) {
+        camGroundClip = mode == 1 ? 1 : 0;
+        nativeSetSSFX(360, camGroundClip);
+        updateCamGroundPills();
+        if (persist) {
+            try {
+                getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                        .putInt(PREF_CAM_GROUND_CLIP, camGroundClip)
+                        .apply();
+            } catch (Throwable t) {
+                Log.w(TAG, "CAM_GROUND pref not saved", t);
+            }
+        }
+        Log.i(TAG, "CAM_GROUND " + CAM_GROUND_NAMES[camGroundClip]);
+    }
+
+    private void updateCamGroundPills() {
+        if (camGroundPills == null) {
+            return;
+        }
+        for (int i = 0; i < camGroundPills.length; i++) {
+            TextView pill = camGroundPills[i];
+            if (pill == null) continue;
+            GradientDrawable bg = new GradientDrawable();
+            bg.setCornerRadius(dp(12));
+            if (i == camGroundClip) {
+                bg.setColor(0xFF2E6FD8);
+                pill.setTextColor(Color.WHITE);
+                pill.setTypeface(null, Typeface.BOLD);
+            } else {
+                bg.setColor(Color.TRANSPARENT);
+                pill.setTextColor(0xFF9AA3B2);
+                pill.setTypeface(null, Typeface.NORMAL);
+            }
+            pill.setBackground(bg);
         }
     }
 
@@ -5569,6 +5700,13 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     void debugFx(int k, int v) {
         if (k >= 300 && k <= 309) {
             handleLayoutFx(k, v);
+            return;
+        }
+        if (k == 360) {
+            /* Keep the CAMERA > SETTINGS pills in step with a remote change and
+             * persist it, so `cmd fx 360 1` survives a relaunch too. */
+            setCamGroundClip(v, true);
+            Log.i(TAG, "FX set " + k + "=" + v);
             return;
         }
         nativeSetSSFX(k, v);

@@ -34,6 +34,7 @@
 
 // Camera mode selection + custom orbit camera (customcam.c).
 extern int gfx_cam_mode;
+extern int gfx_cam_ground_clip;
 extern void custom_camera_update(struct Camera *c);
 extern void custom_camera_apply_mode(int mode);
 extern void first_person_camera_update(struct Camera *c);
@@ -3021,6 +3022,9 @@ void update_lakitu(struct Camera *c) {
 #ifdef BETTERCAMERA
             && c->mode != CAMERA_MODE_NEWCAM
 #endif
+            /* Custom camera in CLIP mode is allowed below the floor / above
+             * the ceiling; its own pull-in already handles walls. */
+            && !(gfx_cam_mode == 3 && gfx_cam_ground_clip)
             )
         {
             gCheckingSurfaceCollisionsForCamera = TRUE;
