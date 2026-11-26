@@ -494,7 +494,9 @@ if [[ "$kind" == "device" ]]; then
     device_app_busy 1
 
     # Power audit: attribute any reboot between holds to the previous holder,
-    # warn on a low battery, and keep the panel awake for this hold.
+    # warn on a low battery, and keep the panel awake for this hold.  It must
+    # never fail the lock, so errexit is off for the whole block.
+    set +e
     {
         probe=$(device_probe_power)
         if [[ -n "$probe" ]]; then
@@ -519,16 +521,19 @@ if [[ "$kind" == "device" ]]; then
         fi
         device_timeout_raise
     }
+    set -e
 fi
 
 release_note() {
     local rc=$?
     local hold_ms=$(( $(now_ms) - hold_start_ms ))
     if [[ "$kind" == "device" ]]; then
+        set +e
         device_timeout_restore
         device_app_busy 0
         device_sleep
-        printf '%s' "$(device_probe_power)" > "$(DEVICE_POWER_STATE)" 2>/dev/null || true
+        printf '%s' "$(device_probe_power)" > "$(DEVICE_POWER_STATE)" 2>/dev/null
+        set -e
     fi
     # device-quick deliberately leaves the tablet alone: no BUSY, no sleep.
     # fd 9 is still open here, so we still own the lock.
