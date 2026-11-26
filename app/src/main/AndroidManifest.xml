@@ -55,6 +55,11 @@
     <!-- Allow access to the vibrator -->
     <uses-permission android:name="android.permission.VIBRATE" />
 
+    <!-- otsm64remote (opt-in, off by default): the telemetry/remote-input
+         bridge posts over HTTPS only when <external files>/sm64remote.cfg has
+         enabled = true. Nothing is sent while it is off. See OTSM64REMOTE.md. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
     <!-- if you want to capture audio, uncomment this. -->
     <!-- <uses-permission android:name="android.permission.RECORD_AUDIO" /> -->
 

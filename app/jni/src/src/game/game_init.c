@@ -19,6 +19,7 @@
 #include "segment2.h"
 #include "menu/level_select_menu.h"
 #include "main_entry.h"
+#include "otsm64remote.h"
 
 /* levels/entry.h also declares the old `u8 level_script_entry[]` shape, which
  * engine/level_script.h declares differently; only the QUICK DEV entry is
@@ -748,6 +749,9 @@ void game_loop_one_iteration(void) {
         audio_game_loop_tick();
         config_gfx_pool();
         read_controller_inputs();
+        /* otsm64remote: a queued remote press is ORed into this tick's
+         * gPlayer1Controller->buttonPressed, and the next read above clears it. */
+        otsm64remote_tick_begin();
 
         /* Slow-motion phase. The tick counter runs whenever the divisor is
          * above 1; tick 0 is the one that actually steps the simulation. */

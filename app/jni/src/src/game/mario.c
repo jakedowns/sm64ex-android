@@ -32,6 +32,7 @@
 #include "level_table.h"
 #include "ptc.h"
 #include "thread6.h"
+#include "otsm64remote.h"
 #include "pc/configfile.h"
 #include "pc/cheats.h"
 #ifdef BETTERCAMERA
@@ -1862,6 +1863,10 @@ s32 execute_mario_action(UNUSED struct Object *o) {
         play_infinite_stairs_music();
         gMarioState->marioObj->oInteractStatus = 0;
         func_sh_8025574C();
+
+        /* otsm64remote: mirror this tick's pos/yaw/action and the animation
+         * state set_mario_animation() just wrote. Read-only; no second sim. */
+        otsm64remote_capture();
 
         return gMarioState->particleFlags;
     }

@@ -237,6 +237,20 @@ public class DebugReceiver extends BroadcastReceiver {
                 Log.i(TAG, "CMD feedback text=" + text);
                 break;
             }
+            case "remote": {
+                /* status | reload (config lives in <external files>/sm64remote.cfg) */
+                String action = intent.getStringExtra("action");
+                a.debugRemote(action);
+                Log.i(TAG, "CMD remote action=" + action);
+                break;
+            }
+            case "rinput": {
+                /* test hook: the same one-tick press a relay "jump" produces */
+                String input = intent.getStringExtra("input");
+                a.debugRemoteInput(input);
+                Log.i(TAG, "CMD rinput input=" + input);
+                break;
+            }
             case "dump":
             default:
                 a.debugDump();

@@ -43,6 +43,7 @@
 
 #include "game/ptc.h"
 #include "game/ptc_trace.h"
+#include "game/otsm64remote.h"
 #include "game/print.h"
 #include "level_table.h"
 
@@ -568,6 +569,60 @@ Java_com_vdavid003_sm64port_sm64portActivity_nativeGetPortalGun(JNIEnv *env, jcl
  * so anything that needs real seconds must use this. */
 double gfx_wall_time_sec(void) {
     return (double) SDL_GetTicks() / 1000.0;
+}
+
+/* Millisecond uptime shared by the debug channel and the otsm64remote sample
+ * timestamps (game/otsm64remote.c). */
+unsigned int gfx_uptime_ms(void) {
+    return (unsigned int) SDL_GetTicks();
+}
+
+/* ---- otsm64remote: opt-in telemetry + one-tick remote input (Java worker) ----
+ * The game thread only writes fixed samples into a lock-free ring
+ * (game/otsm64remote.c); these wrappers are called from the worker thread,
+ * which owns the ring's read side. Nothing here allocates on the game thread
+ * and nothing opens a socket. See OTSM64REMOTE.md. */
+JNIEXPORT void JNICALL
+Java_com_vdavid003_sm64port_Sm64Remote_nativeSetRemoteEnabled(JNIEnv *env, jclass clazz,
+                                                                   jint on) {
+    (void) env; (void) clazz;
+    otsm64remote_enable(on ? 1 : 0);
+}
+
+/* Pops one sample into `buf` as a JSON object; returns its length or 0. */
+JNIEXPORT jint JNICALL
+Java_com_vdavid003_sm64port_Sm64Remote_nativePollRemoteState(JNIEnv *env, jclass clazz,
+                                                                  jbyteArray buf) {
+    char tmp[OTSM64REMOTE_JSON_MAX];
+    int len;
+    (void) clazz;
+    if (buf == NULL) return 0;
+    len = otsm64remote_poll_json(tmp, (int) sizeof(tmp));
+    if (len <= 0) return 0;
+    if (len > (*env)->GetArrayLength(env, buf)) {
+        len = (*env)->GetArrayLength(env, buf);
+    }
+    (*env)->SetByteArrayRegion(env, buf, 0, len, (const jbyte *) tmp);
+    return len;
+}
+
+JNIEXPORT void JNICALL
+Java_com_vdavid003_sm64port_Sm64Remote_nativeRemoteQueueJump(JNIEnv *env, jclass clazz) {
+    (void) env; (void) clazz;
+    otsm64remote_queue_jump();
+}
+
+JNIEXPORT void JNICALL
+Java_com_vdavid003_sm64port_Sm64Remote_nativeClearRemoteInput(JNIEnv *env, jclass clazz) {
+    (void) env; (void) clazz;
+    otsm64remote_clear_input();
+}
+
+JNIEXPORT jint JNICALL
+Java_com_vdavid003_sm64port_Sm64Remote_nativeRemoteStat(JNIEnv *env, jclass clazz,
+                                                              jint which) {
+    (void) env; (void) clazz;
+    return (jint) otsm64remote_stat((int) which);
 }
 
 JNIEXPORT jint JNICALL

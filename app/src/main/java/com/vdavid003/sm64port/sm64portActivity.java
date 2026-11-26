@@ -581,6 +581,15 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                 runOnUiThread(() -> installCaptionOverlay((ViewGroup) mLayout));
             }
         }
+
+        /* otsm64remote: opt-in mirror + one-tick remote input. Reads
+         * <external files>/sm64remote.cfg, which defaults to enabled = false,
+         * so a stock install sends nothing. See OTSM64REMOTE.md. */
+        try {
+            Sm64Remote.start(this);
+        } catch (Throwable t) {
+            Log.w(TAG, "otsm64remote not started: " + t);
+        }
     }
 
     /** Add the Java caption view once. Position is handled inside the view
@@ -4348,6 +4357,33 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     }
 
     /**
+     * otsm64remote: null/"status" logs the bridge line (never the token),
+     * "reload" re-reads <external files>/sm64remote.cfg. The config file stays
+     * the source of truth; this is the test hook. See OTSM64REMOTE.md.
+     */
+    void debugRemote(String action) {
+        if (action == null || action.isEmpty() || action.equals("status")) {
+            Log.i(TAG, "REMOTE " + Sm64Remote.statusLine());
+            return;
+        }
+        if (action.equals("reload")) {
+            Log.i(TAG, "REMOTE reload -> " + Sm64Remote.reload(this));
+            return;
+        }
+        Log.i(TAG, "REMOTE unknown action '" + action + "' (status|reload)");
+    }
+
+    /** otsm64remote test hook: queue the press a relay "jump" would produce. */
+    void debugRemoteInput(String input) {
+        if ("jump".equalsIgnoreCase(input)) {
+            Sm64Remote.queueTestJump();
+            Log.i(TAG, "REMOTE test input jump queued");
+        } else {
+            Log.i(TAG, "REMOTE test input ignored: " + input);
+        }
+    }
+
+    /**
      * QUICK DEV: persist the cheap-boot toggle and push it to the engine.
      * Negative arguments leave that field alone. The boot level is read by
      * thread5_game_loop on the next launch; mute applies immediately.
@@ -6862,6 +6898,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             if (touchOverlay != null) {
                 Log.i(TAG, "LAYOUT " + touchOverlay.statusLine());
             }
+            Log.i(TAG, "REMOTE " + Sm64Remote.statusLine());
             Log.i(TAG, "UNCAPPED_TEST=" + nativeGetUncappedTest());
             logPanelMetrics();
         });
@@ -7008,6 +7045,10 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
 
     @Override
     protected void onDestroy() {
+        try {
+            Sm64Remote.stop();
+        } catch (Throwable ignored) {
+        }
         DebugLog.markCleanExit();
         DebugLog.flush();
         if (instance == this) instance = null;

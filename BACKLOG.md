@@ -587,6 +587,35 @@ keep a feature inside its block:
 | `410`-`419` | wall-run 90° corner rig, worktree `w3-corner-test` (taken: `410` nominal jump distance, `411` timing spacing, `412` re-entry deadline ticks, `413` entry height, `414` entry speed, `415` corner-stuck ticks; `416`-`419` free) |
 | `420`-`429` | reduced-resolution FX/post pass, worktree `w4-fx-halfres` (taken: `420` divisor 1/n, `421` upsample mode 0=bilinear 1=depth-aware, `422` read-only divisor the last frame used; `423`-`429` free) |
 | `430`-`439` | QUALITY presets, worktree `w4-presets` (taken: `430` apply tier 0=LOW 1=MED 2=HIGH, `431` read-only tier last applied; `432`-`439` free) |
+| `440`-`449` | otsm64remote, worktree `w5-otsm64remote` (registered 2026-11-26; **unused** — the bridge is config-file driven and deliberately has no fx key) |
+
+### otsm64remote: opt-in telemetry + one-tick remote input
+Code-complete 2026-11-26, not built or device-verified (the parent applies the
+patch and builds centrally). Full protocol: `OTSM64REMOTE.md`.
+
+- Off by default; `enabled = true` in
+  `<external files>/sm64remote.cfg` is the only way in. Disabled means both C
+  hooks return immediately and no worker thread exists.
+- Push at `interval_ms` (default 80 ms) is `POST …/state.php?action=push`; the
+  command poll is `GET …/state.php?action=commands` at 10 Hz. Token goes in the
+  `X-Sm64-Token` header, never the URL.
+- Capture is one call at the end of `execute_mario_action()` (read
+  pos/yaw/action + the anim id/frame `set_mario_animation()` wrote), so there is
+  no second sim. Injection is one call after `read_controller_inputs()`: the
+  press is ORed into `gPlayer1Controller->buttonPressed`, and the next read
+  clears it — `set_mario_action()` is never called.
+- Why a ring in C and the socket in Java: the NDK build has no HTTP stack, and
+  a socket on the game thread would block the 30 Hz tick. The 8-slot ring is
+  SPSC with release/acquire counters and drops the *newest* sample when full.
+- TTL is enforced twice: C drops a press older than 500 ms, and the Java
+  watchdog calls `nativeClearRemoteInput()` after 500 ms without a good poll.
+- `INTERNET` permission is now declared (unavoidable for any network feature);
+  there is no traffic while disabled. Cleartext is not enabled, so a `http://`
+  URL fails instead of silently downgrading.
+- Test hook that skips the network: `cmd rinput --es input jump` queues the same
+  press, so the game-side latency can be measured on its own.
+- Evidence still owed: viewer `demo` → `live` plus a jump within ~100 ms, and a
+  disabled run with zero pushes (see `TODO.md`).
 
 ## Known bugs and limits
 

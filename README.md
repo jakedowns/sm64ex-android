@@ -35,6 +35,11 @@ Android): **[README-original.md](README-original.md)**. This file describes what
   control, `cmd dump` reports a machine-readable status line, and there is an
   in-app feedback outbox plus a `quick-dev` loop that gets a change on screen in
   seconds.
+- **Opt-in telemetry mirror** (`otsm64remote`, off by default) — numeric state
+  (position, yaw, speed, animation, action label) is mirrored to a browser
+  viewer over HTTPS, and a viewer `{"input":"jump"}` becomes a single A press.
+  Config in `<external files>/sm64remote.cfg`; see
+  [`OTSM64REMOTE.md`](OTSM64REMOTE.md). Nothing is sent unless enabled.
 
 ## Build
 
@@ -84,6 +89,7 @@ subsequent launches skip the logo/attract sequence.
 | [`BACKLOG.md`](BACKLOG.md) | long-form notes, decisions and gotchas for open threads |
 | [`AGENTS.md`](AGENTS.md) | build/device protocol, locks, debug channel — read this before touching the tablet |
 | [`EFFICIENT-DEBUGGING.md`](EFFICIENT-DEBUGGING.md) | how to tune at runtime instead of rebuilding |
+| [`OTSM64REMOTE.md`](OTSM64REMOTE.md) | opt-in telemetry/remote-input bridge: config, protocol, relay, what is and is not sent |
 | [`TESTING.md`](TESTING.md) | test rigs and harnesses (portal relay, chain, wall-run corner) |
 | [`PORTAL-TEST-CHAMBER.md`](PORTAL-TEST-CHAMBER.md) | the PTC level and its scripted actions |
 | [`MOTION-VECTORS.md`](MOTION-VECTORS.md), [`DENOISER-RATE-LIMIT.md`](DENOISER-RATE-LIMIT.md) | motion blur and denoiser internals with measurements |

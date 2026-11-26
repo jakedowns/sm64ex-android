@@ -80,6 +80,17 @@ compaction + docking, Java captions, vertical dock, and the three perf rewrites
 - [ ] Debug text in Java beyond captions: the `gShowDebugText` "BUF" line is
       still drawn with the game font.
 
+## otsm64remote (code landed, awaiting device evidence)
+
+- [ ] Device run: viewer flips `demo` → `live` on pushes, and a relay
+      `{"input":"jump"}` produces a jump in the HUD within ~100 ms. Capture the
+      timestamps (`SM64Remote` log + screenshot pair) in
+      `/media/share/tmp/artifacts/sm64/otsm64remote/`.
+- [ ] Disabled run: with `enabled = false`, one `disabled` line and no pushes
+      for a full level load (proves byte-identical behaviour).
+- [ ] Decide whether the relay keeps the 12.5 Hz default or 15 Hz reads better
+      for the browser's `live` badge.
+
 ## Tooling / process
 
 - [ ] Shared `ccache`/`sccache` for the ndk-build translation units (needs
