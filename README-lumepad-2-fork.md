@@ -627,7 +627,7 @@ in-scale %, `15` ZBUF, `16` wireframe, `17` toe %, `18` aspect %, `19` no cull,
 
 FX knobs (`cmd fx`): AO `1`-`6`, DOF `11`-`15` (`16` auto focus, `17` reports
 the auto distance), SSGI `21`-`25`, SSRTX `70`-`77`, crepuscular rays
-`250`-`260`, normal flip `32`.
+`250`-`260`, wall-run jump-off `320`-`328`, normal flip `32`.
 
 | group | keys |
 | --- | --- |
@@ -645,6 +645,7 @@ the auto distance), SSGI `21`-`25`, SSRTX `70`-`77`, crepuscular rays
 | denoiser | `210` alternative path, `211` on, `212` intensity, `213` passes, `214` radius, `215` frames, `216` bounces, `217` test captions, `220` resolution `1/n` (1 = full res, 2-4 = reduced; default 4) |
 | emissive + bloom (GLOW) | `261` bloom on (default **off**), `262` threshold 0-255 (default 48), `263` intensity % (default 120), `264` blur radius (default 3), `265` blur passes 1-3 (default 2), `266` taps 5/9 (default 9), `267` emissive gain % (default 100), `268` debug view (0 off, 1 emissive buffer, 2 bloom buffer), `269` emissive tags on (default on), `270` also bloom scene pixels above threshold (default off) |
 | jetpack light | `271` on (default on), `272` intensity % (default 150), `273` radius in world units (default 220) |
+| wall-run jump-off | `320` stick blend % (default 65, 0 = the old fixed vector), `321` stick speed as % of run speed (default 120), `322` min outward direction x0.1 (default 40; clamps a stick held into the wall), `323` release window in ticks (default 5 ≈ 167 ms), `324` release window on (default 1), `325` jump-up vy x0.1 (default 100), `326` outward push x0.1 (default 120), `327` tangent speed % of run speed (default 112), `328` stick dead-zone 0-32 (default 8), `329` extra tangential speed when the stick is held along the run direction, % of run speed (default 15) |
 | touch layout / profiles | `300` edit mode on/off, `301` RESET layout, `302` select element (0-19, see below), `303` selected x (per-mille of width), `304` selected y (per-mille), `305` selected scale % (40-250), `306` activate profile by index, `307` save current as profile `p<v>`, `308` export active profile, `309` log status |
 
 Element indices for `302`: 0 `stick`, 1 `a`, 2 `b`, 3 `z`, 4 `r`, 5 `s`,
@@ -668,7 +669,6 @@ mirrored to `Android/data/com.vdavid003.sm64port/files/layouts/`:
 `layouts.json` (all profiles), `active.json` and `share-<profile>.json` (the
 active profile). Positions are normalised (0..1) and sizes are multipliers of
 a 1600-px reference radius, so a profile survives a different panel resolution.
-
 
 The denoiser runs at 1/4 resolution by default: the scene colour and depth are
 downsampled to `scene_res/4`, 1-3 edge-aware à-trous passes run there, and a

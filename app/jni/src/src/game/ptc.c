@@ -463,6 +463,8 @@ static void ptc_bowser_stop(void);
 static struct Object *s_bowserHeld;
 static int s_bowserHeldOn;
 static void ptc_annex_update(void);
+static void ptc_wrj_update(void);
+static void ptc_wrj_input(struct MarioState *m);
 static void ptc_pov_apply(void);
 static int  s_pov_shot;
 static void ptc_chain_update(void);
@@ -1702,6 +1704,7 @@ void ptc_update(void) {
 
     ptc_goomba_update();
     ptc_annex_update();
+    ptc_wrj_update();
     ptc_portal_walk_update();
     ptc_mpw_update();
 
@@ -1791,6 +1794,10 @@ void ptc_update(void) {
  * as a macro because the input override (defined earlier) needs it too. */
 #define CH_PORTAL_LOOP 34
 
+/* Wall-run jump rig state lives further down (ptc wrjump0..5); the input
+ * override needs to see it first. */
+static int s_wrjMode;
+
 void ptc_mario_input_override(struct MarioState *m) {
     if (m == NULL) {
         return;
@@ -1818,6 +1825,11 @@ void ptc_mario_input_override(struct MarioState *m) {
             m->input &= ~INPUT_B_PRESSED;
             return;
         }
+    }
+
+    if (s_wrjMode) {
+        ptc_wrj_input(m);
+        return;
     }
 
     if (s_chainMode != 0) {
@@ -4048,6 +4060,164 @@ static void ptc_annex_update(void) {
     }
 }
 
+/* --------------------------------------------------- wall-run jump-off rig */
+
+/* Deterministic rig for the wall-run exit vector and the release window.
+ * `ptc wrjump0..3` are the stick cases (0 neutral, 1 away, 2 along, 3 into);
+ * `wrjump4` releases the wall run and jumps 2 ticks later (inside the window),
+ * `wrjump5` waits for the window to expire first.  The wall is the annex west
+ * face (x=-2340, normal +X, corridor along +Z), so the yaw cases are
+ * +X = 0x4000 (away), +Z = 0x0000 (along), -X = 0xC000 (into). */
+#define WRJ_STAGE_PLACE   0
+#define WRJ_STAGE_RUN     1
+#define WRJ_STAGE_JUMPED  2
+#define WRJ_STAGE_RELEASED 3
+#define WRJ_STAGE_WAIT    4
+#define WRJ_STAGE_PRESSED 5
+
+static int s_wrjMode;
+static int s_wrjCase;
+static int s_wrjStage;
+static int s_wrjTimer;
+static int s_wrjPress;
+static s16 s_wrjYaw;
+static f32 s_wrjMag;
+
+static void ptc_wrj_start(int cs) {
+    struct MarioState *m = gMarioState;
+
+    ptc_annex_reset();
+    movekit_set_flag(0, 1);
+    movekit_wr_clear();
+    ptc_annex_place(PTC_WR_WALL_X + 26.0f, 260.0f, PTC_WR_Z, 0x0000);
+    if (m != NULL) {
+        m->vel[0] = -14.0f;
+        m->vel[2] = 42.0f;
+        m->forwardVel = 42.0f;
+    }
+    s_wrjMode = 1;
+    s_wrjCase = cs;
+    s_wrjStage = WRJ_STAGE_PLACE;
+    s_wrjTimer = 0;
+    s_wrjPress = 0;
+    s_wrjYaw = 0xC000;   /* into the wall: sustain the trigger while it grabs */
+    s_wrjMag = 32.0f;
+}
+
+static void ptc_wrj_input(struct MarioState *m) {
+    if (m == NULL) {
+        return;
+    }
+    m->intendedYaw = s_wrjYaw;
+    m->intendedMag = s_wrjMag;
+    if (s_wrjMag > 0.0f) {
+        m->input |= INPUT_NONZERO_ANALOG;
+    } else {
+        m->input &= ~INPUT_NONZERO_ANALOG;
+    }
+    if (s_wrjPress) {
+        m->input |= INPUT_A_PRESSED;
+        s_wrjPress = 0;
+    }
+}
+
+static void ptc_wrj_update(void) {
+    struct MarioState *m = gMarioState;
+
+    if (!s_wrjMode || m == NULL) {
+        return;
+    }
+    s_wrjTimer++;
+
+    switch (s_wrjStage) {
+        case WRJ_STAGE_PLACE:
+            if (m->action == ACT_WALLRUN) {
+                s_wrjStage = WRJ_STAGE_RUN;
+                s_wrjTimer = 0;
+                s_wrjYaw = 0x0000;   /* along +Z while the speed builds */
+                s_wrjMag = 32.0f;
+            } else if (s_wrjTimer > 60) {
+                snprintf(s_failReason, sizeof(s_failReason),
+                         "wrjump: wall-run did not start");
+                s_wrjMode = 0;
+            }
+            break;
+
+        case WRJ_STAGE_RUN:
+            if (m->action != ACT_WALLRUN) {
+                s_wrjMode = 0;   /* fell off before the test could jump */
+                break;
+            }
+            if (s_wrjTimer >= 8) {
+                s_wrjTimer = 0;
+                switch (s_wrjCase) {
+                    case 0:   /* neutral */
+                        s_wrjYaw = 0x0000;
+                        s_wrjMag = 0.0f;
+                        s_wrjPress = 1;
+                        s_wrjStage = WRJ_STAGE_JUMPED;
+                        break;
+                    case 1:   /* away from the wall (+X) */
+                        s_wrjYaw = 0x4000;
+                        s_wrjMag = 32.0f;
+                        s_wrjPress = 1;
+                        s_wrjStage = WRJ_STAGE_JUMPED;
+                        break;
+                    case 2:   /* along the wall (+Z) */
+                        s_wrjYaw = 0x0000;
+                        s_wrjMag = 32.0f;
+                        s_wrjPress = 1;
+                        s_wrjStage = WRJ_STAGE_JUMPED;
+                        break;
+                    case 3:   /* into the wall (-X) */
+                        s_wrjYaw = 0xC000;
+                        s_wrjMag = 32.0f;
+                        s_wrjPress = 1;
+                        s_wrjStage = WRJ_STAGE_JUMPED;
+                        break;
+                    default:  /* 4/5: release the wall run, no jump yet */
+                        s_wrjYaw = 0x0000;
+                        s_wrjMag = 32.0f;
+                        m->actionTimer = 1;
+                        s_wrjStage = WRJ_STAGE_RELEASED;
+                        break;
+                }
+            }
+            break;
+
+        case WRJ_STAGE_JUMPED:
+            if (s_wrjTimer > 6) {
+                s_wrjMode = 0;
+            }
+            break;
+
+        case WRJ_STAGE_RELEASED:
+            if (m->action != ACT_WALLRUN) {
+                s_wrjStage = WRJ_STAGE_WAIT;
+                s_wrjTimer = 0;
+            } else if (s_wrjTimer > 20) {
+                s_wrjMode = 0;
+            }
+            break;
+
+        case WRJ_STAGE_WAIT: {
+            int wait = (s_wrjCase == 4) ? 2 : (movekit_wr_state(1) + 4);
+            if (s_wrjTimer >= wait) {
+                s_wrjPress = 1;
+                s_wrjStage = WRJ_STAGE_PRESSED;
+                s_wrjTimer = 0;
+            }
+            break;
+        }
+
+        case WRJ_STAGE_PRESSED:
+            if (s_wrjTimer > 6) {
+                s_wrjMode = 0;
+            }
+            break;
+    }
+}
+
 /* ------------------------------------------------------------ diagnostics */
 
 static void ptc_apply_command(const char *action) {
@@ -4470,6 +4640,11 @@ extern int gfx_cam_mode;
         }
     } else if (strcmp(action, "wallrun") == 0) {
         ptc_annex_wallrun();
+    } else if (strncmp(action, "wrjump", 6) == 0) {
+        int cs = action[6] - '0';
+        if (cs >= 0 && cs <= 5) {
+            ptc_wrj_start(cs);
+        }
     } else if (strcmp(action, "jetpack") == 0) {
         ptc_annex_jetpack();
     } else if (strcmp(action, "jetshot") == 0) {
@@ -4573,7 +4748,7 @@ void ptc_format_status(char *buf, int len) {
              "face=%.1f,%.1f,%.1f anim=%d mh=%.1f remap=%d cdbg=%d,%d,%d,%d,%d walk=%d,%d,%d "
              "mpw=%d,%d,%d,%d,%d,%d,%d fc=%d,%d,%d,%d cg=%d,%.0f,%.0f,%.0f,0x%x "
              "slowmo=%d,%d,%d rays=%d,%d,%d glow=%d,%d,%d,%d,%d occl=%d,%d,%d "
-             "qd=%d,%d,%d lvl=%d sens=%d,%d,%d",
+             "qd=%d,%d,%d lvl=%d sens=%d,%d,%d wr=%d,%d,%d,%d,%d,%.2f,%.2f",
              gCurrLevelNum, gCurrAreaIndex, s_phase, s_testMode, s_testActive, s_failed, s_failReason,
              s_starCollected[0], s_starCollected[1], ptc_star_visible(), portal_count(), s_shotA, s_shotB, g_portal_debug,
              g_portal_view.active, g_portal_view.source, portal_view_enabled(),
@@ -4650,7 +4825,10 @@ void ptc_format_status(char *buf, int len) {
              gfx_opengl_ssfx_get(276),
              gfx_quick_dev_enabled(), gfx_quick_dev_level(), gfx_quick_dev_mute(),
              g_levelInitCount,
-             gfx_cam_sens_state(0), gfx_cam_sens_state(1), gfx_cam_sens_state(2));
+             gfx_cam_sens_state(0), gfx_cam_sens_state(1), gfx_cam_sens_state(2),
+             movekit_wr_state(0), movekit_wr_state(1), movekit_wr_state(2),
+             movekit_wr_state(5), movekit_wr_state(6),
+             movekit_wr_last_vel(0), movekit_wr_last_vel(1));
 
     {
         size_t used = strlen(buf);

@@ -2119,7 +2119,11 @@ s32 mario_execute_airborne_action(struct MarioState *m) {
     }
 
     play_far_fall_sound(m);
-    movekit_try_wallrun(m);
+    if (movekit_try_wallrun(m)) {
+        /* A release-window jump-off already set the action and velocity; do
+         * not let the previous action step it again this tick. */
+        return TRUE;
+    }
 
     /* clang-format off */
     switch (m->action) {

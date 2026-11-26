@@ -1773,6 +1773,10 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         hitRagdollToggle = addEnhToggle("HIT RAGDOLL", 1, hitRagdollOn);
         // PUPPYCAM+ is hidden: the CAMERA tab's PUPpycam mode supersedes it.
         addEnhToggle("WALLRUN", 3, true);
+        /* Wall-run jump-off shape + release window (fx 320-323). */
+        addEnhSlider("Wallrun blend %", 0, 100, 65, v -> nativeSetSSFX(320, v));
+        addEnhSlider("Wallrun stick %", 0, 300, 120, v -> nativeSetSSFX(321, v));
+        addEnhSlider("Wallrun relax ticks", 0, 30, 5, v -> nativeSetSSFX(323, v));
         addEnhToggle("GRAPPLE (L)", 4, true);
         addEnhToggle("JETPACK (L)", 5, false);
         final TextView fuelUp = new TextView(this);

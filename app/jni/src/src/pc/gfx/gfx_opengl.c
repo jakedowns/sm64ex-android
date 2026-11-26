@@ -2178,6 +2178,13 @@ void gfx_opengl_ssfx_set(int which, int value) {
             gfx_cam_sens_apply();
             break;
         }
+        /* Wall-run jump-off: gameplay dials live in movekit.c (fx 320-328). */
+        case 320: case 321: case 322: case 323: case 324:
+        case 325: case 326: case 327: case 328: case 329: {
+            extern void movekit_dial_set(int which, int value);
+            movekit_dial_set(which, value);
+            break;
+        }
         default: return;
     }
     __android_log_print(ANDROID_LOG_INFO, "SM64FX",
@@ -2318,6 +2325,11 @@ int gfx_opengl_ssfx_get(int which) {
         case 332: {
             extern int gfx_cam_sens_state(int which);
             return gfx_cam_sens_state(2);
+        }
+        case 320: case 321: case 322: case 323: case 324:
+        case 325: case 326: case 327: case 328: case 329: {
+            extern int movekit_dial_get(int which);
+            return movekit_dial_get(which);
         }
     }
     return -1;

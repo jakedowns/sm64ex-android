@@ -26,9 +26,25 @@
 #define WALLRUN_MIN_SPEED   30.0f
 #define WALLRUN_CAP         55.0f
 #define WALLRUN_ACCEL       0.8f
-#define WALLRUN_JUMP_UP     10.0f
-#define WALLRUN_JUMP_NORMAL 12.0f
 #define WALLRUN_ROLL        0x0230  // ~4.9 degrees
+
+/* Wall-run jump-off + release window (runtime dials, `cmd fx 320`-`329`).
+ * The jump-off used to be a fixed tangent + normal vector that ignored the
+ * stick.  It now decomposes the stick (m->intendedYaw/mag, which the game has
+ * already mapped through the camera) into the wall basis and blends it with
+ * the old vector; the result is renormalised to the old total speed (plus the
+ * optional along-run bonus), so level geometry still clears.  Fingers are 0.1
+ * units for 322/325/326 and percent for 320/321/327/329. */
+#define WALLRUN_BLEND_DEF      65   /* 320: stick share of the exit direction  */
+#define WALLRUN_STICK_GAIN_DEF 120  /* 321: stick speed, % of the run speed    */
+#define WALLRUN_INTO_MIN_DEF   40   /* 322: min outward direction x0.1 (clamp) */
+#define WALLRUN_REL_TICKS_DEF  5    /* 323: release window, ticks (~167 ms)    */
+#define WALLRUN_REL_ON_DEF     1    /* 324: release window enabled             */
+#define WALLRUN_JUMP_UP_DEF    100  /* 325: exit vy x0.1                       */
+#define WALLRUN_JUMP_NORM_DEF  120  /* 326: outward push x0.1                  */
+#define WALLRUN_JUMP_TAN_DEF   112  /* 327: tangent speed, % of run speed      */
+#define WALLRUN_STICK_MIN_DEF  8    /* 328: stick dead-zone, 0..32             */
+#define WALLRUN_ALONG_BONUS_DEF 15  /* 329: extra tangential speed, % of run   */
 
 #define GRAPPLE_RANGE       3400.0f
 #define GRAPPLE_PULL        2.6f
@@ -60,6 +76,31 @@ static int s_cooldown = 0;
 static Vec3f s_lastWallNormal;
 static f32 s_lastWallY = 0.0f;
 static int s_haveLastWall = 0;
+
+/* Wall-run jump-off dials (fx 320-329). */
+static int s_wr_blend        = WALLRUN_BLEND_DEF;
+static int s_wr_stick_gain   = WALLRUN_STICK_GAIN_DEF;
+static int s_wr_into_min     = WALLRUN_INTO_MIN_DEF;
+static int s_wr_rel_ticks    = WALLRUN_REL_TICKS_DEF;
+static int s_wr_rel_on       = WALLRUN_REL_ON_DEF;
+static int s_wr_jump_up      = WALLRUN_JUMP_UP_DEF;
+static int s_wr_jump_normal  = WALLRUN_JUMP_NORM_DEF;
+static int s_wr_jump_tangent = WALLRUN_JUMP_TAN_DEF;
+static int s_wr_stick_min    = WALLRUN_STICK_MIN_DEF;
+static int s_wr_along_bonus  = WALLRUN_ALONG_BONUS_DEF;
+
+/* Release window: the wall run just ended without a jump, so a jump press in
+ * the next few ticks is still a wall jump-off.  The wall basis and run speed
+ * are snapshotted at release because the wall surface is gone by then. */
+static int s_wr_rel_left   = 0;
+static int s_wr_last_jump  = 0;   /* 0 none, 1 from ACT_WALLRUN, 2 release window */
+static int s_wr_init_count = 0;   /* wall runs started (telemetry) */
+static int s_wr_arm_count  = 0;   /* release windows armed (telemetry) */
+static f32 s_wr_last_vx    = 0.0f;
+static f32 s_wr_last_vz    = 0.0f;
+static Vec3f s_wr_rel_t    = { 0.0f, 0.0f, 0.0f };
+static Vec3f s_wr_rel_n    = { 0.0f, 0.0f, 0.0f };
+static f32 s_wr_rel_speed  = 0.0f;
 static f32 s_rope_len = 0.0f;
 static u32 s_force_retract_down;
 /* Rope presentation: the hook flies from the hand to the anchor on fire and
@@ -105,20 +146,154 @@ static void vnorm(Vec3f v) {
 
 /* --------------------------------------------------------------- wall-run */
 
-void movekit_try_wallrun(struct MarioState *m) {
+/* Tangent (run direction) and outward normal from the last wall contact.  The
+ * actual horizontal velocity is the best tangent at release (the action may
+ * have flipped `side` at a corner); `side` is only the fallback. */
+static void wr_last_basis(struct MarioState *m, int side, Vec3f t, Vec3f n) {
+    f32 sp;
+    n[0] = s_lastWallNormal[0];
+    n[1] = 0.0f;
+    n[2] = s_lastWallNormal[2];
+    vnorm(n);
+    sp = sqrtf(m->vel[0] * m->vel[0] + m->vel[2] * m->vel[2]);
+    if (sp > 1.0f) {
+        t[0] = m->vel[0] / sp;
+        t[1] = 0.0f;
+        t[2] = m->vel[2] / sp;
+    } else {
+        t[0] = -n[2] * (f32) side;
+        t[1] = 0.0f;
+        t[2] = n[0] * (f32) side;
+    }
+}
+
+/* Snapshot the wall basis when the wall run ends without a jump, so a jump
+ * press inside the next few ticks still produces a wall jump-off. */
+static void wr_arm_release(Vec3f t, Vec3f n, f32 speed) {
+    if (!s_wr_rel_on || s_wr_rel_ticks <= 0) {
+        s_wr_rel_left = 0;
+        return;
+    }
+    vec3f_copy(s_wr_rel_t, t);
+    vec3f_copy(s_wr_rel_n, n);
+    s_wr_rel_speed = speed;
+    s_wr_arm_count++;
+    /* movekit_update() runs later in this same tick and decrements it, so add
+     * one to make the window exactly s_wr_rel_ticks usable ticks. */
+    s_wr_rel_left = s_wr_rel_ticks + 1;
+}
+
+/* Exit velocity for a wall-run jump-off.  t = tangent (unit, run direction),
+ * n = wall normal (unit, pointing away from the wall), runSpeed = the speed
+ * the wall run had this tick.  The stick's world direction (sins/coss of
+ * intendedYaw, already camera-mapped by the game) is blended in, the outward
+ * component is clamped so a stick held into the wall cannot throw Mario back
+ * into it, and the result is rescaled to the old fixed-vector magnitude so
+ * level geometry still clears. */
+static void wr_jump(struct MarioState *m, Vec3f t, Vec3f n,
+                    f32 runSpeed, int source) {
+    f32 baseT = runSpeed * (f32) s_wr_jump_tangent * 0.01f;
+    f32 baseN = (f32) s_wr_jump_normal * 0.1f;
+    f32 alongBonus = 0.0f;
+    f32 dx = t[0] * baseT + n[0] * baseN;
+    f32 dz = t[2] * baseT + n[2] * baseN;
+    f32 mag = m->intendedMag / 32.0f;
+    f32 blend = 0.0f;
+
+    if (mag >= (f32) s_wr_stick_min / 32.0f) {
+        f32 sx, sz, sg, sAlong;
+        blend = (f32) s_wr_blend * 0.01f;
+        if (mag > 1.0f) {
+            mag = 1.0f;
+        }
+        sx = sins(m->intendedYaw);
+        sz = coss(m->intendedYaw);
+        sg = runSpeed * (f32) s_wr_stick_gain * 0.01f * mag;
+        /* Holding along the run direction keeps (and gains) tangential speed;
+         * holding across it only rotates the exit, it does not speed it up. */
+        sAlong = sx * t[0] + sz * t[2];
+        if (sAlong > 0.0f) {
+            alongBonus = sAlong * mag * runSpeed
+                       * (f32) s_wr_along_bonus * 0.01f * blend;
+        }
+        /* Keep the baseline outward push under the stick vector too, so a
+         * held stick never has less wall clearance than the neutral vector. */
+        dx = dx * (1.0f - blend) + (sx * sg + n[0] * baseN) * blend;
+        dz = dz * (1.0f - blend) + (sz * sg + n[2] * baseN) * blend;
+    }
+
+    /* "Into the wall" (negative along n) becomes a small outward push. */
+    {
+        f32 vn = dx * n[0] + dz * n[2];
+        f32 minAway = (f32) s_wr_into_min * 0.1f;
+        if (vn < minAway) {
+            dx += n[0] * (minAway - vn);
+            dz += n[2] * (minAway - vn);
+        }
+    }
+
+    {
+        f32 exT = baseT + alongBonus;
+        f32 exitSpeed = sqrtf(exT * exT + baseN * baseN);
+        f32 len = sqrtf(dx * dx + dz * dz);
+        f32 vx, vz;
+
+        if (len < 0.001f) {
+            dx = t[0];
+            dz = t[2];
+            len = 1.0f;
+        }
+        vx = dx / len * exitSpeed;
+        vz = dz / len * exitSpeed;
+
+        m->vel[0] = vx;
+        m->vel[1] = (f32) s_wr_jump_up * 0.1f;
+        m->vel[2] = vz;
+        /* The airborne actions rebuild horizontal velocity from forwardVel and
+         * faceAngle every tick (update_air_without_turn), so the launch has to
+         * live there too or it is erased on the next tick. */
+        m->forwardVel = exitSpeed;
+        m->faceAngle[1] = atan2s(vz, vx);
+        s_wr_last_vx = vx;
+        s_wr_last_vz = vz;
+        s_wr_last_jump = source;
+    }
+
+    s_wr_rel_left = 0;
+    s_roll = 0;
+    if (m->marioObj != NULL) {
+        m->marioObj->header.gfx.angle[2] = 0;
+        m->marioObj->oMoveAngleRoll = 0;
+    }
+    m->faceAngle[2] = 0;
+    s_cooldown = 18;
+    set_mario_action(m, ACT_WALL_KICK_AIR, 0);
+}
+
+int movekit_try_wallrun(struct MarioState *m) {
     struct WallCollisionData wc;
     struct Surface *wall;
     f32 speed, into;
 
-    if (m == NULL || !s_wallrun_on || s_cooldown > 0) {
-        return;
+    if (m == NULL) {
+        return 0;
+    }
+    /* Release cooldown: the wall run ended without a jump a few ticks ago, so
+     * this press is still a jump-off from that wall. */
+    if (s_wr_rel_left > 0 && (m->input & INPUT_A_PRESSED)
+        && (m->action & ACT_FLAG_AIR) && m->action != ACT_WALLRUN) {
+        wr_jump(m, s_wr_rel_t, s_wr_rel_n, s_wr_rel_speed, 2);
+        return 1;
+    }
+    if (!s_wallrun_on || s_cooldown > 0) {
+        return 0;
     }
     if (!(m->input & INPUT_NONZERO_ANALOG)) {
-        return;
+        return 0;
     }
     speed = sqrtf(m->vel[0] * m->vel[0] + m->vel[2] * m->vel[2]);
     if (speed < WALLRUN_MIN_SPEED) {
-        return;
+        return 0;
     }
 
     wc.x = m->pos[0];
@@ -127,7 +302,7 @@ void movekit_try_wallrun(struct MarioState *m) {
     wc.radius = 64.0f;   /* must exceed Mario's collision radius (~50 here) */
     wc.offsetY = 40.0f;
     if (!find_wall_collisions(&wc)) {
-        return;
+        return 0;
     }
     /* Pick the wall Mario is most moving into.  Taking the last of up to
      * four overlapping surfaces can pick a perpendicular face at a corner. */
@@ -146,7 +321,7 @@ void movekit_try_wallrun(struct MarioState *m) {
         }
     }
     if (wall == NULL || into > -1.0f) {
-        return;   // not moving into any wall
+        return 0;   // not moving into any wall
     }
 
     // Same-wall regrab rule: only if we dropped at least 20 units or the wall
@@ -156,7 +331,7 @@ void movekit_try_wallrun(struct MarioState *m) {
               + wall->normal.y * s_lastWallNormal[1]
               + wall->normal.z * s_lastWallNormal[2];
         if (d > 0.906f && m->pos[1] > s_lastWallY - 20.0f) {
-            return;
+            return 0;
         }
     }
 
@@ -173,7 +348,11 @@ void movekit_try_wallrun(struct MarioState *m) {
         s_lastWallNormal[2] = wall->normal.z;
         s_lastWallY = m->pos[1];
         s_haveLastWall = 1;
+        s_wr_init_count++;
     }
+    /* Return 0 so the caller still dispatches ACT_WALLRUN this tick, exactly
+     * like the old void function did. */
+    return 0;
 }
 
 u32 movekit_act_wallrun(struct MarioState *m) {
@@ -183,6 +362,13 @@ u32 movekit_act_wallrun(struct MarioState *m) {
     int side = (m->actionArg & 1) ? 1 : -1;
 
     if (m->actionTimer == 0 || !s_wallrun_on) {
+        Vec3f t, n;
+        f32 sp = sqrtf(m->vel[0] * m->vel[0] + m->vel[2] * m->vel[2]);
+        if (sp < WALLRUN_MIN_SPEED) {
+            sp = WALLRUN_MIN_SPEED;
+        }
+        wr_last_basis(m, side, t, n);
+        wr_arm_release(t, n, sp);
         s_roll = 0;
         if (m->marioObj != NULL) {
             m->marioObj->header.gfx.angle[2] = 0;
@@ -199,6 +385,13 @@ u32 movekit_act_wallrun(struct MarioState *m) {
     wc.radius = 64.0f;   /* must exceed Mario's collision radius (~50 here) */
     wc.offsetY = 40.0f;
     if (!find_wall_collisions(&wc)) {
+        Vec3f t, n;
+        f32 sp = sqrtf(m->vel[0] * m->vel[0] + m->vel[2] * m->vel[2]);
+        if (sp < WALLRUN_MIN_SPEED) {
+            sp = WALLRUN_MIN_SPEED;
+        }
+        wr_last_basis(m, side, t, n);
+        wr_arm_release(t, n, sp);
         s_roll = 0;
         s_cooldown = 20;
         return set_mario_action(m, ACT_FREEFALL, 0);
@@ -223,6 +416,13 @@ u32 movekit_act_wallrun(struct MarioState *m) {
             }
         }
         if (wall == NULL) {
+            Vec3f t, n;
+            f32 sp = sqrtf(m->vel[0] * m->vel[0] + m->vel[2] * m->vel[2]);
+            if (sp < WALLRUN_MIN_SPEED) {
+                sp = WALLRUN_MIN_SPEED;
+            }
+            wr_last_basis(m, side, t, n);
+            wr_arm_release(t, n, sp);
             s_roll = 0;
             s_cooldown = 20;
             return set_mario_action(m, ACT_FREEFALL, 0);
@@ -268,17 +468,15 @@ u32 movekit_act_wallrun(struct MarioState *m) {
     m->pos[2] -= wall->normal.z * 2.0f;
 
     if (m->input & INPUT_A_PRESSED) {
-        m->vel[0] = tx * speed * 1.12f - wall->normal.x * WALLRUN_JUMP_NORMAL;
-        m->vel[2] = tz * speed * 1.12f - wall->normal.z * WALLRUN_JUMP_NORMAL;
-        m->vel[1] = WALLRUN_JUMP_UP;
-        s_roll = 0;
-        if (m->marioObj != NULL) {
-            m->marioObj->header.gfx.angle[2] = 0;
-            m->marioObj->oMoveAngleRoll = 0;
-        }
-        m->faceAngle[2] = 0;
-        s_cooldown = 18;
-        return set_mario_action(m, ACT_WALL_KICK_AIR, 0);
+        Vec3f t = { tx, 0.0f, tz };
+        Vec3f n = { wall->normal.x, 0.0f, wall->normal.z };
+        /* The wall normal points away from the surface, so "outward" is +n.
+         * (The old fixed vector subtracted it, i.e. pushed into the wall; the
+         * next airborne tick then rebuilt the velocity from forwardVel and
+         * discarded it entirely.) */
+        vnorm(n);
+        wr_jump(m, t, n, speed, 1);
+        return TRUE;
     }
     return FALSE;
 }
@@ -529,6 +727,9 @@ void movekit_update(struct MarioState *m) {
     }
     if (s_cooldown > 0) {
         s_cooldown--;
+    }
+    if (s_wr_rel_left > 0) {
+        s_wr_rel_left--;
     }
     if (s_ropeShoot > 0) s_ropeShoot--;
     if (s_ropeRelease > 0) s_ropeRelease--;
@@ -882,6 +1083,74 @@ int movekit_fuel_pct(void) {
 int movekit_state(void) {
     return (s_wallrun_on ? 1 : 0) | (s_grapple_on ? 2 : 0) | (s_jetpack_on ? 4 : 0)
          | (s_attached ? 8 : 0);
+}
+
+/* ------------------------------------------------ wall-run dials/telemetry */
+
+void movekit_wr_clear(void) {
+    s_wr_rel_left = 0;
+    s_wr_last_jump = 0;
+    s_wr_init_count = 0;
+    s_wr_arm_count = 0;
+    s_wr_last_vx = 0.0f;
+    s_wr_last_vz = 0.0f;
+    /* The PTC rig runs several cases back to back on the same wall; without
+     * this the same-wall regrab rule and the 20-tick cooldown would block the
+     * next case's trigger. */
+    s_haveLastWall = 0;
+    s_cooldown = 0;
+}
+
+/* which: 0 ticks left in the release window, 1 window length in ticks,
+ * 2 last jump source (0 none, 1 ACT_WALLRUN, 2 release window), 3 blend %,
+ * 4 release speed x10, 5 wall runs started, 6 release windows armed. */
+int movekit_wr_state(int which) {
+    switch (which) {
+        case 0: return s_wr_rel_left > 0 ? s_wr_rel_left : 0;
+        case 1: return s_wr_rel_ticks;
+        case 2: return s_wr_last_jump;
+        case 3: return s_wr_blend;
+        case 4: return (int) (s_wr_rel_speed * 10.0f + 0.5f);
+        case 5: return s_wr_init_count;
+        case 6: return s_wr_arm_count;
+    }
+    return 0;
+}
+
+f32 movekit_wr_last_vel(int axis) {
+    return axis ? s_wr_last_vz : s_wr_last_vx;
+}
+
+/* fx 320-329.  Values are clamped to sane ranges; 0/1 switches are bools. */
+void movekit_dial_set(int which, int value) {
+    switch (which) {
+        case 320: s_wr_blend = value < 0 ? 0 : (value > 100 ? 100 : value); break;
+        case 321: s_wr_stick_gain = value < 0 ? 0 : (value > 300 ? 300 : value); break;
+        case 322: s_wr_into_min = value < 0 ? 0 : (value > 100 ? 100 : value); break;
+        case 323: s_wr_rel_ticks = value < 0 ? 0 : (value > 60 ? 60 : value); break;
+        case 324: s_wr_rel_on = value ? 1 : 0; break;
+        case 325: s_wr_jump_up = value < 0 ? 0 : (value > 300 ? 300 : value); break;
+        case 326: s_wr_jump_normal = value < 0 ? 0 : (value > 300 ? 300 : value); break;
+        case 327: s_wr_jump_tangent = value < 0 ? 0 : (value > 300 ? 300 : value); break;
+        case 328: s_wr_stick_min = value < 0 ? 0 : (value > 32 ? 32 : value); break;
+        case 329: s_wr_along_bonus = value < 0 ? 0 : (value > 100 ? 100 : value); break;
+    }
+}
+
+int movekit_dial_get(int which) {
+    switch (which) {
+        case 320: return s_wr_blend;
+        case 321: return s_wr_stick_gain;
+        case 322: return s_wr_into_min;
+        case 323: return s_wr_rel_ticks;
+        case 324: return s_wr_rel_on;
+        case 325: return s_wr_jump_up;
+        case 326: return s_wr_jump_normal;
+        case 327: return s_wr_jump_tangent;
+        case 328: return s_wr_stick_min;
+        case 329: return s_wr_along_bonus;
+    }
+    return -1;
 }
 
 void movekit_upgrade(int which) {
