@@ -51,6 +51,14 @@ compaction + docking, Java captions, vertical dock, and the three perf rewrites
 - [ ] Cheapen the reduced-res upsamples (DOF's bilateral stop is ~2 ms/eye).
 - [ ] MXAO: drop the normal prepass when the reject dial is off; `RGBA16F` gather
       field so 6 bilinear taps replace 12 nearest.
+- [x] **Half-resolution FX/post pass** — `fx 420 n` renders the whole FX shader at
+      `eye_res/n` and composites back in its own full-res pass. 3D: grade-only
+      floor 10.53→5.95 ms, MED 21.3→12.8, HIGH 28.6→20.0, FX-only 27.8→14.3
+      (n=1 vs n=2). Default stays 1; ship 2 for 3D MED/HIGH after a human stereo
+      A/B. n=3 adds only ~6 %. `findings/fx-pass-half-res-11-26-26.md`.
+- [ ] Fix `fx 103` (dynamic lights): `gfx_pc.c`'s per-frame registry now resets
+      the light count unless a caller claims the slots, so the sweep's `103=`
+      preset rows silently measure a lightless scene.
 - [ ] LOW/MED/HIGH presets from `findings/fx-sweep-11-25-26.md`, re-measured on
       the new DOF/SSGI/MXAO code.
 

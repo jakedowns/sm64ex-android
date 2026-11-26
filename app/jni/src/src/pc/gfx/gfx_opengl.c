@@ -1123,6 +1123,16 @@ static uint32_t s_fx_vp_frame = 0xFFFFFFFFu;
 static int s_fx_debug = 0;            // 0 off, 1 AO, 2 CoC, 3 GI
 static int s_fx_normal_flip = 0;
 
+/* Reduced-resolution FX pass dials (fx 420-422).  Declared up here because
+ * gfx_opengl_ssfx_set/get() are above the pass implementation; the target and
+ * upsample program live next to stereo_ensure_pp(). */
+static int    s_fx_div = 1;      /* fx 420: 1 full res, 2..4 = eye_res/n */
+static int    s_fx_upmode = 0;   /* fx 421: 0 bilinear, 1 depth-aware 4-tap */
+static int    s_fx_div_eff = 1;  /* divisor the last frame actually used   */
+static GLuint s_fxp_fbo[2] = {0, 0};
+static GLuint s_fxp_tex[2] = {0, 0};
+static int    s_fxp_w = 0, s_fxp_h = 0;
+
 /* Emissive materials + bloom dials (FX GLOW tab; declared here because
  * stereo_fx_any() above the implementation needs s_glow_on). */
 int gfx_emissive_on = 1;      // FX_EMISSIVE_ON: master switch for tags
@@ -2471,6 +2481,12 @@ void gfx_opengl_ssfx_set(int which, int value) {
         case 403: s_fx_gi_debug = value < 0 ? 0 : (value > 3 ? 3 : value); break;
         case 404: s_fx_gi_skip = value < 0 ? 0 : (value > 100 ? 100 : value); break;
         case 405: s_fx_gi_norm = value ? 1 : 0; break;
+        /* 420-422: reduced-resolution FX/post pass (see stereo_fx_pass).
+         * `420` divisor (1 = today's full res), `421` upsample mode,
+         * `422` read-only: the divisor the last frame actually used (debug
+         * views force 1). */
+        case 420: s_fx_div = value < 1 ? 1 : (value > 4 ? 4 : value); break;
+        case 421: s_fx_upmode = value ? 1 : 0; break;
         case 31: s_fx_debug = value < 0 ? 0 : (value > 9 ? 9 : value); break;
         case 32: s_fx_normal_flip = value ? 1 : 0; break;
         /* Skybox fine-tune (fx 370-373): stored here so `cmd fx` and the panel
@@ -2773,6 +2789,9 @@ int gfx_opengl_ssfx_get(int which) {
         case 403: return s_fx_gi_debug;
         case 404: return s_fx_gi_skip;
         case 405: return s_fx_gi_norm;
+        case 420: return s_fx_div;
+        case 421: return s_fx_upmode;
+        case 422: return s_fx_div_eff;
         case 31: return s_fx_debug;
         case 32: return s_fx_normal_flip;
         case 370: return (int) (gfx_sky_scale_x * 100.0f + 0.5f);
@@ -3857,6 +3876,182 @@ static void stereo_ensure_pp(int w, int h) {
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     s_pp_w = w;
     s_pp_h = h;
+}
+
+/* ---------------- Reduced-resolution FX pass (fx 420-421) ----------------
+ * The big FX shader is fill-bound; every stage it hosts (DOF gather, AO, GI,
+ * motion-blur taps, rays composite, tonemap/grade) is either low frequency or
+ * already supersampled.  With `fx 420 n` the whole chain renders into a per-eye
+ * target at eye_res/n and a dedicated pass composites it back into s_pp at full
+ * resolution -- the same "own pass, never a sampler in the big shader" shape as
+ * the denoiser/GI upsamples (the in-shader version measured ~30 ms once).
+ * n == 1 keeps the original path and allocates nothing.
+ *
+ * Correctness note: the FX shader is entirely UV-driven.  It never reads
+ * gl_FragCoord, and uRes/uCanvas stay in *eye* pixels because every use of them
+ * is "turn this many-eye-pixel offset into UV" (motion blur, DOF radius, AO/GI
+ * tap spacing, the depth-normal step).  The FX target covers the same 0..1 UV
+ * range as the eye buffer, so those conversions are unchanged and the look is
+ * preserved at every divisor; only genuinely output-pixel-sized details (the
+ * 1-px depth-normal step, the per-pixel dither grid) get coarser, which is the
+ * trade being measured.  Depth/velocity samplers stay bound at full res.
+ */
+static void stereo_ensure_fx_target(int w, int h) {
+    if (w == s_fxp_w && h == s_fxp_h && s_fxp_fbo[0] != 0) return;
+    for (int i = 0; i < 2; i++) {
+        if (s_fxp_fbo[i]) glDeleteFramebuffers(1, &s_fxp_fbo[i]);
+        if (s_fxp_tex[i]) glDeleteTextures(1, &s_fxp_tex[i]);
+        glGenTextures(1, &s_fxp_tex[i]);
+        glBindTexture(GL_TEXTURE_2D, s_fxp_tex[i]);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, w, h, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glGenFramebuffers(1, &s_fxp_fbo[i]);
+        glBindFramebuffer(GL_FRAMEBUFFER, s_fxp_fbo[i]);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                               GL_TEXTURE_2D, s_fxp_tex[i], 0);
+        __android_log_print(ANDROID_LOG_INFO, "SM64FX",
+                "FXTARGET %d fbo=%u tex=%u %dx%d status=0x%x", i, s_fxp_fbo[i],
+                s_fxp_tex[i], w, h, glCheckFramebufferStatus(GL_FRAMEBUFFER));
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    s_fxp_w = w;
+    s_fxp_h = h;
+}
+
+/* Composite the reduced-res FX colour back into the full-res eye target.  Mode
+ * 0 is plain bilinear; mode 1 is a 4-tap depth-aware stop (the reduced-res
+ * texel nearest in depth wins), which keeps silhouettes from bleeding. */
+static const char *s_fxu_fs =
+    "precision mediump float;\n"
+    "varying vec2 vUV;\n"
+    "uniform sampler2D uTex;\n"       /* reduced-res FX result          */
+    "uniform sampler2D uDepth;\n"     /* full-res scene depth           */
+    "uniform vec2 uTexel;\n"          /* 1 / reduced-res size (UV step)  */
+    "uniform float uNear;\n"
+    "uniform float uFar;\n"
+    "uniform float uMode;\n"
+    "float linZ(float d) {\n"
+    "  float z = d * 2.0 - 1.0;\n"
+    "  return (2.0 * uNear * uFar) / (uFar + uNear - z * (uFar - uNear));\n"
+    "}\n"
+    "void main() {\n"
+    "  if (uMode < 0.5) { gl_FragColor = vec4(texture2D(uTex, vUV).rgb, 1.0); return; }\n"
+    "  vec2 o = uTexel * 0.5;\n"
+    "  float zc = linZ(texture2D(uDepth, vUV).r);\n"
+    "  vec3 acc = texture2D(uTex, vUV).rgb * 2.0;\n"
+    "  float ws = 2.0;\n"
+    "  for (int i = 0; i < 4; i++) {\n"
+    "    vec2 d = vec2(i == 0 ? -1.0 : (i == 1 ? 1.0 : 0.0),\n"
+    "                  i == 2 ? -1.0 : (i == 3 ? 1.0 : 0.0));\n"
+    "    vec2 uv = clamp(vUV + d * o, vec2(0.0), vec2(1.0));\n"
+    "    float zs = linZ(texture2D(uDepth, uv).r);\n"
+    "    float w = 1.0 / (0.02 + abs(zs - zc) / max(zc, 1.0));\n"
+    "    acc += texture2D(uTex, uv).rgb * w;\n"
+    "    ws += w;\n"
+    "  }\n"
+    "  gl_FragColor = vec4(acc / ws, 1.0);\n"
+    "}\n";
+
+static GLuint s_fxu_prog = 0;
+static int    s_fxu_state = 0;   /* 0 untried, 1 ok, -1 failed */
+static GLint  s_fxu_u_tex = -1, s_fxu_u_depth = -1, s_fxu_u_texel = -1;
+static GLint  s_fxu_u_near = -1, s_fxu_u_far = -1, s_fxu_u_mode = -1;
+
+static int stereo_fxu_init(void) {
+    if (s_fxu_state != 0) return s_fxu_state == 1;
+    s_fxu_state = -1;
+    const char *vs_src = "attribute vec2 aPos; attribute vec2 aUV;\n"
+                         "varying vec2 vUV;\n"
+                         "void main(){ vUV = aUV; gl_Position = vec4(aPos,0.0,1.0); }\n";
+    GLuint vs = compile_shader_checked(GL_VERTEX_SHADER, vs_src, "fxup vertex");
+    GLuint fs = compile_shader_checked(GL_FRAGMENT_SHADER, s_fxu_fs, "fxup fragment");
+    if (!vs || !fs) {
+        if (vs) glDeleteShader(vs);
+        if (fs) glDeleteShader(fs);
+        return 0;
+    }
+    s_fxu_prog = glCreateProgram();
+    glAttachShader(s_fxu_prog, vs);
+    glAttachShader(s_fxu_prog, fs);
+    glLinkProgram(s_fxu_prog);
+    GLint ok = 0;
+    glGetProgramiv(s_fxu_prog, GL_LINK_STATUS, &ok);
+    glDeleteShader(vs);
+    glDeleteShader(fs);
+    if (!ok) {
+        glDeleteProgram(s_fxu_prog);
+        s_fxu_prog = 0;
+        return 0;
+    }
+    s_fxu_u_tex = glGetUniformLocation(s_fxu_prog, "uTex");
+    s_fxu_u_depth = glGetUniformLocation(s_fxu_prog, "uDepth");
+    s_fxu_u_texel = glGetUniformLocation(s_fxu_prog, "uTexel");
+    s_fxu_u_near = glGetUniformLocation(s_fxu_prog, "uNear");
+    s_fxu_u_far = glGetUniformLocation(s_fxu_prog, "uFar");
+    s_fxu_u_mode = glGetUniformLocation(s_fxu_prog, "uMode");
+    s_fxu_state = 1;
+    return 1;
+}
+
+static void stereo_fx_upsample(void) {
+    if (s_fxp_fbo[0] == 0 || s_pp_fbo[0] == 0) return;
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
+    glDisable(GL_SCISSOR_TEST);
+    glUseProgram(s_fxu_prog);
+
+    static const float quad[] = {
+        -1.0f, -1.0f, 0.0f, 0.0f,
+         1.0f, -1.0f, 1.0f, 0.0f,
+        -1.0f,  1.0f, 0.0f, 1.0f,
+         1.0f,  1.0f, 1.0f, 1.0f,
+    };
+    if (!s_comp_vbo) glGenBuffers(1, &s_comp_vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, s_comp_vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(quad), quad, GL_STREAM_DRAW);
+
+    GLint apos = glGetAttribLocation(s_fxu_prog, "aPos");
+    GLint auv = glGetAttribLocation(s_fxu_prog, "aUV");
+    glEnableVertexAttribArray(apos);
+    glVertexAttribPointer(apos, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void *)0);
+    glEnableVertexAttribArray(auv);
+    glVertexAttribPointer(auv, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float),
+                          (void *)(2 * sizeof(float)));
+
+    glActiveTexture(GL_TEXTURE0);
+    glUniform1i(s_fxu_u_tex, 0);
+    glActiveTexture(GL_TEXTURE1);
+    glUniform1i(s_fxu_u_depth, 1);
+    glUniform2f(s_fxu_u_texel, 1.0f / (float)(s_fxp_w ? s_fxp_w : 1),
+                1.0f / (float)(s_fxp_h ? s_fxp_h : 1));
+    glUniform1f(s_fxu_u_near, gfx_cam_near);
+    glUniform1f(s_fxu_u_far, gfx_cam_far);
+    glUniform1f(s_fxu_u_mode, s_fx_upmode ? 1.0f : 0.0f);
+
+    for (int eye = 0; eye < 2; eye++) {
+        if (gfx_single_eye >= 0 && eye != gfx_single_eye) continue;
+        if (s_fxp_tex[eye] == 0) continue;
+        glBindFramebuffer(GL_FRAMEBUFFER, s_pp_fbo[eye]);
+        glViewport(0, 0, s_eye_w, s_eye_h);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, s_fxp_tex[eye]);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, s_eye_depth[eye]);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    }
+
+    glDisableVertexAttribArray(apos);
+    glDisableVertexAttribArray(auv);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glUseProgram(0);
+    if (opengl_vbo) glBindBuffer(GL_ARRAY_BUFFER, opengl_vbo);
 }
 
 static void fx_mat4_mul(float r[4][4], const float a[4][4], const float b[4][4]) {
@@ -6066,6 +6261,9 @@ static int stereo_fx_pass(void) {
     /* Recomputed every frame: the composite reads s_ao_otex only when this
      * frame's chain wrote it. */
     s_ao_valid[0] = s_ao_valid[1] = 0;
+    /* Readback for `cmd dump` (fxr=): 0 = the big FX pass did not run at all
+     * this frame (nothing enabled, or the reduced-res AO chain owned it). */
+    s_fx_div_eff = 0;
     if (!stereo_fx_any()) return 0;
     if (!s_depth_tex_mode) {
         static int warned = 0;
@@ -6157,6 +6355,24 @@ static int stereo_fx_pass(void) {
     } else {
         s_gi_valid[0] = s_gi_valid[1] = 0;
     }
+
+    /* FX pass resolution (fx 420).  The shader renders into a per-eye target
+     * at eye_res/n when n > 1 and the result is composited back in its own
+     * pass below; n == 1 allocates nothing and is byte-for-byte the old path.
+     * Debug views (fx 31) stay at full res: their output *is* the image, so an
+     * upsample would just be a blur of the thing being inspected. */
+    int fx_div = s_fx_div < 1 ? 1 : (s_fx_div > 4 ? 4 : s_fx_div);
+    if (fx_div > 1 && (s_fx_debug != 0 || !stereo_fxu_init())) fx_div = 1;
+    if (fx_div > 1) {
+        int fw = s_eye_w / fx_div, fh = s_eye_h / fx_div;
+        if (fw < 1) fw = 1;
+        if (fh < 1) fh = 1;
+        stereo_ensure_fx_target(fw, fh);
+        if (s_fxp_fbo[0] == 0) fx_div = 1;
+    }
+    s_fx_div_eff = fx_div;
+    int fxw = fx_div > 1 ? s_fxp_w : s_eye_w;
+    int fxh = fx_div > 1 ? s_fxp_h : s_eye_h;
 
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_BLEND);
@@ -6425,8 +6641,9 @@ static int stereo_fx_pass(void) {
         if (gfx_single_eye >= 0 && eye != gfx_single_eye) {
             continue;
         }
-        glBindFramebuffer(GL_FRAMEBUFFER, s_pp_fbo[eye]);
-        glViewport(0, 0, s_eye_w, s_eye_h);
+        glBindFramebuffer(GL_FRAMEBUFFER,
+                          fx_div > 1 ? s_fxp_fbo[eye] : s_pp_fbo[eye]);
+        glViewport(0, 0, fxw, fxh);
         /* Reduced-res AO already folded AO into the colour; in that case the
          * in-shader gather must stay off.  If the chain did not produce this
          * eye's buffer, fall back to the full-res gather. */
@@ -6459,10 +6676,9 @@ static int stereo_fx_pass(void) {
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     }
 
-    /* GI added back after the per-eye FX draws, so it never adds a sampler to
-     * the big shader.  Same slot relative to bloom as the legacy in-shader GI. */
-    if (gi_low) stereo_gi_composite();
-
+    /* Reduced-res FX: bring the per-eye result back to full res before
+     * anything downstream (GI add-back, bloom, grade LUT, the SBS composite)
+     * touches s_pp_tex -- all of those stay full resolution. */
     glDisableVertexAttribArray(apos);
     glDisableVertexAttribArray(auv);
     glActiveTexture(GL_TEXTURE5);
@@ -6470,6 +6686,12 @@ static int stereo_fx_pass(void) {
     glActiveTexture(GL_TEXTURE0);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glUseProgram(0);
+
+    if (fx_div > 1) stereo_fx_upsample();
+
+    /* GI added back after the per-eye FX draws, so it never adds a sampler to
+     * the big shader.  Same slot relative to bloom as the legacy in-shader GI. */
+    if (gi_low) stereo_gi_composite();
     return 1;
 }
 

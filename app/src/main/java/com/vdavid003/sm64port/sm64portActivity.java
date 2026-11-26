@@ -3070,6 +3070,23 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addIntSlider("Contrast %", -100, 100, 0, v -> debugFx(287, v));
         addIntSlider("Tint -cool/+warm", -100, 100, 0, v -> debugFx(288, v));
         addIntSlider("Split pre/post 0/1", 0, 1, 0, v -> debugFx(289, v));
+        beginSection("POST PASS RESOLUTION (fx 420-422)", false);
+        {
+            TextView hint = new TextView(this);
+            hint.setTextSize(12);
+            hint.setTextColor(0xFFAACCFF);
+            hint.setPadding(dp(4), 0, dp(4), dp(6));
+            hint.setText("Runs the whole FX pass (AO, DOF, GI, motion blur,"
+                    + " rays composite, tonemap/grade) at eye_res/n, then"
+                    + " composites it back in its own full-res pass. 1 = today's"
+                    + " full res. Bloom, the grade LUT, the UI, the panel and"
+                    + " the HUD stay full res; debug views force 1.");
+            controls.addView(hint);
+        }
+        addIntSlider("Post pass res 1/n", 1, 4, nativeGetSSFX(420),
+                     v -> debugFx(420, v));
+        addIntSlider("Upsample 0=bilin 1=depth", 0, 1, nativeGetSSFX(421),
+                     v -> debugFx(421, v));
     }
 
     private String buildBranch() {

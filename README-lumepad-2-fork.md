@@ -321,6 +321,79 @@ reflection blend wants the AO factor).
 measurement probe: its rows keep the big FX pass alive as a fallback, so
 subtract the `floor` row, not `base`.
 
+### Reduced-resolution FX pass (GRADE tab, `fx` 420-422)
+
+The per-eye post pass itself — the one big fragment shader that hosts AO,
+C.DOF, SSGI, SSRTX, motion blur, the rays composite, dynamic lights, tonemap and
+grade — used to always run at the full per-eye resolution (1280×1534 ≈ 2 MP per
+eye). Everything at reduced resolution so far (denoiser, C.DOF, MXAO, SSGI,
+rays) shrank only its *own* gather; `cmd set 12` shrinks only the scene raster
+inside a still-full-res eye buffer. That left the pass floor as the fixed cost
+that no dial could move.
+
+`fx 420 n` makes the whole chain render into a per-eye target at `eye_res/n`
+and composite it back into the full-resolution eye target in a **separate pass**
+(the in-shader-upsample lesson: one extra sampler in the big shader measured
+~30 ms once). `n = 1` is the default: no target is allocated and the original
+path runs unchanged.
+
+Order per eye (full res unless noted):
+
+```
+scene raster -> eye_tex/eye_depth (full res)
+   [denoise / C.DOF / MXAO / rays / SSGI prepasses, unchanged]
+big FX shader                       -> fxp_tex[eye]   (eye_res/n)
+upsample / depth-aware composite    -> pp_tex[eye]    (full res)
+SSGI add-back, bloom, grade LUT     -> pp_tex[eye]    (full res, unchanged)
+UI composite + SBS weave            -> default FBO    (full res, unchanged)
+```
+
+Everything downstream of the composite stays full resolution: the SSGI
+add-back, bloom (which already has its own additive full-res upsample), the
+grade LUT pass, the UI-after-post layer, the debug panel/HUD and the feedback
+outbox readback.
+
+**Why the look survives the divisor.** The FX shader is entirely UV-driven: it
+never reads `gl_FragCoord`, and `uRes`/`uCanvas` are kept in *eye* pixels
+because every use of them converts a dial that is expressed in eye pixels
+(motion-blur length, DOF CoC radius, AO/GI tap spacing, the 1-texel
+depth-normal step, the canvas letterbox test) into UV. The reduced target
+covers the same 0..1 UV range as the eye buffer, so those conversions are
+unchanged and a 12 px max-blur stays a 12-eye-pixel blur. Depth and velocity
+are still sampled at full resolution. The only things that genuinely get
+coarser are the 1-texel normal fit and the per-pixel dither/noise grid, which
+become n-pixel blocks.
+
+| Control | Headless | Default | Effect |
+|---|---|---|---|
+| `Post pass res 1/n` | `420` | 1 | 1 = full res, 2 = half, 3, 4 |
+| `Upsample` | `421` | 0 | 0 = 1-tap bilinear, 1 = 4-tap depth-aware stop |
+| (read-only) | `422` | — | divisor the last frame actually used; 0 = the big FX pass did not run |
+
+`cmd dump` reports `fxr=div,upsample,effective`. Debug views (`fx 31`) force the
+effective divisor back to 1 so VIEW AO / CoC / GI / vectors are never an
+upsample of themselves.
+
+Measured (PTC level 38 `ptc fadetest`, eye 1280×1534, pacer off, `fps=` from
+`cmd dump`, 3 samples, median; full tables in
+[`findings/fx-pass-half-res-11-26-26.md`](findings/fx-pass-half-res-11-26-26.md)):
+
+| stack | 2D n=1 | 2D n=2 | 3D n=1 | 3D n=2 |
+| --- | --- | --- | --- | --- |
+| grade only (pass floor) | 4.81 | **2.91** | 10.53 | **5.95** |
+| HIGH (AO12+DOF12+rays16+shadow) | 10.10 | **7.69** | 28.57 | **20.00** |
+| MED (AO8+rays8+shadow) | 7.46 | **4.69** | 21.28 | **12.82** |
+| MB+rays+bloom+grade+shadow | 8.77 | **5.29** | 27.78 | **14.29** |
+
+The pass floor itself halves, which is the point: that was the fixed cost no
+dial could move. n = 3 adds only ~6 % over n = 2 (the pass stops being
+fill-bound), and the 4-tap depth-aware upsample (`421 1`) costs 0.4 ms in 2D /
+1.3 ms in 3D while halving the visible silhouette difference. Flat areas and the
+colour grade are identical at n = 2; thin geometry and text edges lose ~1 px of
+crispness and the per-pixel dither grid becomes 2×2 blocks. The default stays
+**1**; 2 is the recommended value for the 3D MED/HIGH presets after a stereo A/B
+by eye.
+
 ### Crepuscular rays (RAYS tab)
 
 Screen-space light shafts: for every pixel the pass marches N samples toward the

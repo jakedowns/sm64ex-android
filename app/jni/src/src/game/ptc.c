@@ -5529,7 +5529,8 @@ void ptc_format_status(char *buf, int len) {
              "qd=%d,%d,%d lvl=%d sens=%d,%d,%d wr=%d,%d,%d,%d,%d,%.2f,%.2f wrc=%s "
              "grade=%d,%d,%d,%d grp=%d,%d,%.1f,%.0f,%.0f,%.0f,%.0f camclip=%s "
              "gi=%d,%d,%d,%d "
-             "aop=%d,%d,%d,%d,%d,%d,%d",
+             "aop=%d,%d,%d,%d,%d,%d,%d "
+             "fxr=%d,%d,%d",
              gCurrLevelNum, gCurrAreaIndex, s_phase, s_testMode, s_testActive, s_failed, s_failReason,
              s_starCollected[0], s_starCollected[1], ptc_star_visible(), portal_count(), s_shotA, s_shotB, g_portal_debug,
              g_portal_view.active, g_portal_view.source, portal_view_enabled(),
@@ -5622,7 +5623,9 @@ void ptc_format_status(char *buf, int len) {
              gfx_opengl_ssfx_get(390), gfx_opengl_ssfx_get(391),
              gfx_opengl_ssfx_get(4), gfx_opengl_ssfx_get(392),
              gfx_opengl_ssfx_get(393), gfx_opengl_ssfx_get(394),
-             gfx_opengl_ssfx_get(396));
+             gfx_opengl_ssfx_get(396),
+             gfx_opengl_ssfx_get(420), gfx_opengl_ssfx_get(421),
+             gfx_opengl_ssfx_get(422));
 
     {
         size_t used = strlen(buf);

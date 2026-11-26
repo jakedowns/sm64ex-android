@@ -270,6 +270,50 @@ quarter-res as a performance mode, an `RGBA16F` gather field so 6 bilinear taps
 replace 12 NEAREST ones, and a half-res 3×3 depth-aware blur that would make 8
 taps plus a static pattern viable.
 
+### Reduced-resolution FX/post pass (worktree `w4-fx-halfres`, `fx` 420-422)
+The 11-25 sweep's headline miss: `set 12` shrank only the scene raster, so the
+FX fragment shader — AO/DOF/GI in-shader leftovers, motion blur, the rays
+composite, lights, tonemap and grade — kept running at 1280×1534 per eye and the
+76.9 ms 3D HIGH stack dropped only 13 % when the raster halved. `fx 420 n` now
+renders that pass into a per-eye target at `eye_res/n` and composites it back in
+its **own** pass (never a sampler added to the big shader — that cost ~30 ms
+once). `421` picks bilinear (0, default) or a 4-tap depth-aware stop (1), `422`
+reads back the divisor the last frame actually used (0 = the big pass did not
+run). Default `420 = 1`: nothing is allocated and the old path is byte-for-byte
+unchanged.
+
+Nothing in the shader had to change for correctness: the FX fragment shader
+never reads `gl_FragCoord`, and `uRes`/`uCanvas` stay in **eye** pixels because
+every use of them converts an eye-pixel dial into UV (motion-blur length, DOF
+CoC radius, AO/GI tap spacing, the 1-texel normal step, the letterbox test). The
+target covers the same 0..1 UV range, so the framing and the look are preserved;
+only the 1-texel normal fit and the per-pixel dither grid coarsen to n-pixel
+blocks. Debug views force n = 1.
+
+Measured (PTC 38 `fadetest`, eye 1280×1534, pacer off, 3 samples, median):
+3D grade-only floor **10.53 → 5.95 ms (−43 %)**, MED 21.3 → 12.8 (−40 %), HIGH
+28.6 → 20.0 (−30 %), FX-only 27.8 → 14.3 (−49 %), HIGH+MB+bloom+grade 34.5 →
+23.3 (−33 %); 2D −25…−46 %. n = 3 buys only ~6 % more, so **2 is the sweet spot**
+and the pass stops being fill-bound there. The depth-aware upsample costs
+0.4 ms 2D / 1.3 ms 3D and halves the silhouette difference. Quality: flat areas,
+colour and UI identical; silhouettes and thin geometry ~1 px softer at n = 2,
+and the AO/DOF dither becomes 2×2 blocks (per-frame dither noise is already
+3.4/255 mean on this scene, the n=1→n=2 difference is 13.4/255 mean, 34 % of
+pixels over 6/255). Recommendation: keep the default at 1, ship 2 (+`421 1` at
+HIGH) for the 3D MED/HIGH presets after a human stereo A/B — the captures are 2D
+stills. Keys, tables, stills, the one-off corrupt frame (a wrong-viewport
+signature seen once, never reproduced) and the rerun recipe:
+[`findings/fx-pass-half-res-11-26-26.md`](findings/fx-pass-half-res-11-26-26.md).
+
+**Found while measuring:** `fx 103` (dynamic lights) no longer sticks.
+`gfx_pc.c`'s per-frame gameplay light registry calls
+`gfx_opengl_light_count_auto()` unconditionally unless a caller claimed the
+slots with `gfx_opengl_light_count()`, so the FX pass's light count is reset to
+the registered gameplay lights (0 in the PTC) every frame. `cmd fx 103 3` is a
+no-op; every `103=` row in the 11-25 sweep's LOW/MED/HIGH presets now measures a
+lightless scene. Needs a `cmd light` path (or an "own the slots" bit on the fx
+key) before the presets are re-measured.
+
 ### Shipped this wave (merged 2026-11-25)
 Rays (`6c55b1e`), the reduced-res denoiser, slow-motion interpolation, the
 emissive/bloom/GLOW work, the occluded-Mario punch-through and the HFR held-object
@@ -505,6 +549,7 @@ keep a feature inside its block:
 | `390`-`399` | reduced-resolution MXAO (taken: `390` path, `391` divisor, `392` rotation, `393` upsample, `394` sky skip, `395` tap trig, `396` stage probe; `397`-`399` free) |
 | `400`-`409` | reduced-resolution SSGI (taken: `400` divisor, `401` blur, `402` roto jitter, `403` debug view, `404` sky skip, `405` normal reject) |
 | `410`-`419` | wall-run 90° corner rig, worktree `w3-corner-test` (taken: `410` nominal jump distance, `411` timing spacing, `412` re-entry deadline ticks, `413` entry height, `414` entry speed, `415` corner-stuck ticks; `416`-`419` free) |
+| `420`-`429` | reduced-resolution FX/post pass, worktree `w4-fx-halfres` (taken: `420` divisor 1/n, `421` upsample mode 0=bilinear 1=depth-aware, `422` read-only divisor the last frame used; `423`-`429` free) |
 
 ## Known bugs and limits
 
