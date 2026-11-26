@@ -116,13 +116,24 @@ lock event log over one hour:
 | waits that hit the timeout | 3600 s, 3103 s, 2889 s, 2288 s, 1800 s, 1500 s, 900 s |
 | totals | every worktree spent ~20-50 min queued for ~10 min of work |
 
-The lock was doing its job; the machine was not. Nine gradle JVMs plus nine
-NDK compiles under the qemu toolchain oversubscribe the CPU, so every build
-takes 25x longer and the queue turns into timeouts. The lock is the symptom,
-not the cause.
+The lock was doing its job; the build itself is the problem. The NDK host
+toolchain here is x86_64 running under `qemu-x86_64-static` on this arm64 VM, so
+every C file costs seconds instead of milliseconds. An **incremental** build
+(one or two files) is 20-60 s; a **fresh worktree** is a full native rebuild and
+runs 15-25 minutes. Nine worktrees therefore meant hours of serialised qemu
+compilation, and the queue turned into timeouts.
+
+Measured: load average was ~2 (not CPU-bound overall) while a single
+`qemu-x86_64-static` sat at 100 % CPU for 15+ minutes inside one build hold.
+
+The lock is the symptom, not the cause.
 
 Rules that follow:
 
+- **Do not give every agent its own worktree for build-heavy work.** One
+  worktree per agent means one full qemu rebuild per agent. Prefer: agents work
+  in parallel where they only edit code, then apply their diffs to a **single**
+  tree in sequence and take the incremental build (~20-60 s each).
 - **Cap build-heavy parallel worktrees at ~3.** More than that and the wall
   time is worse than doing them in sequence.
 - **Do not retry a timed-out build in a loop** while others are queued; you are
