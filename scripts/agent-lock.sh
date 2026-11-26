@@ -47,6 +47,19 @@ PROJECT_KEY="${AGENT_PROJECT_KEY:-android-sm64}"
 BUILD_LOCK="${AGENT_BUILD_LOCK:-$LOCK_ROOT/$PROJECT_KEY/build.lock}"
 DEVICE_LOCK="${AGENT_DEVICE_LOCK:-$LOCK_ROOT/devices/android.lock}"
 DEVICE_QUICK_LOCK="${AGENT_DEVICE_QUICK_LOCK:-$LOCK_ROOT/devices/android.quick.lock}"
+# Resolve adb once: some non-interactive shells do not have ~/.local/bin on
+# PATH, and every device helper here (and the power guard) needs it.
+if [[ -z "${ADB:-}" ]]; then
+    if command -v adb >/dev/null 2>&1; then
+        ADB="$(command -v adb)"
+    elif [[ -x /home/ubuntu/.local/bin/adb ]]; then
+        ADB=/home/ubuntu/.local/bin/adb
+    else
+        ADB=adb
+    fi
+fi
+export ADB
+
 LEGACY_PROJECT_KEY="sm64ex-android"
 LEGACY_BUILD_LOCK="$LOCK_ROOT/$LEGACY_PROJECT_KEY/build.lock"
 
@@ -109,13 +122,62 @@ device_app_busy() {
         -a com.vdavid003.sm64port.CMD --es cmd busy --ei v "$value" >/dev/null 2>&1 || true
 }
 
+# --- power audit ----------------------------------------------------------
+# The tablet is adb-over-Wi-Fi: anything that blanks, reboots, powers off or
+# changes the screen timeout takes the link away from every other agent, and
+# afterwards nobody can tell who did it. Every device hold therefore records
+# the power state before and after, and the lock logs its own sleep action.
+DEVICE_POWER_STATE() {
+    printf '%s/devices/power-state.txt' "$LOCK_ROOT"
+}
+
+# "boot=<id> reason=<r> wake=<w> batt=<n>"
+device_probe_power() {
+    local adb_bin="${ADB:-adb}" boot reason wake batt
+    command -v "$adb_bin" >/dev/null 2>&1 || return 0
+    boot=$("$adb_bin" shell cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d '\r')
+    reason=$("$adb_bin" shell getprop sys.boot.reason 2>/dev/null | tr -d '\r')
+    wake=$("$adb_bin" shell dumpsys power 2>/dev/null | sed -n 's/.*mWakefulness=\([A-Za-z]*\).*/\1/p' | head -1)
+    batt=$("$adb_bin" shell dumpsys battery 2>/dev/null | sed -n 's/^ *level: \([0-9]*\).*/\1/p' | head -1)
+    printf 'boot=%s reason=%s wake=%s batt=%s' "${boot:-?}" "${reason:-?}" "${wake:-?}" "${batt:-?}"
+}
+
+# Screen timeout the hold leaves behind, and the value it was raised to.
+device_timeout_raise() {
+    local adb_bin="${ADB:-adb}" cur
+    command -v "$adb_bin" >/dev/null 2>&1 || return 0
+    cur=$("$adb_bin" shell settings get system screen_off_timeout 2>/dev/null | tr -d '\r')
+    case "$cur" in ''|null) cur=30000 ;; esac
+    printf '%s' "$cur" > "$(DEVICE_POWER_STATE).timeout"
+    "$adb_bin" shell settings put system screen_off_timeout 600000 >/dev/null 2>&1 || true
+}
+
+device_timeout_restore() {
+    local adb_bin="${ADB:-adb}" cur
+    command -v "$adb_bin" >/dev/null 2>&1 || return 0
+    cur=$(cat "$(DEVICE_POWER_STATE).timeout" 2>/dev/null || true)
+    [[ -n "$cur" ]] || return 0
+    "$adb_bin" shell settings put system screen_off_timeout "$cur" >/dev/null 2>&1 || true
+    rm -f "$(DEVICE_POWER_STATE).timeout"
+}
+
 device_sleep() {
-    [[ "${AGENT_NO_SLEEP:-0}" == "1" ]] && return 0
+    if [[ "${AGENT_NO_SLEEP:-0}" == "1" ]]; then
+        log_event sleep_skipped device "$DEVICE_LOCK" "AGENT_NO_SLEEP=1" 0 0 0 null
+        return 0
+    fi
+    # Do not sleep the panel while another agent is queued for it: the sleep
+    # drops the Wi-Fi adb link and the next waiter cannot wake it.
+    if [[ "$(pgrep -fc 'agent-lock.sh (device|device-quick)' 2>/dev/null || echo 1)" -gt 1 ]]; then
+        log_event sleep_skipped device "$DEVICE_LOCK" "another agent is waiting" 0 0 0 null
+        return 0
+    fi
     local adb_bin="${ADB:-adb}"
     export LD_LIBRARY_PATH="/home/ubuntu/.local/lib/android-tools${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
     command -v "$adb_bin" >/dev/null 2>&1 || return 0
     if "$adb_bin" shell dumpsys power 2>/dev/null | grep -q "mWakefulness=Awake"; then
         "$adb_bin" shell input keyevent 26 >/dev/null 2>&1 || true
+        log_event sleep_sent device "$DEVICE_LOCK" "screen off (keyevent 26)" 0 0 0 null
     fi
 }
 
@@ -427,14 +489,43 @@ if [[ "$kind" == "device" ]]; then
         exit 3
     fi
     device_app_busy 1
+
+    # Power audit: attribute any reboot between holds to the previous holder,
+    # warn on a low battery, and keep the panel awake for this hold.
+    {
+        probe=$(device_probe_power)
+        if [[ -n "$probe" ]]; then
+            prev=$(cat "$(DEVICE_POWER_STATE)" 2>/dev/null || true)
+            prev_boot=$(sed -n 's/.*boot=\([^ ]*\).*/\1/p' <<<"$prev")
+            cur_boot=$(sed -n 's/.*boot=\([^ ]*\).*/\1/p' <<<"$probe")
+            if [[ -n "$prev_boot" && -n "$cur_boot" && "$prev_boot" != "$cur_boot" ]]; then
+                prev_holder=$(sed -n 's/^last_agent=//p' "$LOCK_ROOT/devices/android.lock" 2>/dev/null)
+                log_event rebooted device "$DEVICE_LOCK" \
+                    "boot id changed; previous holder ${prev_holder:-unknown}; now $probe" \
+                    0 0 0 null
+            fi
+            case "$probe" in
+                *"batt="[0-9]*)
+                    b=${probe##*batt=}
+                    if [[ "$b" =~ ^[0-9]+$ ]] && (( b < 15 )); then
+                        log_event low_battery device "$DEVICE_LOCK" "$probe" 0 0 0 null
+                    fi
+                    ;;
+            esac
+            printf '%s' "$probe" > "$(DEVICE_POWER_STATE)"
+        fi
+        device_timeout_raise
+    }
 fi
 
 release_note() {
     local rc=$?
     local hold_ms=$(( $(now_ms) - hold_start_ms ))
     if [[ "$kind" == "device" ]]; then
+        device_timeout_restore
         device_app_busy 0
         device_sleep
+        printf '%s' "$(device_probe_power)" > "$(DEVICE_POWER_STATE)" 2>/dev/null || true
     fi
     # device-quick deliberately leaves the tablet alone: no BUSY, no sleep.
     # fd 9 is still open here, so we still own the lock.
@@ -456,6 +547,50 @@ trap release_note EXIT
 
 # Run the command with fd 9 closed in the child so forked/background
 # processes cannot inherit and outlive the lock.
+# Power guard: put a shim `adb` first in PATH for device holds so a reboot,
+# poweroff, shutdown or screen-blank keyevent is logged and refused instead of
+# silently taking the tablet away from every other agent. Whitelist a deliberate
+# power action with AGENT_ALLOW_POWER=1.
+guard_install() {
+    local dir="$LOCK_ROOT/guard" real
+    real="${ADB:-$(command -v adb 2>/dev/null)}"
+    [[ -x "$real" || -n "$(command -v "$real" 2>/dev/null)" ]] || return 0
+    mkdir -p "$dir" || return 0
+    cat >"$dir/adb" <<'GUARD'
+#!/usr/bin/env bash
+# generated by agent-lock.sh: blocks power verbs unless AGENT_ALLOW_POWER=1
+real=__REAL_ADB__
+evlog=__EVENT_LOG__
+args="$*"
+case "$args" in
+  *" reboot"*|*" poweroff"*|*" shutdown"*|*" svc power"*|*" keyevent 26"*|*" keyevent 223"*|*" keyevent 224"*)
+    if [[ "${AGENT_ALLOW_POWER:-0}" == "1" ]]; then
+      echo "adb-guard: ALLOWED power command (AGENT_ALLOW_POWER=1): adb $args" >&2
+    else
+      echo "adb-guard: REFUSED power command: adb $args" >&2
+      printf '{"v":1,"ts":"%s","event":"power_blocked","lock":"device","agent":"%s","worktree":"%s","args":"%s"}\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${AGENT_ID:-unknown}" "$PWD" "$args" >>"$evlog" 2>/dev/null
+      exit 97
+    fi
+    ;;
+esac
+exec "$real" "$@"
+GUARD
+    python3 - "$dir/adb" "$real" "$(event_log_for device)" <<'PYSUB'
+import sys
+path, real, evlog = sys.argv[1], sys.argv[2], sys.argv[3]
+text = open(path).read().replace("__REAL_ADB__", real).replace("__EVENT_LOG__", evlog)
+open(path, "w").write(text)
+PYSUB
+    chmod +x "$dir/adb" 2>/dev/null || return 0
+    PATH="$dir:$PATH"
+    export PATH
+}
+
+if [[ "$kind" == "device" && "${AGENT_GUARD_POWER:-1}" == "1" ]]; then
+    guard_install
+fi
+
 if "$@" 8>&- 9>&-; then
     rc=0
 else

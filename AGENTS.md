@@ -64,6 +64,19 @@ Use it for every adb interaction, even a one-line `dumpsys`.
   connection.** During a multi-agent session pass `AGENT_NO_SLEEP=1` on
   intermediate device calls and only let the final call sleep it. If `adb
   devices` is empty, that is usually why.
+- **Power audit is automatic now.** Each device hold records `boot_id`,
+  `sys.boot.reason`, wakefulness and battery level, and logs a `rebooted` event
+  naming the previous holder if the boot id changed, `low_battery` below 15 %,
+  and `sleep_sent` / `sleep_skipped` with the reason. A `shutdown,battery` boot
+  reason means the tablet simply ran out of charge — no agent did it. Read the
+  device events with:
+  `grep -E 'rebooted|low_battery|sleep_|power_blocked' ~/.local/state/opencode/devices/lock-events.log`
+- **A power guard wraps `adb` inside every device hold.** `reboot`, `poweroff`,
+  `shutdown`, `svc power` and the screen keyevents (`26`, `223`, `224`) are
+  refused with exit 97 and logged as `power_blocked`. A deliberate power action
+  needs `AGENT_ALLOW_POWER=1` in the environment of that command, and then it is
+  logged as allowed. The lock's own sleep is unaffected (it runs outside the
+  child) and is skipped when another agent is queued.
 - **Never `adb reboot` the tablet.** `getprop sys.boot.reason` records
   `reboot,shell` when an agent does this, and it destroys everyone's session
   state. If the tablet stops answering, say so and let a human wake it; a

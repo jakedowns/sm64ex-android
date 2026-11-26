@@ -337,6 +337,13 @@ keep a feature inside its block:
 
 ## Environment / tooling facts that cost time to rediscover
 
+- **The 2026-11-26 outage was a battery shutdown, not an agent.**
+  `getprop sys.boot.reason` reported `shutdown,battery` after the tablet came
+  back. The device lock now records the boot id, boot reason and battery level
+  on every hold, so a real reboot (`reboot,shell` from an `adb reboot`) is
+  attributed to the previous holder, and an `adb` shim refuses power verbs
+  inside a device hold (exit 97, logged as `power_blocked`).
+
 - **`osGetTime()` is stubbed to `0` in this port.** Anything time-based must use
   `gfx_wall_time_sec()` (`gfx_sdl2.c`, SDL_GetTicks). The scripted camera orbits
   were frozen at phase 0 for weeks because of this (`c626ce1`).
