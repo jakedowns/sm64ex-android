@@ -1,0 +1,19 @@
+# GRADE sweep plan for scripts/fx-sweep.sh
+# name | fx settings | settle seconds | caption
+#
+# Tone map operators, then looks (all with ACES underneath), then the split
+# view. Run this BEFORE the LUT is pushed so `lut_missing` exercises the
+# no-file fallback.
+off        | 280=0                                | 3 | GRADING OFF
+linear     | 280=1 281=0 284=0                   | 3 | TONEMAP LINEAR
+reinhard   | 280=1 281=1 284=0                   | 3 | TONEMAP REINHARD
+aces       | 280=1 281=2 284=0                   | 3 | TONEMAP ACES
+filmic     | 280=1 281=3 284=0                   | 3 | TONEMAP FILMIC
+sepia      | 280=1 281=2 284=1                   | 3 | LOOK SEPIA
+cool       | 280=1 281=2 284=2                   | 3 | LOOK COOL
+warm       | 280=1 281=2 284=3                   | 3 | LOOK WARM
+bleach     | 280=1 281=2 284=4                   | 3 | LOOK BLEACH
+cel        | 280=1 281=2 284=5                   | 3 | LOOK CEL
+lut_missing| 280=1 281=2 284=6                   | 3 | LOOK LUT (NO FILE)
+look_off   | 284=0                                | 2 | LOOK NONE
+split      | 289=1                                | 3 | SPLIT PRE/POST

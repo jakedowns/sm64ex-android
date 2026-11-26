@@ -130,6 +130,8 @@ extern float gfx_stereo_convergence_px;
 // Screen-space FX knobs live in gfx_opengl.c (the pass runs there).
 extern void gfx_opengl_ssfx_set(int which, int value);
 extern int gfx_opengl_ssfx_get(int which);
+/* GRADE LUT: Java decodes the image and hands over RGBA bytes (any thread). */
+extern void gfx_opengl_grade_lut_submit(unsigned char *rgba, int w, int h);
 
 #include <jni.h>
 #include <time.h>
@@ -815,6 +817,40 @@ Java_com_vdavid003_sm64port_sm64portActivity_nativeGetSSFX(JNIEnv *env, jobject 
                                                            jint which) {
     (void) env; (void) thiz;
     return gfx_opengl_ssfx_get(which);
+}
+
+/* GRADE LUT upload.  `pixels` is Bitmap.getPixels() ARGB_8888; NULL (or a
+ * zero size) clears the LUT so look 6 falls back to the analytic looks. */
+JNIEXPORT void JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeSetGradeLut(JNIEnv *env, jobject thiz,
+                                                               jintArray pixels,
+                                                               jint w, jint h) {
+    (void) thiz;
+    if (pixels == NULL || w <= 0 || h <= 0) {
+        gfx_opengl_grade_lut_submit(NULL, 0, 0);
+        return;
+    }
+    jsize n = (*env)->GetArrayLength(env, pixels);
+    if (n < (jsize) (w * h)) {
+        gfx_opengl_grade_lut_submit(NULL, 0, 0);
+        return;
+    }
+    unsigned char *rgba = (unsigned char *) malloc((size_t) w * (size_t) h * 4);
+    if (rgba == NULL) return;
+    jint *argb = (*env)->GetIntArrayElements(env, pixels, NULL);
+    if (argb == NULL) {
+        free(rgba);
+        return;
+    }
+    for (jsize i = 0; i < (jsize) (w * h); i++) {
+        jint p = argb[i];
+        rgba[i * 4 + 0] = (unsigned char) ((p >> 16) & 0xFF);
+        rgba[i * 4 + 1] = (unsigned char) ((p >> 8) & 0xFF);
+        rgba[i * 4 + 2] = (unsigned char) (p & 0xFF);
+        rgba[i * 4 + 3] = (unsigned char) ((p >> 24) & 0xFF);
+    }
+    (*env)->ReleaseIntArrayElements(env, pixels, argb, JNI_ABORT);
+    gfx_opengl_grade_lut_submit(rgba, w, h);
 }
 
 /* Gameplay enhancements (RAGDOLL / HITRAG / PPCAM) and shadow knobs. */

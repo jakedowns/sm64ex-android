@@ -150,10 +150,11 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     /* Top-level tabs and their page groups. Pages keep their historical
      * indices: 0 stereo, 1 views, 2 MXAO, 3 C.DOF, 4 SSGI, 5 SSRTX,
      * 6 camera settings, 7 debug, 8 shadow, 9 splat, 10 changelog,
-     * 11 logs, 12 about general, 13 light, 14 crepuscular rays. */
-    private static final int[] FX_PAGES = {0, 2, 3, 4, 5, 14, 8, 9, 13, 1, 6};
+     * 11 logs, 12 about general, 13 light, 14 crepuscular rays, 15 grade. */
+    private static final int[] FX_PAGES = {0, 2, 3, 4, 5, 14, 8, 9, 13, 1, 15};
     private static final String[] FX_LABELS =
-            {"CAMERA", "MXAO", "C.DOF", "SSGI", "SSRTX", "RAYS", "SHADOW", "SPLAT", "LIGHT", "VIEWS"};
+            {"CAMERA", "MXAO", "C.DOF", "SSGI", "SSRTX", "RAYS", "SHADOW", "SPLAT",
+             "LIGHT", "VIEWS", "GRADE"};
     private static final int[] CAMERA_PAGES = {6, 0};
     private static final String[] CAMERA_LABELS = {"SETTINGS", "STEREO"};
     private static final int[] ABOUT_PAGES = {12, 10};
@@ -1485,6 +1486,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             case 8: return shadowOn;
             case 9: return splatMode != 0;
             case 13: return mbOn || lightCountOn || probeOn;
+            case 15: return nativeGetSSFX(280) != 0;
             case 1: return zbufOn || wireOn || fxDebug != 0;
             case 0: case 6: return hdtOn || gyroOn;
             case 7: return !gameHudOn || !debugCapsOn || !touchCtlOn;
@@ -2535,6 +2537,39 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             addActionCell(r, "VIEW BLOOM", () -> debugFx(268, 2));
             addActionCell(r, "VIEW OFF", () -> debugFx(268, 0));
         }
+
+        // --- Tone mapping + colour grading (fx 280-289) ---
+        // Appended last so the existing FX page indices do not shift. Everything
+        // is off by default; the whole chain costs one uniform branch until the
+        // master toggle is on.
+        beginTab();
+        addPerfRow("GRADE", () -> nativeSetSSFX(280, 0), () -> nativeSetSSFX(280, 1),
+                   () -> nativeGetSSFX(280) != 0);
+        addFxToggle("TONE MAP + GRADE", 280, false);
+        {
+            TextView hint = new TextView(this);
+            hint.setTextSize(12);
+            hint.setTextColor(0xFFAACCFF);
+            hint.setPadding(dp(4), 0, dp(4), dp(6));
+            hint.setText("Display transform applied once at the end of the FX pass"
+                    + " (after AO/DOF/shadow/lights/rays, debug views stay raw)."
+                    + " Look 6 reads a 2D stripe LUT from"
+                    + " files/luts/grade.png: 16x16 blue slices in a 16*N x 16"
+                    + " strip (256x16 = 16 slices); no file falls back to NONE.");
+            controls.addView(hint);
+        }
+        addFxCycle("TONEMAP", 281, new String[] {
+                "LINEAR", "REINHARD", "ACES", "FILMIC" }, nativeGetSSFX(281));
+        addFxCycle("LOOK", 284, new String[] {
+                "NONE", "SEPIA", "COOL", "WARM", "BLEACH", "CEL", "LUT" },
+                nativeGetSSFX(284));
+        addIntSlider("Exposure EV x100", -300, 300, 0, v -> debugFx(282, v));
+        addIntSlider("White point %", 100, 400, 100, v -> debugFx(283, v));
+        addIntSlider("Look strength %", 0, 100, 100, v -> debugFx(285, v));
+        addIntSlider("Saturation %", 0, 200, 100, v -> debugFx(286, v));
+        addIntSlider("Contrast %", -100, 100, 0, v -> debugFx(287, v));
+        addIntSlider("Tint -cool/+warm", -100, 100, 0, v -> debugFx(288, v));
+        addIntSlider("Split pre/post 0/1", 0, 1, 0, v -> debugFx(289, v));
     }
 
     private String buildBranch() {
@@ -3850,6 +3885,30 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         Log.i(TAG, "FX toggle " + name + "=" + (on ? 1 : 0));
     }
 
+    /** Cycle button for a small enum-style fx key (tonemap operator, look). */
+    private TextView addFxCycle(String name, final int key, final String[] labels,
+                                int initial) {
+        final TextView b = new TextView(this);
+        int start = (initial < 0 || initial >= labels.length) ? 0 : initial;
+        b.setTag(start);
+        b.setTextSize(15);
+        b.setGravity(Gravity.CENTER);
+        b.setPadding(dp(4), dp(10), dp(4), dp(10));
+        b.setText(name + ": " + labels[start]);
+        b.setTextColor(start == 0 ? 0xFF888888 : 0xFF66CCFF);
+        b.setOnClickListener(v -> {
+            int next = (((Integer) b.getTag()) + 1) % labels.length;
+            b.setTag(next);
+            b.setText(name + ": " + labels[next]);
+            b.setTextColor(next == 0 ? 0xFF888888 : 0xFF66CCFF);
+            debugFx(key, next);
+            Log.i(TAG, "FX cycle " + name + "=" + next);
+        });
+        addCompact(controls, b);
+        nativeSetSSFX(key, start);
+        return b;
+    }
+
     /** Put the current page's slider grid after the rows already added to it. */
     private void moveGridLast() {
         if (grid == null || controls == null) return;
@@ -4662,6 +4721,8 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     /** Screen-space FX knobs, implemented by the per-eye post pass. */
     private native void nativeSetSSFX(int which, int value);
     private native int nativeGetSSFX(int which);
+    /** GRADE LUT pixels (ARGB_8888 from Bitmap.getPixels); null clears it. */
+    private native void nativeSetGradeLut(int[] pixels, int w, int h);
     /** Gameplay enhancement toggles: 0 ragdoll, 1 hit ragdoll, 2 puppycam+. */
     private native void nativeSetEnh(int which, int value);
     private native int nativeGetEnh(int which);
@@ -4880,7 +4941,54 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             return;
         }
         nativeSetSSFX(k, v);
+        if (k == 284 && v == 6) reloadGradeLut();
         Log.i(TAG, "FX set " + k + "=" + v);
+    }
+
+    /**
+     * Decode + validate the optional GRADE LUT and hand it to the renderer.
+     *
+     * File: <external files>/luts/grade.png
+     *       = /sdcard/Android/data/com.vdavid003.sm64port/files/luts/grade.png
+     * Format: horizontal strip of 16x16 blue slices, width 16*N, height 16
+     *         (256x16 = 16 slices). Row 0 is green = 0, column 0 is red = 0.
+     * Re-send `cmd fx --ei k 284 --ei v 6` after dropping a new file.
+     */
+    private void reloadGradeLut() {
+        java.io.File dir = getExternalFilesDir(null);
+        java.io.File f = new java.io.File(dir != null ? dir : getFilesDir(), "luts/grade.png");
+        String tag = "SM64FX";
+        if (!f.exists()) {
+            nativeSetGradeLut(null, 0, 0);
+            Log.i(tag, "GRADE LUT: no file at " + f + " -- analytic looks only");
+            return;
+        }
+        android.graphics.Bitmap bm = null;
+        try {
+            bm = android.graphics.BitmapFactory.decodeFile(f.getAbsolutePath());
+        } catch (Throwable t) {
+            Log.w(tag, "GRADE LUT: decode failed for " + f + ": " + t);
+        }
+        if (bm == null) {
+            nativeSetGradeLut(null, 0, 0);
+            Log.w(tag, "GRADE LUT REJECTED: " + f + " is not a decodable image");
+            return;
+        }
+        int w = bm.getWidth();
+        int h = bm.getHeight();
+        if (h != 16 || w < 32 || w > 1024 || (w % 16) != 0) {
+            Log.w(tag, "GRADE LUT REJECTED: " + w + "x" + h
+                    + " is not a 16*N x 16 stripe LUT (expected e.g. 256x16)");
+            bm.recycle();
+            nativeSetGradeLut(null, 0, 0);
+            return;
+        }
+        int[] px = new int[w * h];
+        bm.getPixels(px, 0, w, 0, 0, w, h);
+        bm.recycle();
+        nativeSetGradeLut(px, w, h);
+        Log.i(tag, "GRADE LUT loaded: " + f + " (" + w + "x" + h + ", "
+                + (w / 16) + " slices)");
     }
 
     void debugShadow(int k, int v) {

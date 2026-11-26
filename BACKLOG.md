@@ -119,14 +119,26 @@ see README "Crepuscular rays"). Still open:
   stills are subtle. A `ptc` action that parks one light low behind a pillar
   would show the shafts off better than the free-look orbit.
 
-### Emissive particles + bloom — **implemented** (2026-11-25)
-Emissive draw-batch tag (`GFX_OP_EMISSIVE_MARKER`, display-list marker), a
+### Emissive particles + bloom — **implemented** (2026-11-25)Emissive draw-batch tag (`GFX_OP_EMISSIVE_MARKER`, display-list marker), a
 per-eye half-res emissive buffer, a threshold/blur/additive-upsample bloom chain
 that reads only that buffer, and a per-frame world-space light registry (jetpack
 nozzle + nearby flames). Dial it from the FX > LIGHT > **GLOW** tab (`fx`
 261-273); debug views `268 1` (emissive buffer) and `268 2` (bloom buffer).
 Bloom is off by default. See `README-lumepad-2-fork.md` for the key table and
 measured cost. The god-ray pass below should now shaft from this buffer.
+
+### Tone mapping + colour grading (GRADE tab) — **implemented** (2026-11-25)
+Exposure/white point, four analytic tonemap operators (linear, Reinhard, ACES
+fit, Hable filmic), six analytic looks plus an optional 2D stripe LUT, and
+saturation/contrast/tint on top (`fx 280`-`289`, off by default). See the GRADE
+section of `README-lumepad-2-fork.md` for the LUT format and path. Open:
+- **Bloom is added after the tonemap** (the glow pass writes into the FX output),
+  so a bright emissive pixel is not rolled off by ACES/filmic. Moving bloom into
+  the scene buffer before the FX pass would fix it; not done here.
+- **No LUT interpolation between slices** beyond bilinear on the strip; a
+  32-slice LUT (`512x16`) is the cheap upgrade if 16 bands are visible.
+- **Cel look is per-pixel only**; there is no edge detect, so it does not draw
+  ink lines.
 
 ### Occluder punch-through: quality follow-ups
 Shipped 2026-11-25 (scene-shader circular discard, CAMERA > SETTINGS

@@ -3,6 +3,9 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 // Stereo state lives in gfx_pc.c (set by the Leia bridge).
 extern int gfx_stereo_enabled;
@@ -991,6 +994,28 @@ static int s_fx_gi_radius = 150;      // world units
 static int s_fx_gi_steps = 6;
 static int s_fx_gi_rays = 4;
 
+/* ---------------- Tone mapping + colour grading (GRADE tab, fx 280-289) ---
+ * Runs at the very end of the FX shader, after AO/DOF/shadow/GI/SSRTX/lights/
+ * rays have been composited into `outc` and after the debug-view chain, so
+ * every debug buffer stays raw and additive light is tonemapped exactly once.
+ * Everything is off by default: with s_grade_on == 0 the shader takes one
+ * uniform branch and the picture is bit-identical to before.
+ *
+ * 280 master, 281 tonemap operator, 282 exposure EV*100, 283 white point %,
+ * 284 look, 285 look strength %, 286 saturation %, 287 contrast %,
+ * 288 tint, 289 pre/post split view.
+ */
+static int s_grade_on = 0;
+static int s_grade_op = 2;          /* 0 linear, 1 reinhard, 2 ACES, 3 filmic */
+static int s_grade_exposure = 0;    /* EV * 100 (-300..300) */
+static int s_grade_white = 100;     /* percent -> 1.0..4.0 scene white point */
+static int s_grade_look = 0;        /* 0 none, 1 sepia, 2 cool, 3 warm, 4 bleach, 5 cel, 6 LUT */
+static int s_grade_strength = 100;  /* percent */
+static int s_grade_sat = 100;       /* percent */
+static int s_grade_contrast = 0;    /* -100..100 -> 0.5x..2x around mid grey */
+static int s_grade_tint = 0;        /* -100 cool .. +100 warm */
+static int s_grade_debug = 0;       /* 1 = left half pre-tonemap, right half post */
+
 // SSRTX: screen-space ray-traced reflections (ReShade SSR/SSRT-style).
 static int s_fx_ssrtx_on = 0;
 static int s_fx_ssrtx_intensity = 100;  // percent
@@ -1210,6 +1235,16 @@ static const char *s_fx_fs =
     "uniform float uRayDebug;\n"
     "uniform vec3 uRayColor;\n"
     "uniform vec2 uRayLightUV;\n"
+    "uniform float uGradeOn;\n"
+    "uniform float uGradeOp;\n"
+    "uniform float uGradeExposure;\n"
+    "uniform float uGradeWhite;\n"
+    "uniform float uGradeLook;\n"
+    "uniform float uGradeStrength;\n"
+    "uniform float uGradeSat;\n"
+    "uniform float uGradeContrast;\n"
+    "uniform float uGradeTint;\n"
+    "uniform float uGradeDebug;\n"
     "float unpackDepth(vec4 rgba) {\n"
     "  return dot(rgba, vec4(1.0, 1.0/255.0, 1.0/65025.0, 1.0/16581375.0));\n"
     "}\n"
@@ -1387,6 +1422,70 @@ static const char *s_fx_fs =
     "  float edge = smoothstep(0.0, 0.08, min(min(cuv.x, 1.0 - cuv.x), min(cuv.y, 1.0 - cuv.y)));\n"
     "  float fade = mix(1.0, edge, uSSRTXFade / 100.0);\n"
     "  return (acc / hits) * fres * fade * (uSSRTXIntensity / 100.0);\n"
+    "}\n"
+    // Tone mapping + colour grading.  Display-referred chain, applied once to
+    // the assembled scene colour: exposure -> tonemap -> look -> saturation ->
+    // contrast -> tint.  Alpha is never touched (the pass writes 1.0).
+    "float gradeReinhard(float x) { return x / (1.0 + x); }\n"
+    "float gradeACES(float x) {\n"
+    "  return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);\n"
+    "}\n"
+    "float gradeFilmicPart(float x) {\n"
+    "  const float A = 0.15; const float B = 0.50; const float C = 0.10;\n"
+    "  const float D = 0.20; const float E = 0.02; const float F = 0.30;\n"
+    "  return ((x * (A * x + C * B) + D * E) / (x * (A * x + B) + D * F)) - E / F;\n"
+    "}\n"
+    // 0 linear, 1 Reinhard, 2 ACES (Narkowicz fit), 3 Hable/Uncharted2 filmic.
+    "vec3 gradeTonemapOp(vec3 c) {\n"
+    "  if (uGradeOp < 0.5) return c;\n"
+    "  if (uGradeOp < 1.5) return vec3(gradeReinhard(c.r), gradeReinhard(c.g), gradeReinhard(c.b));\n"
+    "  if (uGradeOp < 2.5) return vec3(gradeACES(c.r), gradeACES(c.g), gradeACES(c.b));\n"
+    "  return vec3(gradeFilmicPart(c.r * 2.0), gradeFilmicPart(c.g * 2.0),\n"
+    "              gradeFilmicPart(c.b * 2.0)) / max(gradeFilmicPart(22.4), 0.0001);\n"
+    "}\n"
+    // Looks are analytic; look 6 (LUT) is a separate pass (see below) because
+    // adding a seventh sampler to this already heavy shader measured ~30 ms.
+    "vec3 gradeLookColour(vec3 c) {\n"
+    "  float l = dot(c, vec3(0.2126, 0.7152, 0.0722));\n"
+    "  if (uGradeLook < 0.5) return c;\n"
+    "  if (uGradeLook < 1.5) {\n"
+    "    return vec3(dot(c, vec3(0.393, 0.769, 0.189)),\n"
+    "                dot(c, vec3(0.349, 0.686, 0.168)),\n"
+    "                dot(c, vec3(0.272, 0.534, 0.131)));\n"
+    "  }\n"
+    "  if (uGradeLook < 2.5) return c * vec3(0.88, 1.01, 1.16) + vec3(0.0, 0.012, 0.03);\n"
+    "  if (uGradeLook < 3.5) return c * vec3(1.14, 1.02, 0.86) + vec3(0.03, 0.01, 0.0);\n"
+    "  if (uGradeLook < 4.5) {\n"
+    // Bleach bypass: overlay(luma, colour) banks the highlights and drains
+    // saturation, then a small straight colour mix keeps skin from going grey.
+    "    vec3 fl = vec3(l);\n"
+    "    vec3 ov = mix(2.0 * c * fl, 1.0 - 2.0 * (1.0 - c) * (1.0 - fl), step(0.5, fl));\n"
+    "    return mix(c, ov, 0.7);\n"
+    "  }\n"
+    "  if (uGradeLook < 5.5) {\n"
+    // Cel: per-pixel luminance step ramp (5 hard steps).  Quantising luminance
+    // and rescaling the colour by q/l keeps hue and chroma edges; there is no
+    // spatial filter, so geometry edges are untouched.
+    "    float steps = 5.0;\n"
+    "    float q = floor(clamp(l, 0.0, 1.0) * steps + 0.5) / steps;\n"
+    "    float ratio = clamp(q / max(l, 0.02), 0.0, 4.0);\n"
+    "    return clamp(c * ratio, 0.0, 1.0);\n"
+    "  }\n"
+    "  return c;\n"
+    "}\n"
+    "vec3 gradeApply(vec3 c) {\n"
+    "  float ev = exp2(uGradeExposure / 100.0);\n"
+    "  float w = 1.0 + max(uGradeWhite - 100.0, 0.0) / 100.0 * 3.0;\n"
+    "  vec3 tc = gradeTonemapOp(max(c, 0.0) * ev);\n"
+    "  tc = tc / max(gradeTonemapOp(vec3(w)), vec3(0.0001));\n"
+    "  vec3 looked = gradeLookColour(clamp(tc, 0.0, 1.0));\n"
+    "  c = mix(tc, looked, clamp(uGradeStrength / 100.0, 0.0, 1.0));\n"
+    "  float l = dot(c, vec3(0.2126, 0.7152, 0.0722));\n"
+    "  c = mix(vec3(l), c, uGradeSat / 100.0);\n"
+    "  c = (c - 0.5) * exp2(uGradeContrast / 100.0) + 0.5;\n"
+    "  float t = uGradeTint / 100.0;\n"
+    "  c *= vec3(1.0 + 0.22 * t, 1.0 - 0.06 * abs(t), 1.0 - 0.22 * t);\n"
+    "  return clamp(c, 0.0, 1.0);\n"
     "}\n"
     "void main() {\n"
     "  vec3 baseColor = texture2D(uColor, vUV).rgb;\n"
@@ -1669,6 +1768,20 @@ static const char *s_fx_fs =
     "        float fres = 0.15 + 0.85 * pow(1.0 - clamp(dot(-viewDir, n), 0.0, 1.0), 3.0);\n"
     "        float spec = pow(max(dot(reflect(-viewDir, n), normalize(vec3(0.4, 0.8, 0.3))), 0.0), 8.0 + max(uProbeRes, 1.0) * 3.0);\n"
     "        outc = mix(outc, env * fres + spec * 1.5 + state * 0.2, 0.92);\n"
+    "      }\n"
+    "    }\n"
+    // Tone mapping + grading: the last thing that happens to the scene colour,
+    // after every additive term (lights, rays, probes) is in and after the
+    // debug-view chain above, so debug views still show raw linear buffers.
+    // One uniform branch when the tab is off.
+    "    if (uGradeOn > 0.5) {\n"
+    "      vec3 preGrade = clamp(outc, 0.0, 1.0);\n"
+    "      vec3 graded = gradeApply(outc);\n"
+    "      if (uGradeDebug > 0.5) {\n"
+    "        outc = cuv.x < 0.5 ? preGrade : graded;\n"
+    "        if (abs(cuv.x - 0.5) * max(uCanvas.z, 1.0) < 1.5) outc = vec3(1.0, 0.0, 1.0);\n"
+    "      } else {\n"
+    "        outc = graded;\n"
     "      }\n"
     "    }\n"
     "    gl_FragColor = vec4(outc, 1.0);\n"
@@ -1959,6 +2072,8 @@ static struct {
     GLint denoise_radius, denoise_frames, denoise_bounces;
     GLint vec_gain;
     GLint ray_tex, ray_on, ray_intensity, ray_debug, ray_color, ray_light_uv;
+    GLint grade_on, grade_op, grade_exposure, grade_white, grade_look;
+    GLint grade_strength, grade_sat, grade_contrast, grade_tint, grade_debug;
 } s_fx_u;
 
 static GLuint s_fx_prog = 0;
@@ -1967,12 +2082,37 @@ static GLuint s_pp_fbo[2] = {0, 0};
 static GLuint s_pp_tex[2] = {0, 0};
 static int    s_pp_w = 0, s_pp_h = 0;
 
+/* Optional 2D stripe LUT for the GRADE look.  GLES2 has no 3D textures, so the
+ * expected image is a horizontal strip of 16x16 blue slices: width 16*N,
+ * height 16, red across a tile, green down it, blue picks the tile:
+ *
+ *      256x16 = 16 slices, 512x16 = 32 slices (also 32x16 / 64x16 / ...)
+ *
+ * Drop it at <external files>/luts/grade.png
+ * (= /sdcard/Android/data/com.vdavid003.sm64port/files/luts/grade.png) and
+ * select look 6; with no (valid) file the analytic looks are used instead.
+ * Loading happens on the GL thread from the pass, because gfx_opengl_ssfx_set
+ * is called from the UI thread and must not touch GL objects. */
+static GLuint s_lut_tex = 0;
+static int    s_lut_valid = 0;
+static int    s_lut_slices = 16;
+static int    s_lut_w = 0, s_lut_h = 0;
+static GLuint s_lut_prog = 0;
+static int    s_lut_prog_state = 0;
+static GLuint s_lut_fbo[2] = {0, 0};
+static GLuint s_lut_out_tex[2] = {0, 0};
+static int    s_lut_out_w = 0, s_lut_out_h = 0;
+static int    s_lut_out_valid[2] = {0, 0};
+static GLint  s_lut_u_tex = -1, s_lut_u_lut = -1, s_lut_u_slices = -1;
+static GLint  s_lut_u_h = -1, s_lut_u_strength = -1;
+
 static int stereo_fx_any(void) {
     return s_fx_ao_on || s_fx_dof_on || s_fx_gi_on || s_fx_debug != 0
         || (gfx_shadow_enabled && s_shadow_map_valid)
         || s_fx_ssrtx_on || s_fx_mb_on || s_light_count > 0 || s_probe_vis
         || s_glow_on            /* bloom needs the FX pass output as its base */
         || s_ray_on
+        || s_grade_on           /* tonemap/grade needs the FX pass */
         || (s_denoise_path && s_denoise_on);   /* denoise needs the FX pass */
 }
 
@@ -2127,6 +2267,21 @@ void gfx_opengl_ssfx_set(int which, int value) {
         case 276: s_occl_feather = value < 0 ? 0 : (value > 100 ? 100 : value); break;
         case 277: s_occl_cover = value < 0 ? 0 : (value > 100 ? 100 : value); break;
         case 278: s_occl_bias = value < 0 ? 0 : (value > 100 ? 100 : value); break;
+        /* Tone mapping + colour grading (GRADE tab, fx 280-289). */
+        case 280:
+            s_grade_on = value ? 1 : 0;
+            break;
+        case 281: s_grade_op = value < 0 ? 0 : (value > 3 ? 3 : value); break;
+        case 282: s_grade_exposure = value < -300 ? -300 : (value > 300 ? 300 : value); break;
+        case 283: s_grade_white = value < 100 ? 100 : (value > 400 ? 400 : value); break;
+        case 284:
+            s_grade_look = value < 0 ? 0 : (value > 6 ? 6 : value);
+            break;
+        case 285: s_grade_strength = value < 0 ? 0 : (value > 100 ? 100 : value); break;
+        case 286: s_grade_sat = value < 0 ? 0 : (value > 200 ? 200 : value); break;
+        case 287: s_grade_contrast = value < -100 ? -100 : (value > 100 ? 100 : value); break;
+        case 288: s_grade_tint = value < -100 ? -100 : (value > 100 ? 100 : value); break;
+        case 289: s_grade_debug = value ? 1 : 0; break;
         /* Rate limiter (lives in gfx_sdl2.c). */
         case 200: { extern int gfx_rate_enabled; gfx_rate_enabled = value != 0; break; }
         case 201: { extern int gfx_rate_target_fps; gfx_rate_target_fps = value < 0 ? 0 : (value > 240 ? 240 : value); break; }
@@ -2314,6 +2469,16 @@ int gfx_opengl_ssfx_get(int which) {
         case 271: return gfx_jet_light_on;
         case 272: return gfx_jet_light_intensity;
         case 273: return gfx_jet_light_radius;
+        case 280: return s_grade_on;
+        case 281: return s_grade_op;
+        case 282: return s_grade_exposure;
+        case 283: return s_grade_white;
+        case 284: return s_grade_look;
+        case 285: return s_grade_strength;
+        case 286: return s_grade_sat;
+        case 287: return s_grade_contrast;
+        case 288: return s_grade_tint;
+        case 289: return s_grade_debug;
         case 330: {
             extern int gfx_cam_sens_state(int which);
             return gfx_cam_sens_state(0);
@@ -2493,12 +2658,227 @@ static void stereo_fx_init(void) {
     s_fx_u.anamorphic = glGetUniformLocation(s_fx_prog, "uAnamorphic");
     s_fx_u.bokeh_highlight = glGetUniformLocation(s_fx_prog, "uBokehHighlight");
     s_fx_u.cat_eye = glGetUniformLocation(s_fx_prog, "uCatEye");
+    s_fx_u.grade_on = glGetUniformLocation(s_fx_prog, "uGradeOn");
+    s_fx_u.grade_op = glGetUniformLocation(s_fx_prog, "uGradeOp");
+    s_fx_u.grade_exposure = glGetUniformLocation(s_fx_prog, "uGradeExposure");
+    s_fx_u.grade_white = glGetUniformLocation(s_fx_prog, "uGradeWhite");
+    s_fx_u.grade_look = glGetUniformLocation(s_fx_prog, "uGradeLook");
+    s_fx_u.grade_strength = glGetUniformLocation(s_fx_prog, "uGradeStrength");
+    s_fx_u.grade_sat = glGetUniformLocation(s_fx_prog, "uGradeSat");
+    s_fx_u.grade_contrast = glGetUniformLocation(s_fx_prog, "uGradeContrast");
+    s_fx_u.grade_tint = glGetUniformLocation(s_fx_prog, "uGradeTint");
+    s_fx_u.grade_debug = glGetUniformLocation(s_fx_prog, "uGradeDebug");
     __android_log_print(ANDROID_LOG_INFO, "SM64FX",
         "new uniforms: mb=%d lc=%d pv=%d psp=%d",
         s_fx_u.mb_on, s_fx_u.light_count, s_fx_u.probe_vis, s_fx_u.probe_spacing);
     s_fx_prog_state = 1;
     __android_log_print(ANDROID_LOG_INFO, "SM64FX", "FX program ready (%u)", s_fx_prog);
 }
+
+/* ---------------- Optional 2D stripe LUT (GRADE look 6) ------------------
+ * GLES2 has no 3D textures, so the LUT is a horizontal strip of 16x16 blue
+ * slices (width 16*N, height 16).  It is applied by its own tiny pass after
+ * the FX pass (and after bloom) rather than as a seventh sampler inside the
+ * big FX shader: adding a sampler there measured ~30 ms on this GPU (BACKLOG).
+ * With no file, look 6 falls back to "none" and the analytic looks work. */
+static const char *s_lut_fs =
+    "precision highp float;\n"
+    "varying vec2 vUV;\n"
+    "uniform sampler2D uTex;\n"
+    "uniform sampler2D uLut;\n"
+    "uniform float uSlices;\n"
+    "uniform float uHeight;\n"
+    "uniform float uStrength;\n"
+    "void main() {\n"
+    "  vec3 c = clamp(texture2D(uTex, vUV).rgb, 0.0, 1.0);\n"
+    "  float n = max(uSlices, 1.0);\n"
+    "  float slice = min(floor(c.b * n), n - 1.0);\n"
+    // half-texel insets keep bilinear taps inside one slice/tile
+    "  float x = (slice * 16.0 + 0.5 + clamp(c.r, 0.0, 1.0) * 15.0) / (n * 16.0);\n"
+    "  float y = (0.5 + clamp(c.g, 0.0, 1.0) * max(uHeight - 1.0, 1.0)) / max(uHeight, 1.0);\n"
+    "  vec3 lut = texture2D(uLut, vec2(x, y)).rgb;\n"
+    "  gl_FragColor = vec4(mix(c, lut, clamp(uStrength, 0.0, 1.0)), 1.0);\n"
+    "}\n";
+
+/* The image is decoded in Java (BitmapFactory) and handed here as RGBA bytes;
+ * this keeps stb_image out of the build (it is only compiled when EXTERNAL_DATA
+ * is set) and puts file/dimension errors in the Java log next to the file path.
+ * gfx_opengl_grade_lut_submit() may be called from the UI thread, so the buffer
+ * is published through an atomic exchange and consumed on the GL thread. */
+typedef struct {
+    int w, h;
+    unsigned char *rgba;
+} GradeLutUpload;
+
+static GradeLutUpload *s_lut_pending = NULL;
+
+/* JNI entry (any thread): takes ownership of `rgba` (malloc'd, w*h*4 bytes).
+ * w == 0 means "clear the LUT" (no file / rejected). */
+void gfx_opengl_grade_lut_submit(unsigned char *rgba, int w, int h) {
+    GradeLutUpload *u = (GradeLutUpload *) malloc(sizeof(GradeLutUpload));
+    GradeLutUpload *old;
+    if (u == NULL) {
+        free(rgba);
+        return;
+    }
+    u->w = w;
+    u->h = h;
+    u->rgba = rgba;
+    old = __atomic_exchange_n(&s_lut_pending, u, __ATOMIC_ACQ_REL);
+    if (old != NULL) {
+        free(old->rgba);
+        free(old);
+    }
+}
+
+/* GL thread: publish request -> texture. */
+static void grade_lut_consume_pending(void) {
+    GradeLutUpload *u = __atomic_exchange_n(&s_lut_pending, NULL, __ATOMIC_ACQ_REL);
+    if (u == NULL) return;
+    if (s_lut_tex) {
+        glDeleteTextures(1, &s_lut_tex);
+        s_lut_tex = 0;
+    }
+    s_lut_valid = 0;
+    s_lut_slices = 16;
+    s_lut_w = s_lut_h = 0;
+    if (u->rgba != NULL && u->w > 0 && u->h > 0) {
+        glGenTextures(1, &s_lut_tex);
+        glBindTexture(GL_TEXTURE_2D, s_lut_tex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, u->w, u->h, 0, GL_RGBA,
+                     GL_UNSIGNED_BYTE, u->rgba);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        s_lut_valid = 1;
+        s_lut_slices = u->w / 16;
+        s_lut_w = u->w;
+        s_lut_h = u->h;
+        __android_log_print(ANDROID_LOG_INFO, "SM64FX",
+                "GRADE LUT uploaded (%dx%d, %d slices, tex=%u)",
+                s_lut_w, s_lut_h, s_lut_slices, s_lut_tex);
+    }
+    free(u->rgba);
+    free(u);
+}
+
+static void stereo_ensure_lut_out(int w, int h) {
+    if (w == s_lut_out_w && h == s_lut_out_h && s_lut_fbo[0] != 0) return;
+    for (int i = 0; i < 2; i++) {
+        if (s_lut_fbo[i]) glDeleteFramebuffers(1, &s_lut_fbo[i]);
+        if (s_lut_out_tex[i]) glDeleteTextures(1, &s_lut_out_tex[i]);
+        glGenTextures(1, &s_lut_out_tex[i]);
+        glBindTexture(GL_TEXTURE_2D, s_lut_out_tex[i]);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, w, h, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glGenFramebuffers(1, &s_lut_fbo[i]);
+        glBindFramebuffer(GL_FRAMEBUFFER, s_lut_fbo[i]);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                               GL_TEXTURE_2D, s_lut_out_tex[i], 0);
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    s_lut_out_w = w;
+    s_lut_out_h = h;
+    __android_log_print(ANDROID_LOG_INFO, "SM64FX",
+            "GRADE LUT out %dx%d", w, h);
+}
+
+static int grade_lut_init(void) {
+    if (s_lut_prog_state == 1) return 1;
+    if (s_lut_prog_state == -1) return 0;
+    GLuint vs = compile_shader_checked(GL_VERTEX_SHADER, s_fx_vs, "lut vertex");
+    if (!vs) { s_lut_prog_state = -1; return 0; }
+    GLuint fs = compile_shader_checked(GL_FRAGMENT_SHADER, s_lut_fs, "lut fragment");
+    if (!fs) { glDeleteShader(vs); s_lut_prog_state = -1; return 0; }
+    s_lut_prog = glCreateProgram();
+    glAttachShader(s_lut_prog, vs);
+    glAttachShader(s_lut_prog, fs);
+    glLinkProgram(s_lut_prog);
+    GLint ok = 0;
+    glGetProgramiv(s_lut_prog, GL_LINK_STATUS, &ok);
+    glDeleteShader(vs);
+    glDeleteShader(fs);
+    if (!ok) {
+        __android_log_print(ANDROID_LOG_WARN, "SM64FX", "GRADE LUT program failed");
+        glDeleteProgram(s_lut_prog);
+        s_lut_prog = 0;
+        s_lut_prog_state = -1;
+        return 0;
+    }
+    s_lut_u_tex = glGetUniformLocation(s_lut_prog, "uTex");
+    s_lut_u_lut = glGetUniformLocation(s_lut_prog, "uLut");
+    s_lut_u_slices = glGetUniformLocation(s_lut_prog, "uSlices");
+    s_lut_u_h = glGetUniformLocation(s_lut_prog, "uHeight");
+    s_lut_u_strength = glGetUniformLocation(s_lut_prog, "uStrength");
+    s_lut_prog_state = 1;
+    __android_log_print(ANDROID_LOG_INFO, "SM64FX", "GRADE LUT program ready");
+    return 1;
+}
+
+static void stereo_grade_lut_pass(void) {
+    s_lut_out_valid[0] = s_lut_out_valid[1] = 0;
+    grade_lut_consume_pending();
+    if (!(s_grade_on && s_grade_look == 6 && s_lut_valid && s_grade_strength > 0)) return;
+    if (!grade_lut_init()) return;
+    stereo_ensure_lut_out(s_pp_w, s_pp_h);
+    if (s_lut_fbo[0] == 0) return;
+
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
+    glDisable(GL_SCISSOR_TEST);
+    glUseProgram(s_lut_prog);
+
+    static const float quad[] = {
+        -1.0f, -1.0f, 0.0f, 0.0f,
+         1.0f, -1.0f, 1.0f, 0.0f,
+        -1.0f,  1.0f, 0.0f, 1.0f,
+         1.0f,  1.0f, 1.0f, 1.0f,
+    };
+    if (!s_comp_vbo) glGenBuffers(1, &s_comp_vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, s_comp_vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(quad), quad, GL_STREAM_DRAW);
+    GLint apos = glGetAttribLocation(s_lut_prog, "aPos");
+    GLint auv = glGetAttribLocation(s_lut_prog, "aUV");
+    glEnableVertexAttribArray(apos);
+    glVertexAttribPointer(apos, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void *)0);
+    glEnableVertexAttribArray(auv);
+    glVertexAttribPointer(auv, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float),
+                          (void *)(2 * sizeof(float)));
+
+    glActiveTexture(GL_TEXTURE0);
+    glUniform1i(s_lut_u_tex, 0);
+    glActiveTexture(GL_TEXTURE1);
+    glUniform1i(s_lut_u_lut, 1);
+    glUniform1f(s_lut_u_slices, (float)s_lut_slices);
+    glUniform1f(s_lut_u_h, (float)s_lut_h);
+    glUniform1f(s_lut_u_strength, (float)s_grade_strength / 100.0f);
+
+    for (int eye = 0; eye < 2; eye++) {
+        if (gfx_single_eye >= 0 && eye != gfx_single_eye) continue;
+        glBindFramebuffer(GL_FRAMEBUFFER, s_lut_fbo[eye]);
+        glViewport(0, 0, s_pp_w, s_pp_h);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, s_pp_tex[eye]);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, s_lut_tex);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        s_lut_out_valid[eye] = 1;
+    }
+
+    glDisableVertexAttribArray(apos);
+    glDisableVertexAttribArray(auv);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glActiveTexture(GL_TEXTURE0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glUseProgram(0);
+}
+
 
 /* Programmatic control for the PTC smoke test / debug UI. */
 void gfx_opengl_light_set(int index, float x, float y, float z,
@@ -4260,6 +4640,16 @@ static int stereo_fx_pass(void) {
     glUniform1f(s_fx_u.gi_rays, (float)s_fx_gi_rays);
     glUniform1f(s_fx_u.debug, (float)s_fx_debug);
     glUniform1f(s_fx_u.normal_flip, (float)s_fx_normal_flip);
+    glUniform1f(s_fx_u.grade_on, s_grade_on ? 1.0f : 0.0f);
+    glUniform1f(s_fx_u.grade_op, (float)s_grade_op);
+    glUniform1f(s_fx_u.grade_exposure, (float)s_grade_exposure);
+    glUniform1f(s_fx_u.grade_white, (float)s_grade_white);
+    glUniform1f(s_fx_u.grade_look, (float)s_grade_look);
+    glUniform1f(s_fx_u.grade_strength, (float)s_grade_strength);
+    glUniform1f(s_fx_u.grade_sat, (float)s_grade_sat);
+    glUniform1f(s_fx_u.grade_contrast, (float)s_grade_contrast);
+    glUniform1f(s_fx_u.grade_tint, (float)s_grade_tint);
+    glUniform1f(s_fx_u.grade_debug, (float)s_grade_debug);
 
     static const float quad[] = {
         -1.0f, -1.0f, 0.0f, 0.0f,
@@ -4524,6 +4914,10 @@ void gfx_opengl_stereo_composite(int w, int h, int full_w, int full_h, int has_u
     // Bloom: additive upsample of the blurred emissive buffer into the FX
     // output. Skipped entirely when the chain is off (default).
     if (fx_ready) stereo_bloom_pass();
+    // Optional 2D stripe LUT look: its own tiny pass, only when look 6 is
+    // selected and a valid file was loaded. s_lut_out_valid then redirects the
+    // composite to the graded texture.
+    if (fx_ready) stereo_grade_lut_pass();
 
     s_fbo_mode = 0;
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -4563,7 +4957,10 @@ void gfx_opengl_stereo_composite(int w, int h, int full_w, int full_h, int has_u
     for (int eye = 0; eye < 2; eye++) {
         int src = gfx_single_eye >= 0 ? gfx_single_eye : eye;
         GLuint scene_tex = zview ? s_eye_depth[src]
-                                 : (fx_ready ? s_pp_tex[src] : s_eye_tex[src]);
+                                 : (fx_ready
+                                    ? (s_lut_out_valid[src] ? s_lut_out_tex[src]
+                                                            : s_pp_tex[src])
+                                    : s_eye_tex[src]);
         // GLOW debug view: show the emissive buffer (or the blurred bloom
         // buffer) on its own, so it is obvious the glow comes from world-space
         // geometry and not from a screen-space blur of the final image.

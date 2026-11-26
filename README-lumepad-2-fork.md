@@ -252,6 +252,86 @@ every effect off the FX pass is skipped entirely and the cost is zero.
 - Everything is a live knob (panel sliders or `cmd fx`), defaults off so the
   base look is unchanged.
 
+### Tone mapping and colour grading (GRADE tab)
+
+The GRADE tab is a single display transform on the assembled scene colour. It
+lives at the very end of the FX fragment shader (`gfx_opengl.c`, `s_fx_fs`,
+inside `main()`'s final non-debug `else`), **after** AO/DOF/shadow/SSRTX/GI, the
+dynamic lights, the crepuscular rays and the probe overlay have all been added
+into `outc`, and **after** the debug-view chain, so every debug view still shows
+raw linear buffers. Alpha is never touched: the pass writes `vec4(outc, 1.0)`
+exactly as before. With `GRADE` off the shader takes one uniform branch and the
+MAIN pipeline is unchanged; the pass is not requested at all unless something
+else already needs it.
+
+Chain order (all in the FX shader): exposure (`2^(EV)`) → tonemap → white-point
+normalisation (`tonemap(W)` mapped to 1.0) → look → saturation → contrast →
+tint. The white-point dial only has a shoulder to work with on the non-linear
+operators; on LINEAR it is a plain gain.
+
+Operators (analytic, no LUT needed):
+
+| id | operator | curve |
+|---|---|---|
+| 0 | LINEAR | `c` (exposure/white point only) |
+| 1 | REINHARD | `c / (1 + c)` |
+| 2 | ACES | Narkowicz fit `(x(2.51x+0.03))/(x(2.43x+0.59)+0.14)` |
+| 3 | FILMIC | Hable/Uncharted2 curve, exposed ×2 and normalised by `tm(22.4)` |
+
+Looks (strength dial blends with the tonemapped colour, `Look strength %`):
+
+| id | look | what it does |
+|---|---|---|
+| 0 | NONE | no look |
+| 1 | SEPIA | classic 3×3 sepia matrix |
+| 2 | COOL | blue/teal gain + small blue lift |
+| 3 | WARM | amber gain + small warm lift |
+| 4 | BLEACH | bleach-bypass-ish overlay of luma on colour, 70 % |
+| 5 | CEL | per-pixel luminance step ramp (5 hard steps), colour rescaled by `q/l` so hue and chroma edges survive. No spatial filter, so geometry edges are untouched. |
+| 6 | LUT | 2D stripe LUT pass (below); falls back to NONE if no valid file |
+
+**LUT slot.** GLES2 has no 3D textures, so the expected file is a horizontal
+stripe of 16×16 blue slices: width `16*N`, height `16`, red across a tile,
+green down it, blue selects the slice (`256x16` = 16 slices, `512x16` = 32).
+Row 0 of the image is green = 0 and column 0 is red = 0 (top-down, i.e. exactly
+what an image editor shows). Drop it at:
+
+```
+/sdcard/Android/data/com.vdavid003.sm64port/files/luts/grade.png
+```
+
+(`SDL_AndroidGetExternalStoragePath()` + `/luts/grade.png`.) PNG/JPG, decoded in
+Java with `BitmapFactory` (the embedded-asset build has no stb_image), then
+uploaded as RGBA to the renderer on the next FX pass. Dimensions are validated;
+anything that is not `16*N × 16` (N = 2–64) is rejected with an explicit
+`GRADE LUT REJECTED: WxH is not a 16*N x 16 stripe LUT` log line and look 6
+falls back to the analytic path / NONE. A successful load logs the path, size
+and slice count. Selecting `fx 284 6` again re-reads the file, so the update
+cycle is "push PNG, send one command". The LUT is applied by its own tiny pass
+after the FX pass and after bloom, not as a seventh sampler inside the big FX
+shader (an extra sampler in that shader has cost ~30 ms here before, per
+`BACKLOG.md`); with no file and no look 6 the pass does not run and no FBO is
+allocated.
+
+The split debug view (`Split pre/post 0/1`, `fx 289 1`) shows the left half of
+the frame before the grade and the right half after, with a magenta divider at
+the canvas centre. It only applies to the normal (debug view 0) output.
+
+| Control | Effect |
+|---|---|
+| `TONE MAP + GRADE` | master toggle (default **off**) |
+| `TONEMAP` | LINEAR / REINHARD / ACES / FILMIC |
+| `LOOK` | NONE / SEPIA / COOL / WARM / BLEACH / CEL / LUT |
+| `Exposure EV x100` | exposure in hundredths of a stop (-300..300) |
+| `White point %` | 100 = 1.0 scene white, up to 400 = 4.0 |
+| `Look strength %` | blend between tonemapped colour and the look |
+| `Saturation %` | 0-200, composes with any look |
+| `Contrast %` | -100..100 → 0.5x..2x around mid grey |
+| `Tint -cool/+warm` | R/B balance, -100 cool … +100 warm |
+| `Split pre/post 0/1` | split-screen debug of the grade |
+
+Headless keys `280`-`289`; `cmd dump` reports `grade=on,op,look,strength`.
+
 ---
 
 ## UI after the post pass (UIPOST)
@@ -400,6 +480,7 @@ while the UI range is replayed so the HUD does not sway.
 | SSRTX reflections | **off** (opt-in) | SSRTX tab / `cmd toggle --es name SSRTX` |
 | Crepuscular rays | **off** (opt-in) | RAYS tab / `cmd toggle --es name RAYS` |
 | Occluder punch-through | **off** (mode 0) | CAMERA > SETTINGS / `fx 274` |
+| Tone map + colour grade | **off** (opt-in) | GRADE tab / `fx 280` |
 | MXAO / C.DOF / SSGI | off | their tabs |
 
 - **Stay in level after a star** (default on): normal stars take the vanilla
@@ -627,7 +708,8 @@ in-scale %, `15` ZBUF, `16` wireframe, `17` toe %, `18` aspect %, `19` no cull,
 
 FX knobs (`cmd fx`): AO `1`-`6`, DOF `11`-`15` (`16` auto focus, `17` reports
 the auto distance), SSGI `21`-`25`, SSRTX `70`-`77`, crepuscular rays
-`250`-`260`, wall-run jump-off `320`-`328`, normal flip `32`.
+`250`-`260`, tone map + grading `280`-`289`, wall-run jump-off `320`-`329`,
+normal flip `32`.
 
 | group | keys |
 | --- | --- |
@@ -669,6 +751,7 @@ mirrored to `Android/data/com.vdavid003.sm64port/files/layouts/`:
 `layouts.json` (all profiles), `active.json` and `share-<profile>.json` (the
 active profile). Positions are normalised (0..1) and sizes are multipliers of
 a 1600-px reference radius, so a profile survives a different panel resolution.
+| tone map + grading (GRADE) | `280` master (default **off**), `281` tonemap (0 linear, 1 Reinhard, 2 ACES, 3 filmic), `282` exposure EV×100, `283` white point % (100-400), `284` look (0 none, 1 sepia, 2 cool, 3 warm, 4 bleach, 5 cel, 6 LUT), `285` look strength %, `286` saturation %, `287` contrast %, `288` tint (-cool/+warm), `289` split pre/post debug |
 
 The denoiser runs at 1/4 resolution by default: the scene colour and depth are
 downsampled to `scene_res/4`, 1-3 edge-aware à-trous passes run there, and a

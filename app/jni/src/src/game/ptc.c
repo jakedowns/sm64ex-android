@@ -4748,7 +4748,8 @@ void ptc_format_status(char *buf, int len) {
              "face=%.1f,%.1f,%.1f anim=%d mh=%.1f remap=%d cdbg=%d,%d,%d,%d,%d walk=%d,%d,%d "
              "mpw=%d,%d,%d,%d,%d,%d,%d fc=%d,%d,%d,%d cg=%d,%.0f,%.0f,%.0f,0x%x "
              "slowmo=%d,%d,%d rays=%d,%d,%d glow=%d,%d,%d,%d,%d occl=%d,%d,%d "
-             "qd=%d,%d,%d lvl=%d sens=%d,%d,%d wr=%d,%d,%d,%d,%d,%.2f,%.2f",
+             "qd=%d,%d,%d lvl=%d sens=%d,%d,%d wr=%d,%d,%d,%d,%d,%.2f,%.2f "
+             "grade=%d,%d,%d,%d",
              gCurrLevelNum, gCurrAreaIndex, s_phase, s_testMode, s_testActive, s_failed, s_failReason,
              s_starCollected[0], s_starCollected[1], ptc_star_visible(), portal_count(), s_shotA, s_shotB, g_portal_debug,
              g_portal_view.active, g_portal_view.source, portal_view_enabled(),
@@ -4828,7 +4829,9 @@ void ptc_format_status(char *buf, int len) {
              gfx_cam_sens_state(0), gfx_cam_sens_state(1), gfx_cam_sens_state(2),
              movekit_wr_state(0), movekit_wr_state(1), movekit_wr_state(2),
              movekit_wr_state(5), movekit_wr_state(6),
-             movekit_wr_last_vel(0), movekit_wr_last_vel(1));
+             movekit_wr_last_vel(0), movekit_wr_last_vel(1),
+             gfx_opengl_ssfx_get(280), gfx_opengl_ssfx_get(281),
+             gfx_opengl_ssfx_get(284), gfx_opengl_ssfx_get(285));
 
     {
         size_t used = strlen(buf);
