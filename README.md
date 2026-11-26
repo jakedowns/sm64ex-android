@@ -97,10 +97,10 @@ This fork turns the port into a glasses-free 3D, high-framerate build for the
   after the FX pass so they stay sharp and never bleed into the scene.
 - **Touch overlay**: floating left stick, A/B/Z/R/L, C-buttons or an analog
   camera stick, START, portal buttons, adjustable opacity. The whole overlay is
-  re-arrangeable on the device (DEBUG > SYS > TOUCH LAYOUT, or long-press the
-  overlay): drag to move, corner grip to resize, snap-to-grid/edges, named
-  profiles persisted across launches and shared to
-  `Android/data/com.vdavid003.sm64port/files/layouts/`.
+  re-arrangeable on the device (the **EDIT LAYOUT** chip under the FPS meter,
+  DEBUG > SYS > TOUCH LAYOUT, or long-press the overlay): drag to move, corner
+  grip to resize, snap-to-grid/edges, named profiles persisted across launches
+  and shared to `Android/data/com.vdavid003.sm64port/files/layouts/`.
 - **Camera**: free camera (X enables, Y recentres), head-tracked parallax and
   gyro camera canting with independent strength sliders and a tilt-pivot height.
 - **Stay in level after a star** (default on).

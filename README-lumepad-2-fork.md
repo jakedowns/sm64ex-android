@@ -1009,12 +1009,21 @@ channel instead of an integer key:
 
 ```bash
 B="am broadcast -n com.vdavid003.sm64port/.DebugReceiver -a com.vdavid003.sm64port.CMD"
+adb shell $B --es cmd layout --es action toggle   # flip edit mode (chip equivalent)
+adb shell $B --es cmd layout --es action on       # enter edit mode
+adb shell $B --es cmd layout --es action off      # leave + save the active profile
 adb shell $B --es cmd layout --es action save --es profile wide
 adb shell $B --es cmd layout --es action switch --es profile default
 adb shell $B --es cmd layout --es action rename --es profile wide --es to couch
 adb shell $B --es cmd layout --es action delete --es profile couch
 adb shell $B --es cmd layout --es action status
 ```
+
+The same on/off/toggle path is reachable with one tap from the game: the
+**EDIT LAYOUT** chip at the end of the FEEDBACK/CLEAR bar under the FPS meter
+shows `● DONE` (filled amber) while the editor is active, and exits through the
+same `TouchOverlay.setEditMode()` call that commits the profile. `cmd dump`
+reports it as `LAYOUT … edit=0|1`.
 
 Layouts are stored as JSON in SharedPreferences (`touch_layout/store`) and
 mirrored to `Android/data/com.vdavid003.sm64port/files/layouts/`:

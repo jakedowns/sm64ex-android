@@ -1540,6 +1540,10 @@ public class TouchOverlay extends View {
         invalidate();
         android.util.Log.i("SM64Layout", "edit mode " + (on ? "ON" : "OFF")
                 + " profile=" + activeProfile());
+        /* Mirror the state in the HUD chip / panel widgets immediately, so a
+         * long-press entry does not wait for the 500 ms readout. */
+        sm64portActivity act = sm64portActivity.instance;
+        if (act != null) act.layoutEditModeChanged();
     }
 
     public boolean isEditMode() {

@@ -208,6 +208,7 @@ adb shell $B --es cmd ptc --es action run   # smoke test
 adb shell $B --es cmd dump                  # status line in logcat (SM64Leia: PTC)
 adb shell $B --es cmd busy --ei v 1         # BUSY/red (device lock does this)
 adb shell $B --es cmd captions --ei v 1     # caption text: 1 JAVA (default), 0 GAME FONT
+adb shell $B --es cmd layout --es action toggle  # touch layout editor on/off (HUD chip)
 adb shell $B --es cmd feedback              # capture a feedback item (see below)
 adb shell $B --es cmd feedback --es text "Mario pops at the pyramid"
 ```
@@ -223,7 +224,11 @@ Useful PTC actions: `annex`, `cubetop`, `slam`, `groundslam`, `balltest`,
 The debug HUD has a **FEEDBACK** button directly under the FPS meter. A short
 tap captures immediately with no text; long press opens an optional note
 dialog. The label doubles as the pending-item badge (`FEEDBACK (n)`), and
-**CLEAR** removes everything for the user. Each tap writes one directory:
+**CLEAR** removes everything for the user. The bar ends with the touch-layout
+chip (**EDIT LAYOUT** / **● DONE**), which enters and leaves the layout editor
+through the same `TouchOverlay.setEditMode()` path as DEBUG > SYS > TOUCH
+LAYOUT and `cmd layout on|off|toggle`; it stays tappable while edit mode has
+game input disabled. Each tap writes one directory:
 
 ```
 /sdcard/Android/data/com.vdavid003.sm64port/files/feedback/<yyyyMMdd-HHmmss>/

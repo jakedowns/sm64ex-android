@@ -116,6 +116,10 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     /* Feedback outbox: one-tap capture under the FPS meter (see FeedbackOutbox). */
     private LinearLayout feedbackBar;
     private TextView feedbackButton;
+    /** HUD chip in the feedback bar: enters/leaves the touch layout editor. */
+    private TextView layoutEditChip;
+    /* Cached chip state so the 500 ms readout does not re-layout the bar. */
+    private boolean layoutEditChipOn;
     private int feedbackPollTick;
     private final float[] frameSamples = new float[120];
     private int frameSampleCount, frameSamplePos;
@@ -886,6 +890,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                 }
                 tuningPanelView.requestLayout();
                 updateStereoPictogramVisibility();
+                updateLayoutEditChipVisibility();
                 panelAnimating = false;
             }
         });
@@ -914,6 +919,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                 .setInterpolator(new android.view.animation.AccelerateDecelerateInterpolator())
                 .start();
         animatePanelHeight(collapsed, expanded, true);
+        updateLayoutEditChipVisibility();
     }
 
     void collapseDebugPanelIfOpen() {
@@ -1121,6 +1127,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         }
         layoutPanelHeader();
         refreshOrientButton();
+        updateLayoutEditChipVisibility();
         if (relayout) {
             tuningPanelView.requestLayout();
             updateStereoPictogramVisibility();
@@ -2484,11 +2491,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         layoutEditButton = new TextView(this);
         layoutEditButton.setTextSize(16);
         layoutEditButton.setPadding(dp(4), dp(8), dp(4), dp(8));
-        layoutEditButton.setOnClickListener(v -> {
-            if (touchOverlay == null) return;
-            touchOverlay.setEditMode(!touchOverlay.isEditMode());
-            refreshLayoutUi();
-        });
+        layoutEditButton.setOnClickListener(v -> toggleLayoutEdit("panel"));
         addCompact(enhParent(), layoutEditButton);
 
         layoutProfileButton = new TextView(this);
@@ -4195,6 +4198,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             if (feedbackBar != null) {
                 feedbackBar.setVisibility(forceHudHidden ? View.GONE : View.VISIBLE);
             }
+            updateLayoutEditChipVisibility();
             /* The native captions stop publishing when the HUD is skipped;
              * hide the overlay in the same step so it cannot linger. */
             if (captionOverlay != null) {
@@ -5094,6 +5098,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             layoutEditButton.setText("EDIT LAYOUT: " + (on ? "ON" : "OFF"));
             layoutEditButton.setTextColor(on ? 0xFFFFCC66 : 0xFF888888);
         }
+        refreshLayoutEditChip();
         if (layoutProfileButton != null && touchOverlay != null) {
             layoutProfileButton.setText("PROFILE: " + touchOverlay.activeProfile()
                     + "  \u25B8");
@@ -5102,6 +5107,66 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             layoutLayoutStatus.setText(touchOverlay.listProfiles().size()
                     + " profiles  -  ext: " + touchOverlay.externalDir());
         }
+    }
+
+    /**
+     * Single enter/exit path for the layout editor. The SYS panel toggle, the
+     * HUD chip, long-press on the overlay, `fx 300` and `cmd layout on|off|
+     * toggle` all end up here, and TouchOverlay.setEditMode() is the only
+     * state owner (it clears held input on entry and commits the active
+     * profile on exit, so leaving from the chip saves exactly like leaving
+     * from the panel).
+     */
+    private void setLayoutEdit(boolean on, String via) {
+        if (touchOverlay == null) {
+            Log.w(TAG, "layout edit ignored (no overlay)");
+            return;
+        }
+        touchOverlay.setEditMode(on);
+        refreshLayoutUi();
+        Log.i(TAG, "LAYOUT edit=" + (touchOverlay.isEditMode() ? 1 : 0)
+                + " via=" + via + " " + touchOverlay.statusLine());
+    }
+
+    /** Flip the editor; `via` only names the caller in the log. */
+    private void toggleLayoutEdit(String via) {
+        if (touchOverlay == null) {
+            Log.w(TAG, "layout edit ignored (no overlay)");
+            return;
+        }
+        setLayoutEdit(!touchOverlay.isEditMode(), via);
+    }
+
+    /** TouchOverlay tells us the editor flipped (long-press, fx, cmd, chip). */
+    void layoutEditModeChanged() {
+        if (layoutEditChip == null && layoutEditButton == null) return;
+        refreshLayoutUi();
+    }
+
+    /** HUD chip label: idle "EDIT LAYOUT", active filled "● DONE". */
+    private void refreshLayoutEditChip() {
+        if (layoutEditChip == null) return;
+        boolean on = touchOverlay != null && touchOverlay.isEditMode();
+        if (on == layoutEditChipOn && layoutEditChip.getText().length() > 0) return;
+        layoutEditChipOn = on;
+        layoutEditChip.setText(on ? "\u25CF DONE" : "EDIT LAYOUT");
+        layoutEditChip.setTextColor(on ? 0xFF1A1200 : 0xFFCCCCCC);
+        layoutEditChip.setBackgroundColor(on ? 0xCCFFAA33 : 0);
+    }
+
+    /**
+     * The chip sits at the top-left under the FPS graph. While the debug panel
+     * is open it steps aside: the vertical dock covers that half outright and
+     * a tall horizontal page can reach up to it, and the panel's own TOUCH
+     * LAYOUT toggle (DEBUG > SYS) is on screen in that moment anyway. The
+     * collapsed panel is only its header bar, well above the chip, so the chip
+     * is back as soon as the drawer closes. forceHudHidden hides it with the
+     * rest of the HUD.
+     */
+    private void updateLayoutEditChipVisibility() {
+        if (layoutEditChip == null) return;
+        boolean hide = forceHudHidden || debugPanelOpen();
+        layoutEditChip.setVisibility(hide ? View.GONE : View.VISIBLE);
     }
 
     /** Short status line under the TOUCH LAYOUT buttons (no toast overlay). */
@@ -5149,7 +5214,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         }
         switch (k) {
             case 300:
-                touchOverlay.setEditMode(v != 0);
+                setLayoutEdit(v != 0, "fx300");
                 break;
             case 301:
                 touchOverlay.resetLayout();
@@ -5196,10 +5261,13 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         switch (a) {
             case "on":
             case "edit":
-                touchOverlay.setEditMode(true);
+                setLayoutEdit(true, "cmd");
                 break;
             case "off":
-                touchOverlay.setEditMode(false);
+                setLayoutEdit(false, "cmd");
+                break;
+            case "toggle":
+                toggleLayoutEdit("cmd");
                 break;
             case "reset":
                 touchOverlay.resetLayout();
@@ -5703,6 +5771,10 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
      * one tap captures (no text), long press captures with a note, CLEAR
      * empties the outbox for the user. Agents pull and delete over adb instead
      * (see AGENTS.md); the item count is the badge.
+     *
+     * The same bar ends with the layout-editor chip (EDIT LAYOUT / DONE), so
+     * entering and leaving the touch-control editor is one tap from the game
+     * instead of DEBUG > SYS > TOUCH LAYOUT.
      */
     private void buildFeedbackBar() {
         if (mLayout == null) return;
@@ -5735,6 +5807,16 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         });
         bar.addView(clear);
 
+        /* Layout-editor chip: same bar, same weight as FEEDBACK / CLEAR.  It is
+         * a sibling ABOVE TouchOverlay in the RelativeLayout, so it keeps
+         * receiving taps while edit mode disables the game controls. */
+        TextView edit = new TextView(this);
+        layoutEditChip = edit;
+        edit.setTextSize(11);
+        edit.setPadding(dp(8), dp(4), dp(8), dp(4));
+        edit.setOnClickListener(v -> toggleLayoutEdit("chip"));
+        bar.addView(edit);
+
         android.widget.RelativeLayout.LayoutParams lp =
                 new android.widget.RelativeLayout.LayoutParams(
                         android.widget.RelativeLayout.LayoutParams.WRAP_CONTENT,
@@ -5744,6 +5826,8 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         mLayout.addView(bar, lp);
         feedbackBar = bar;
         refreshFeedbackBadge();
+        refreshLayoutEditChip();
+        updateLayoutEditChipVisibility();
     }
 
     /** Pending-item badge: "FEEDBACK (n)"; long press adds a note. */
