@@ -43,6 +43,7 @@
 
 #include "game/ptc.h"
 #include "game/ptc_trace.h"
+#include "game/print.h"
 #include "level_table.h"
 
 // TODO: figure out if this shit even works
@@ -424,6 +425,39 @@ Java_com_vdavid003_sm64port_sm64portActivity_nativeSetQuickDevMute(JNIEnv *env, 
                                                                    jint on) {
     (void) env; (void) clazz;
     gfx_set_quick_dev_mute(on);
+}
+
+/* ---- Captions: game-font glyphs vs the Java overlay (DEBUG > SYS) ------
+ * The strings stay game-owned: ptc_chain_hud_text() calls print_caption*()
+ * exactly as before, and these getters read the copy print.c publishes for
+ * the overlay. Turning Java mode on only stops the HUD glyph drawing. */
+JNIEXPORT void JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeSetCaptionMode(JNIEnv *env, jclass clazz,
+                                                                 jint javaOwns) {
+    (void) env; (void) clazz;
+    print_set_caption_java_mode(javaOwns != 0);
+}
+
+JNIEXPORT jint JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeGetCaptionMode(JNIEnv *env, jclass clazz) {
+    (void) env; (void) clazz;
+    return print_caption_java_mode();
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeGetCaptionText(JNIEnv *env, jclass clazz,
+                                                                 jint which) {
+    char buf[64];
+    (void) clazz;
+    print_caption_copy((int) which, buf, (int) sizeof(buf));
+    return (*env)->NewStringUTF(env, buf);
+}
+
+JNIEXPORT jint JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeGetCaptionPos(JNIEnv *env, jclass clazz,
+                                                                jint which, jint field) {
+    (void) env; (void) clazz;
+    return print_caption_pos((int) which, (int) field);
 }
 
 JNIEXPORT void JNICALL

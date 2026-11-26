@@ -799,6 +799,7 @@ adb shell $B --es cmd uncapped --ei v 1         # debug-only uncapped test ticks
 adb shell $B --es cmd hz --ei v 60              # physical panel 60/120 Hz mode
 adb shell $B --es cmd feedback                  # capture a feedback item
 adb shell $B --es cmd feedback --es text "note"
+adb shell $B --es cmd captions --ei v 1         # caption text: 1 JAVA, 0 GAME FONT
 adb shell $B --es cmd reinit | reset
 ```
 
@@ -818,6 +819,34 @@ adb shell rm -rf $D/<timestamp>
 
 `cmd feedback [--es text "..."]` does the same remotely. Items are outside the
 repository and outside `files/debug-logs`.
+
+### Captions: Java overlay vs game font
+
+The debug/trailer captions (`print_caption`, `print_caption_small` and the small
+second line from `print_caption2_small`) are drawn as a normal Android view
+above the game surface by default: crisp monospace text, top-centred at the
+same native position, with a dark halo for bright scenes, refreshed at ~15 Hz
+from JNI getters. While JAVA owns the text, `render_text_labels()` skips the two
+caption lines — nothing about *what* a caption says, or when it appears, is
+decided on the Java side. The strings are still produced by
+`ptc_chain_hud_text()` a frame at a time and aged out by the renderer, so a
+cleared caption disappears here a few frames later.
+
+- **DEBUG > SYS > CAPTIONS** switches `CAPTIONS: JAVA` (default) and
+  `CAPTIONS: GAME FONT`; the choice and the two sliders (size, opacity) persist.
+- `adb shell $B --es cmd captions --ei v 1|0` (omit `v` to toggle) does the
+  same over adb; `cmd dump` logs
+  `CAPTIONS mode=... native=... main="..." small="..."` so a script can read the
+  text (and confirm the native draw is suppressed) without OCR.
+- The overlay is screen space: one draw feeds both eyes, it sits above the
+  Leia view and below the touch overlay and the debug panel, and it never takes
+  input.
+- The `QUICK DEV L<n>` marker stays on the native path in both modes. It exists
+  to annotate the frame *itself*, so it must survive a GL readback (see below).
+- **The overlay is not in `shot.png`.** The feedback capture is a GL readback of
+  the game surface, so JAVA captions are absent from `shot.png` and
+  `state.txt`-driven replays; a screen `screencap` does show them. Use GAME FONT
+  when a shot has to carry the caption text.
 
 Stereo knobs (`cmd set`): `0` IPD px, `1` zero parallax px, `2` depth %,
 `3` eye width, `4` swap eyes, `5` flip Y, `6` same both, `7` tint, `8/9/10`

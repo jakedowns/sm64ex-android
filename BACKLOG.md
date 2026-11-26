@@ -84,6 +84,27 @@ paintoff`, `ptc paintdump` (per-present `SM64Paint` telemetry: alpha and the
 presented ripple height). Clips and frame strips:
 `/media/share/tmp/artifacts/sm64/paint-ripple/`.
 
+### Captions as a Java overlay (worktree `w3-caption-java`, 2026-11-26)
+Code-complete, not yet built or device-verified. `print_caption*` now also
+publishes the main and small lines for four JNI getters, and
+`render_text_labels()` skips those two lines when Java owns the text; what a
+caption says and when it appears is unchanged. A `CaptionOverlay` view draws
+them with a bold monospace typeface at the native position (~15 Hz poll), above
+the Leia view and below the touch overlay and debug panel, never taking input.
+DEBUG > SYS > CAPTIONS toggles JAVA (default) / GAME FONT with persisted size
+and opacity sliders; `cmd captions --ei v 1|0` is the adb path and `cmd dump`
+logs `CAPTIONS mode=...,main="...",small="..."`. The `QUICK DEV L<n>` marker
+stays native in both modes because it has to annotate a GL readback. Consequence
+to remember: the feedback `shot.png` is a GL readback, so JAVA captions are not
+in it (GAME FONT is; a screen `screencap` shows both). The overlay is screen
+space at zero parallax, so it does not follow the UI-depth / UI-size / UI-box
+stereo sliders the way the native caption inside the UI pass did; at the
+default 0 px / 100 % they coincide.
+
+Still to capture on hardware: JAVA vs GAME FONT at one fixed caption (PTC level
+38, e.g. `ptc light show` or `ptc momentum`), each in 2D and over the Leia 3D
+view, plus one panel-open still to prove the overlay sits below the panel.
+
 ### Shipped this wave (merged 2026-11-25)
 Rays (`6c55b1e`), the reduced-res denoiser, slow-motion interpolation, the
 emissive/bloom/GLOW work, the occluded-Mario punch-through and the HFR held-object
@@ -100,8 +121,9 @@ full PTC status line) and `log.txt` (256 KB app-log tail). Items accumulate
 until an agent pulls and deletes them; the button label is the pending count and
 `cmd feedback` triggers a capture over adb. Pull/clear commands are in
 `AGENTS.md`. Known limits: the shot is the renderer's SBS frame (not the woven
-panel output), so in-app HUD/panel chrome is not in it, and only the newest
-frame at the tap is captured (no history).
+panel output), so in-app HUD/panel chrome is not in it, Java-overlay captions
+are not in it either (see the CAPTIONS entry above), and only the newest frame
+at the tap is captured (no history).
 
 ### Held-object HFR scale pulse (Bowser tail spin) — fixed
 Investigated and fixed 2026-11-25 in worktree `bowser-scale`.
@@ -344,6 +366,13 @@ keep a feature inside its block:
   is documented (AGENTS.md): `AGENT_NO_SLEEP=1` during a multi-agent session and
   sleep only at the end. Never break the loop with `adb reboot`.
 
+- **A failed FX shader link silently falls back to the legacy path.** The SSGI
+  perf work found that Adreno's GLES2 compiler rejects the integer `%` operator,
+  so the new GI shader never linked and every measurement quietly ran the old
+  full-res loop (the log line existed, but nothing surfaced it in the dump).
+  worth adding a `fxerr=<program>` field to the status line so a broken shader
+  is visible from a script instead of looking like "the optimisation did
+  nothing".
 - **Motion-vector heatmap renders a flat blue frame.** `fx 31 9` (VIEW VECTORS)
   with `fx 149 2` shows solid blue even with the blur pass on, so the debug view
   itself is broken, not the vectors. It is the only visibly wrong tile in the

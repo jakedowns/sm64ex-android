@@ -131,6 +131,13 @@ public class DebugReceiver extends BroadcastReceiver {
                 Log.i(TAG, "CMD quickdev v=" + v + " level=" + level + " mute=" + mute);
                 break;
             }
+            case "captions": {
+                /* v: 1 = JAVA overlay, 0 = GAME FONT, omitted = toggle. */
+                int v = intent.getIntExtra("v", -1);
+                a.debugCaptions(v);
+                Log.i(TAG, "CMD captions v=" + v);
+                break;
+            }
             case "runticks": {
                 int n = intent.getIntExtra("n", 300);
                 a.debugRunTicks(n);

@@ -188,6 +188,7 @@ adb shell $B --es cmd ptc --es action toolswap # portal gun <-> grapple
 adb shell $B --es cmd ptc --es action run   # smoke test
 adb shell $B --es cmd dump                  # status line in logcat (SM64Leia: PTC)
 adb shell $B --es cmd busy --ei v 1         # BUSY/red (device lock does this)
+adb shell $B --es cmd captions --ei v 1     # caption text: 1 JAVA (default), 0 GAME FONT
 adb shell $B --es cmd feedback              # capture a feedback item (see below)
 adb shell $B --es cmd feedback --es text "Mario pops at the pyramid"
 ```

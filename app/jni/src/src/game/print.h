@@ -32,4 +32,13 @@ extern void print_caption(s32 x, s32 y, const char *str);
 extern void print_quick_dev_marker(const char *str);
 extern void render_text_labels(void);
 
+/* Java caption overlay: 1 = Java draws the caption lines, 0 = the game font.
+ * The strings themselves are still produced by print_caption*; these getters
+ * only publish them for the overlay (see print.c). which: 0 = main line,
+ * 1 = the small second line. */
+extern void print_set_caption_java_mode(int javaOwns);
+extern int print_caption_java_mode(void);
+extern int print_caption_copy(int which, char *dst, int cap);
+extern int print_caption_pos(int which, int field);
+
 #endif /* _PRINT_H */

@@ -38,6 +38,108 @@ static s32 sCaptionX = 160, sCaptionY = 160;
 static s32 sCaptionLen = 0;
 static f32 sCaptionScale = 0.5f;
 
+/* ---- Java caption overlay (DEBUG > SYS > CAPTIONS) ----------------------
+ * The same strings are published here so the Android overlay can draw them
+ * with a real typeface instead of the HUD glyph atlas. Publication never
+ * changes what a caption says or when it is set/cleared: render_text_labels()
+ * still consumes the per-frame request exactly as before, only the native
+ * glyph drawing is skipped while Java owns the text.
+ *
+ * sCaptionFrame counts rendered HUD frames, so a getter can tell a live
+ * caption from one that stopped being set (the game stopped calling
+ * print_caption*) and report an empty string, mirroring the native screen.
+ * The double-buffered sequence counter keeps a Java reader from seeing half
+ * of an old and half of a new string. */
+static volatile int sCaptionJavaMode = 0;   /* 0 = game font, 1 = Java overlay */
+static u32 sCaptionFrame = 0;
+static volatile u32 sCaptionPubSeq[2];
+static u32 sCaptionPubFrame[2];
+static char sCaptionPub[2][64];
+static s32 sCaptionPubX[2] = { 160, 160 };
+static s32 sCaptionPubY[2] = { 160, 160 };
+static f32 sCaptionPubScale[2] = { 0.5f, 0.25f };
+
+void print_set_caption_java_mode(int javaOwns) {
+    sCaptionJavaMode = javaOwns ? 1 : 0;
+}
+
+int print_caption_java_mode(void) {
+    return sCaptionJavaMode;
+}
+
+/* Publish one line for the JNI getters. slot 0 = main caption, 1 = second
+ * (quarter-size) line. Called by the print_caption* setters below. */
+static void caption_publish(s32 slot, const char *text, s32 len, s32 x, s32 y, f32 scale) {
+    s32 i;
+    if (slot < 0 || slot > 1) {
+        return;
+    }
+    if (len > 63) {
+        len = 63;
+    }
+    sCaptionPubSeq[slot]++;
+    for (i = 0; i < len; i++) {
+        sCaptionPub[slot][i] = text[i];
+    }
+    sCaptionPub[slot][len] = 0;
+    sCaptionPubX[slot] = x;
+    sCaptionPubY[slot] = y;
+    sCaptionPubScale[slot] = scale;
+    sCaptionPubFrame[slot] = sCaptionFrame;
+    sCaptionPubSeq[slot]++;
+}
+
+/* Copy a live caption into dst (empty when the caption is stale). Returns 1
+ * when text was copied. Two frames of slack: Java polls at ~15 Hz and the
+ * game re-publishes on every frame a caption is active, so a cleared caption
+ * disappears within a couple of frames without any explicit "clear" call. */
+int print_caption_copy(int which, char *dst, int cap) {
+    s32 i;
+    int tries;
+    u32 seq;
+
+    if (dst == NULL || cap <= 0 || which < 0 || which > 1) {
+        if (dst != NULL && cap > 0) {
+            dst[0] = 0;
+        }
+        return 0;
+    }
+    dst[0] = 0;
+    if (sCaptionFrame - sCaptionPubFrame[which] > 2) {
+        return 0;
+    }
+    for (tries = 0; tries < 4; tries++) {
+        seq = sCaptionPubSeq[which];
+        if (seq & 1) {
+            continue;
+        }
+        for (i = 0; i < cap - 1 && i < 63 && sCaptionPub[which][i] != 0; i++) {
+            dst[i] = sCaptionPub[which][i];
+        }
+        dst[i] = 0;
+        if (sCaptionPubSeq[which] == seq) {
+            break;
+        }
+    }
+    return dst[0] != 0;
+}
+
+/* Native position/scale of a published caption. field 0 = x, 1 = y (the
+ * bottom-origin SM64 screen space used by print_caption), 2 = glyph scale
+ * x1000. The Java overlay maps these onto its own view, so moving a caption
+ * in C moves the overlay with it. */
+int print_caption_pos(int which, int field) {
+    if (which < 0 || which > 1) {
+        return 0;
+    }
+    switch (field) {
+        case 0: return sCaptionPubX[which];
+        case 1: return sCaptionPubY[which];
+        case 2: return (int) (sCaptionPubScale[which] * 1000.0f + 0.5f);
+        default: return 0;
+    }
+}
+
 void print_caption(s32 x, s32 y, const char *str) {
     s32 n = 0;
     while (str[n] != 0 && n < 63) {
@@ -49,6 +151,7 @@ void print_caption(s32 x, s32 y, const char *str) {
     sCaptionX = x;
     sCaptionY = y;
     sCaptionScale = 0.5f;
+    caption_publish(0, sCaptionText, n, x, y, 0.5f);
 }
 
 /* Quarter-size HUD text for dense test annotations. */
@@ -70,6 +173,7 @@ void print_caption2_small(s32 x, s32 y, const char *str) {
     sCaptionX2 = x;
     sCaptionY2 = y;
     sCaptionScale2 = 0.25f;
+    caption_publish(1, sCaptionText2, n, x, y, 0.25f);
 }
 
 void print_caption_small(s32 x, s32 y, const char *str) {
@@ -83,6 +187,7 @@ void print_caption_small(s32 x, s32 y, const char *str) {
     sCaptionX = x;
     sCaptionY = y;
     sCaptionScale = 0.25f;
+    caption_publish(0, sCaptionText, n, x, y, 0.25f);
 }
 
 /* Small corner marker for QUICK DEV screenshots. Kept in its own slot so the
@@ -500,7 +605,14 @@ void render_text_labels(void) {
     s8 glyphIndex;
     Mtx *mtx;
 
-    if (sTextLabelsCount == 0 && sQuickDevLen == 0) {
+    /* One tick per rendered HUD frame, even when there is nothing to draw, so
+     * the Java overlay's getters can age a caption out (print.c readers). */
+    sCaptionFrame++;
+
+    /* A pending caption counts as work even when no other label was queued
+     * (cinematics can hide the HUD that normally prints one): otherwise the
+     * game-font path drops a caption that the Java overlay would show. */
+    if (sTextLabelsCount == 0 && sQuickDevLen == 0 && sCaptionLen == 0 && sCaptionLen2 == 0) {
         return;
     }
 
@@ -516,9 +628,14 @@ void render_text_labels(void) {
     gSPMatrix(gDisplayListHead++, VIRTUAL_TO_PHYSICAL(mtx), G_MTX_PROJECTION | G_MTX_LOAD | G_MTX_NOPUSH);
     gSPDisplayList(gDisplayListHead++, dl_hud_img_begin);
 
-    draw_caption_text(sCaptionText, sCaptionLen, sCaptionX, sCaptionY, sCaptionScale);
+    /* CAPTIONS: JAVA suppresses only the two caption lines. The request state
+     * is cleared either way, so the overlay and the game-font path see the
+     * same caption lifetime. */
+    if (!sCaptionJavaMode) {
+        draw_caption_text(sCaptionText, sCaptionLen, sCaptionX, sCaptionY, sCaptionScale);
+        draw_caption_text(sCaptionText2, sCaptionLen2, sCaptionX2, sCaptionY2, sCaptionScale2);
+    }
     sCaptionLen = 0;
-    draw_caption_text(sCaptionText2, sCaptionLen2, sCaptionX2, sCaptionY2, sCaptionScale2);
     sCaptionLen2 = 0;
     /* Quick-dev marker: bottom-left, quarter size, self-documenting shots.
      * Hidden with the rest of the HUD so trailer captures stay clean. */

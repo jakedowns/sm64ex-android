@@ -69,6 +69,10 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     private static final String PREF_QUICK_DEV = "quick_dev";
     private static final String PREF_QUICK_DEV_LEVEL = "quick_dev_level";
     private static final String PREF_QUICK_DEV_MUTE = "quick_dev_mute";
+    /* Caption ownership: true = Java overlay (crisp type), false = game font. */
+    private static final String PREF_CAPTION_JAVA = "caption_java";
+    private static final String PREF_CAPTION_SIZE = "caption_size_pct";
+    private static final String PREF_CAPTION_OPACITY = "caption_opacity_pct";
     private static final int QUICK_DEV_DEFAULT_LEVEL = 38; // Portal Test Chamber
     private static final int LEVEL_MAX_PORT = 38;
     private static final int REQ_EXPORT_LOG = 0x5A64;
@@ -205,6 +209,11 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     private boolean quickDevOn, quickDevMute;
     private int quickDevLevel = QUICK_DEV_DEFAULT_LEVEL;
     private TextView quickDevToggle, quickDevLevelButton, quickDevMuteToggle;
+    /* Captions: Java overlay owns the text by default (DEBUG -> SYS). */
+    private CaptionOverlay captionOverlay;
+    private boolean captionJavaOn = true;
+    private int captionSizePct = 100, captionOpacityPct = 90;
+    private TextView captionToggle;
     // Camera tracking (Leia eye/face tracking + tablet gyro).
     private boolean hdtOn, gyroOn;
     private int hdtStrength = 100, gyroStrength = 100, gyroPivot = 12;
@@ -466,6 +475,25 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         Log.i(TAG, "QUICK_DEV restored: on=" + quickDevOn + " level=" + quickDevLevel
                 + " mute=" + quickDevMute);
 
+        /* Caption ownership + overlay size/opacity. Pushed before native
+         * main() starts, so the very first frame already obeys the choice. */
+        try {
+            android.content.SharedPreferences sp =
+                    getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+            captionJavaOn = sp.getBoolean(PREF_CAPTION_JAVA, true);
+            captionSizePct = sp.getInt(PREF_CAPTION_SIZE, 100);
+            captionOpacityPct = sp.getInt(PREF_CAPTION_OPACITY, 90);
+        } catch (Throwable t) {
+            captionJavaOn = true;
+            captionSizePct = 100;
+            captionOpacityPct = 90;
+        }
+        captionSizePct = Math.max(50, Math.min(200, captionSizePct));
+        captionOpacityPct = Math.max(20, Math.min(100, captionOpacityPct));
+        nativeSetCaptionMode(captionJavaOn ? 1 : 0);
+        Log.i(TAG, "CAPTIONS restored: " + (captionJavaOn ? "JAVA" : "GAME FONT")
+                + " size=" + captionSizePct + "% opacity=" + captionOpacityPct + "%");
+
         /* Camera sensitivity picker: band + slider trim, both persisted. */
         try {
             android.content.SharedPreferences sp =
@@ -500,7 +528,30 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             // Never brick the game: fall back to SDL's normal flat output.
             weaverError("Leia init FAILED, staying flat (possible black screen cause)", t);
             SDLActivity.failOverride();
+            /* The 2D fallback still gets the caption layer: a plain Android
+             * view composites over SDL's SurfaceView in the same window. */
+            if (mLayout instanceof ViewGroup) {
+                runOnUiThread(() -> installCaptionOverlay((ViewGroup) mLayout));
+            }
         }
+    }
+
+    /** Add the Java caption view once. Position is handled inside the view
+     * from the native caption coordinates, so it needs no layout params. */
+    private void installCaptionOverlay(ViewGroup layout) {
+        if (captionOverlay != null || layout == null) {
+            return;
+        }
+        captionOverlay = new CaptionOverlay(this);
+        captionOverlay.setJavaMode(captionJavaOn);
+        captionOverlay.setSizePct(captionSizePct);
+        captionOverlay.setOpacityPct(captionOpacityPct);
+        captionOverlay.setVisibility(forceHudHidden ? View.GONE : View.VISIBLE);
+        layout.addView(captionOverlay, new RelativeLayout.LayoutParams(
+                RelativeLayout.LayoutParams.MATCH_PARENT,
+                RelativeLayout.LayoutParams.MATCH_PARENT));
+        weaverLog("CaptionOverlay attached (" + (captionJavaOn ? "JAVA" : "GAME FONT")
+                + " size=" + captionSizePct + "% opacity=" + captionOpacityPct + "%)");
     }
 
     private void initLeia() throws Exception {
@@ -603,6 +654,10 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                     RelativeLayout.LayoutParams.MATCH_PARENT));
             weaverLog("leiaView attached; parent now " + layout.getWidth() + "x"
                     + layout.getHeight());
+
+            /* Caption text layer: above the game surface, below the touch
+             * overlay and the debug panel. Screen-space, never per-eye. */
+            installCaptionOverlay(layout);
 
             // Controls on their own layer, above the interlaced view but below
             // the debug panel. Screen-space: never per-eye, never letterboxed.
@@ -2043,6 +2098,27 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             enhParent().addView(note);
         }
         refreshQuickDevUi();
+
+        addEnhSection("CAPTIONS");
+        captionToggle = new TextView(this);
+        captionToggle.setTextSize(16);
+        captionToggle.setPadding(dp(4), dp(8), dp(4), dp(8));
+        captionToggle.setOnClickListener(v -> debugCaptions(-1));
+        addCompact(enhParent(), captionToggle);
+        addEnhSlider("Caption size %", 50, 200, captionSizePct,
+                this::setCaptionSizePct);
+        addEnhSlider("Caption opacity %", 20, 100, captionOpacityPct,
+                this::setCaptionOpacityPct);
+        {
+            TextView note = new TextView(this);
+            note.setText("JAVA: crisp text over the game. GAME FONT: native HUD "
+                    + "glyphs. The overlay is not in a feedback shot.png.");
+            note.setTextSize(12);
+            note.setTextColor(0xFF888888);
+            note.setPadding(dp(4), dp(2), dp(4), dp(6));
+            enhParent().addView(note);
+        }
+        refreshCaptionsUi();
         enhColumnTarget = enhPageColumns[0][1];
         addEnhSection("RENDER / SIM");
         uncappedTestToggle = new TextView(this);
@@ -2857,6 +2933,8 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
          .append(" stereo3d=").append(stereoOn).append('\n');
         b.append("camstick: ").append(StickCurve.describe()).append('\n');
         b.append("gameHud=").append(gameHudOn).append(" captions=").append(debugCapsOn)
+         .append(" capfont=").append(captionJavaOn ? "java" : "game")
+         .append(" capsize=").append(captionSizePct).append(" capop=").append(captionOpacityPct)
          .append(" touch=").append(touchCtlOn).append('\n');
         if (!stereoValues.isEmpty()) {
             b.append("stereo:");
@@ -3850,6 +3928,63 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         runOnUiThread(this::refreshQuickDevUi);
     }
 
+    /**
+     * Captions: toggle the text owner (negative = flip) and persist the
+     * choice. JAVA draws on the overlay and suppresses the native glyphs,
+     * GAME FONT restores the original HUD text. The strings and their
+     * lifetime are the same either way (see print.c).
+     */
+    void debugCaptions(int on) {
+        captionJavaOn = on < 0 ? !captionJavaOn : on != 0;
+        nativeSetCaptionMode(captionJavaOn ? 1 : 0);
+        try {
+            getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                    .putBoolean(PREF_CAPTION_JAVA, captionJavaOn).apply();
+        } catch (Throwable t) {
+            Log.w(TAG, "CAPTIONS pref not saved", t);
+        }
+        final boolean java = captionJavaOn;
+        runOnUiThread(() -> {
+            if (captionOverlay != null) {
+                captionOverlay.setJavaMode(java);
+            }
+            refreshCaptionsUi();
+        });
+        Log.i(TAG, "CAPTIONS " + (captionJavaOn ? "JAVA" : "GAME FONT"));
+    }
+
+    private void setCaptionSizePct(int pct) {
+        captionSizePct = Math.max(50, Math.min(200, pct));
+        if (captionOverlay != null) {
+            captionOverlay.setSizePct(captionSizePct);
+        }
+        try {
+            getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                    .putInt(PREF_CAPTION_SIZE, captionSizePct).apply();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private void setCaptionOpacityPct(int pct) {
+        captionOpacityPct = Math.max(20, Math.min(100, pct));
+        if (captionOverlay != null) {
+            captionOverlay.setOpacityPct(captionOpacityPct);
+        }
+        try {
+            getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                    .putInt(PREF_CAPTION_OPACITY, captionOpacityPct).apply();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private void refreshCaptionsUi() {
+        if (captionToggle != null) {
+            captionToggle.setText("\u25C9 CAPTIONS: "
+                    + (captionJavaOn ? "JAVA" : "GAME FONT"));
+            captionToggle.setTextColor(captionJavaOn ? 0xFF66FF99 : 0xFFCCCCCC);
+        }
+    }
+
     private void refreshQuickDevUi() {
         if (quickDevToggle != null) {
             quickDevToggle.setText(toggleLabel("QUICK DEV", quickDevOn));
@@ -3903,6 +4038,11 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             }
             if (feedbackBar != null) {
                 feedbackBar.setVisibility(forceHudHidden ? View.GONE : View.VISIBLE);
+            }
+            /* The native captions stop publishing when the HUD is skipped;
+             * hide the overlay in the same step so it cannot linger. */
+            if (captionOverlay != null) {
+                captionOverlay.setVisibility(forceHudHidden ? View.GONE : View.VISIBLE);
             }
         });
         Log.i(TAG, "HUD hidden=" + forceHudHidden);
@@ -5565,6 +5705,11 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     static native String nativePtcTrace();
     static native void nativeSetUncappedTest(int on);
     static native int nativeGetUncappedTest();
+    /* Captions: 1 = the Java overlay owns the text, 0 = native HUD glyphs. */
+    static native void nativeSetCaptionMode(int javaOwns);
+    static native int nativeGetCaptionMode();
+    static native String nativeGetCaptionText(int which);
+    static native int nativeGetCaptionPos(int which, int field);
     /** QUICK DEV cheap boot: on + boot level (read by thread5_game_loop). */
     private native void nativeSetQuickDev(int on, int level);
     private native void nativeSetQuickDevMute(int on);
@@ -6125,6 +6270,13 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                     + " range=" + nativeGetShadow(8) + " dbg=" + nativeGetShadow(11)
                     + " fb=" + FeedbackOutbox.count(this));
             Log.i(TAG, nativePtcStatus());
+            /* Caption strings reach scripts without a screenshot: the native
+             * publisher is the same one the overlay reads. */
+            Log.i(TAG, "CAPTIONS mode=" + (captionJavaOn ? "java" : "game")
+                    + " native=" + nativeGetCaptionMode()
+                    + " size=" + captionSizePct + " opacity=" + captionOpacityPct
+                    + " main=\"" + nativeGetCaptionText(0) + "\""
+                    + " small=\"" + nativeGetCaptionText(1) + "\"");
             if (touchOverlay != null) {
                 Log.i(TAG, "LAYOUT " + touchOverlay.statusLine());
             }
