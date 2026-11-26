@@ -182,6 +182,13 @@ frames until `init_level()` clears the cap. It adds `qd=<on>,<level>,<mute>` to
 `quick-dev.sh --quickdev 1 --level 38 --restart` sets it from the shell. Leave it
 off when reproducing a normal launch.
 
+## Todo / backlog
+
+`TODO.md` is the short checked-in "what is left" (blocked-on-hardware list, open
+bugs, next perf levers, not-started items). `BACKLOG.md` holds the long-form
+notes and the *why*. Read `TODO.md` first, update it in the same commit as the
+work that closes a line.
+
 ## Backlog
 
 Open threads (unfinished effects, known bugs, environment gotchas such as the
