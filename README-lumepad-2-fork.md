@@ -595,8 +595,27 @@ adb shell $B --es cmd ptc --es action calibrate # measure jump/ledge limits
 adb shell $B --es cmd ptc --es action momentum  # floor -> 45-degree ramp launch test
 adb shell $B --es cmd uncapped --ei v 1         # debug-only uncapped test ticks
 adb shell $B --es cmd hz --ei v 60              # physical panel 60/120 Hz mode
+adb shell $B --es cmd feedback                  # capture a feedback item
+adb shell $B --es cmd feedback --es text "note"
 adb shell $B --es cmd reinit | reset
 ```
+
+### Feedback outbox
+
+**FEEDBACK** under the FPS meter writes one self-contained item per tap
+(`feedback.txt`, `shot.png`, `state.txt`, `log.txt`) to
+`/sdcard/Android/data/com.vdavid003.sm64port/files/feedback/<timestamp>/`; the
+label shows the pending count and long press adds a note. Short tap is the
+no-text path. Pull and delete over adb:
+
+```sh
+D=/sdcard/Android/data/com.vdavid003.sm64port/files/feedback
+adb shell ls -l $D && adb pull $D/<timestamp>
+adb shell rm -rf $D/<timestamp>
+```
+
+`cmd feedback [--es text "..."]` does the same remotely. Items are outside the
+repository and outside `files/debug-logs`.
 
 Stereo knobs (`cmd set`): `0` IPD px, `1` zero parallax px, `2` depth %,
 `3` eye width, `4` swap eyes, `5` flip Y, `6` same both, `7` tint, `8/9/10`

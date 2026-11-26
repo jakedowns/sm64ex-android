@@ -175,6 +175,8 @@ adb shell $B --es cmd ptc --es action toolswap # portal gun <-> grapple
 adb shell $B --es cmd ptc --es action run   # smoke test
 adb shell $B --es cmd dump                  # status line in logcat (SM64Leia: PTC)
 adb shell $B --es cmd busy --ei v 1         # BUSY/red (device lock does this)
+adb shell $B --es cmd feedback              # capture a feedback item (see below)
+adb shell $B --es cmd feedback --es text "Mario pops at the pyramid"
 ```
 
 Useful PTC actions: `annex`, `cubetop`, `slam`, `groundslam`, `balltest`,
@@ -182,6 +184,40 @@ Useful PTC actions: `annex`, `cubetop`, `slam`, `groundslam`, `balltest`,
 `portalauto`, `portalalign`, `portalblit`, `eyeL`, `eyeR`, `eyeOff`,
 `bowser` (held tail-spin HFR rig), `hfron`/`hfroff`, `hfrdump`,
 `hfrslerpon`/`hfrslerpoff`, `hfralphaNNN`.
+
+## Feedback outbox
+
+The debug HUD has a **FEEDBACK** button directly under the FPS meter. A short
+tap captures immediately with no text; long press opens an optional note
+dialog. The label doubles as the pending-item badge (`FEEDBACK (n)`), and
+**CLEAR** removes everything for the user. Each tap writes one directory:
+
+```
+/sdcard/Android/data/com.vdavid003.sm64port/files/feedback/<yyyyMMdd-HHmmss>/
+    feedback.txt   user text (empty for a one-tap capture)
+    shot.png       game frame presented at the tap (SBS, <=1920 px wide)
+    state.txt      debug-report header: versions, FPS mode, rate, FX flags,
+                   stereo, full PTC status line (qd=/rays=/glow=/occl=), timings
+    log.txt        last 256 KB of the rolling app log (DebugLog)
+```
+
+Items accumulate until an agent deletes them. The outbox is in the app's
+external files dir (pullable without root), and is **not** inside
+`files/debug-logs`, so it can never rotate a crash log away.
+
+```sh
+D=/sdcard/Android/data/com.vdavid003.sm64port/files/feedback
+adb shell ls -l $D                    # pending items
+adb pull $D/<timestamp>               # one item
+adb pull $D .                         # the whole outbox
+adb shell rm -rf $D/<timestamp>       # delete after pulling
+adb shell rm -rf $D/*                 # clear the outbox
+```
+
+`cmd feedback` triggers the same capture remotely (useful for tests):
+`adb shell $B --es cmd feedback --es text "..."`. `cmd dump` reports `fb=<n>`,
+the pending count, so a script can wait for a capture without screen-scraping.
+Do not clear items the user created unless you have pulled them.
 
 ## Portal relay testing
 

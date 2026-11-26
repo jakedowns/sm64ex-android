@@ -209,6 +209,12 @@ public class DebugReceiver extends BroadcastReceiver {
                 a.debugReset();
                 Log.i(TAG, "CMD reset");
                 break;
+            case "feedback": {
+                String text = intent.getStringExtra("text");
+                a.debugFeedback(text);
+                Log.i(TAG, "CMD feedback text=" + text);
+                break;
+            }
             case "dump":
             default:
                 a.debugDump();

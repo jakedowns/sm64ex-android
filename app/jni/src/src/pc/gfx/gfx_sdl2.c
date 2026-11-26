@@ -28,6 +28,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef __ANDROID__
+#include <pthread.h>
+#endif
+
 #include "gfx_window_manager_api.h"
 #include "gfx_screen_config.h"
 #include "../pc_main.h"
@@ -53,6 +57,8 @@ extern int render_multiplier;
 // Defined in gfx_pc.c; enabled here because Android renders into Leia's SBS surface.
 extern int gfx_stereo_enabled;
 extern int gfx_stereo_eye;
+extern int gfx_stereo_full_w;
+extern int gfx_stereo_full_h;
 extern int gfx_stereo_eye_width;
 extern int gfx_stereo_eye_width_override;
 extern int gfx_stereo_swap_eyes;
@@ -1405,7 +1411,133 @@ static bool gfx_sdl_start_frame(void) {
     return true;
 }
 
+#ifdef __ANDROID__
+/*
+ * Feedback outbox frame grab.
+ *
+ * Java (FeedbackOutbox) asks for one frame from a worker thread; the GL thread
+ * services the request in swap_buffers_begin, i.e. after the whole frame
+ * (stereo composite + UI) has been drawn into the default framebuffer and
+ * before it is handed to Leia. The result is a small raw RGBA file with a
+ * two-line ASCII header ("SM64FB1", "w=... h=... step=..."), rows top-down.
+ * Java turns it into shot.png. Nearest-neighbour downscale to <=1920 px wide
+ * keeps the file (and the glReadPixels cost) bounded.
+ */
+#define FB_CAP_MAX_W 1920
+#define FB_CAP_IDLE 0
+#define FB_CAP_PENDING 1
+#define FB_CAP_DONE 2
+#define FB_CAP_FAILED (-1)
+
+static pthread_mutex_t s_fb_cap_lock = PTHREAD_MUTEX_INITIALIZER;
+static char s_fb_cap_path[512];
+static int s_fb_cap_req = 0;
+static volatile int s_fb_cap_state = FB_CAP_IDLE;
+
+void gfx_feedback_capture_request(const char *path) {
+    if (path == NULL) return;
+    pthread_mutex_lock(&s_fb_cap_lock);
+    snprintf(s_fb_cap_path, sizeof(s_fb_cap_path), "%s", path);
+    s_fb_cap_req = 1;
+    s_fb_cap_state = FB_CAP_PENDING;
+    pthread_mutex_unlock(&s_fb_cap_lock);
+}
+
+int gfx_feedback_capture_state(void) {
+    return s_fb_cap_state;
+}
+
+static int gfx_feedback_capture_write(const char *path) {
+    int w = gfx_stereo_full_w;
+    int h = gfx_stereo_full_h;
+    if (w < 2 || h < 2) {
+        SDL_GL_GetDrawableSize(wnd, &w, &h);
+    }
+    if (w < 2 || h < 2) {
+        w = s_draw_w;
+        h = s_draw_h;
+    }
+    if (w <= 0 || h <= 0 || w > 8192 || h > 8192) return 0;
+
+    int step = (w + FB_CAP_MAX_W - 1) / FB_CAP_MAX_W;
+    if (step < 1) step = 1;
+    int ow = w / step;
+    int oh = h / step;
+    if (ow <= 0 || oh <= 0) return 0;
+
+    unsigned char *src = (unsigned char *)malloc((size_t)w * (size_t)h * 4u);
+    unsigned char *row = (unsigned char *)malloc((size_t)ow * 4u);
+    if (src == NULL || row == NULL) {
+        free(src);
+        free(row);
+        return 0;
+    }
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, src);
+
+    FILE *f = fopen(path, "wb");
+    if (f == NULL) {
+        free(src);
+        free(row);
+        return 0;
+    }
+    fprintf(f, "SM64FB1\nw=%d h=%d step=%d\n", ow, oh, step);
+    /* GL rows are bottom-up; write them top-down so a raw reader needs no flip. */
+    for (int y = oh - 1; y >= 0; y--) {
+        const unsigned char *s = src + (size_t)(y * step) * (size_t)w * 4u;
+        for (int x = 0; x < ow; x++) {
+            const unsigned char *p = s + (size_t)(x * step) * 4u;
+            row[x * 4 + 0] = p[0];
+            row[x * 4 + 1] = p[1];
+            row[x * 4 + 2] = p[2];
+            row[x * 4 + 3] = 255;
+        }
+        fwrite(row, 1, (size_t)ow * 4u, f);
+    }
+    fclose(f);
+    free(row);
+    free(src);
+    return 1;
+}
+
+static void gfx_feedback_capture_maybe(void) {
+    if (s_fb_cap_state != FB_CAP_PENDING) return;
+    char path[512];
+    int have = 0;
+    pthread_mutex_lock(&s_fb_cap_lock);
+    if (s_fb_cap_req) {
+        s_fb_cap_req = 0;
+        snprintf(path, sizeof(path), "%s", s_fb_cap_path);
+        have = 1;
+    }
+    pthread_mutex_unlock(&s_fb_cap_lock);
+    if (!have) return;
+    s_fb_cap_state = gfx_feedback_capture_write(path) ? FB_CAP_DONE : FB_CAP_FAILED;
+}
+
+JNIEXPORT void JNICALL
+Java_com_vdavid003_sm64port_FeedbackOutbox_nativeCaptureFrame(JNIEnv *env, jclass clazz,
+                                                              jstring path) {
+    (void) clazz;
+    if (path == NULL) return;
+    const char *p = (*env)->GetStringUTFChars(env, path, NULL);
+    if (p != NULL) {
+        gfx_feedback_capture_request(p);
+        (*env)->ReleaseStringUTFChars(env, path, p);
+    }
+}
+
+JNIEXPORT jint JNICALL
+Java_com_vdavid003_sm64port_FeedbackOutbox_nativeCaptureState(JNIEnv *env, jclass clazz) {
+    (void) env; (void) clazz;
+    return (jint) gfx_feedback_capture_state();
+}
+#endif /* __ANDROID__ */
+
 static void gfx_sdl_swap_buffers_begin(void) {
+#ifdef __ANDROID__
+    gfx_feedback_capture_maybe();
+#endif
     SDL_GL_SwapWindow(wnd);
 }
 

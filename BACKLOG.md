@@ -18,6 +18,18 @@ fix are all in the main tree; the per-thread details are below and in the linked
 docs. What is genuinely still open is in "Planned, not started" and
 "Known bugs and limits".
 
+### In-app feedback outbox (2026-11-25, worktree `w2-feedback`)
+**FEEDBACK** under the FPS meter captures one item per tap without text
+(long press adds a note) into
+`/sdcard/Android/data/com.vdavid003.sm64port/files/feedback/<timestamp>/`:
+`feedback.txt`, `shot.png` (game frame), `state.txt` (debug-report header +
+full PTC status line) and `log.txt` (256 KB app-log tail). Items accumulate
+until an agent pulls and deletes them; the button label is the pending count and
+`cmd feedback` triggers a capture over adb. Pull/clear commands are in
+`AGENTS.md`. Known limits: the shot is the renderer's SBS frame (not the woven
+panel output), so in-app HUD/panel chrome is not in it, and only the newest
+frame at the tap is captured (no history).
+
 ### Held-object HFR scale pulse (Bowser tail spin) — fixed
 Investigated and fixed 2026-11-25 in worktree `bowser-scale`.
 Two defects: the held object's previous matrix came from the local hand stack

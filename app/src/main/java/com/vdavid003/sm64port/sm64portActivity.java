@@ -107,6 +107,10 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     /* Performance monitor: on by default, like the FPS counter and graph. */
     private boolean perfMonitorOn = true, frameGraphOn = true, fpsCounterOn = true;
     private FrameGraphView frameGraph;
+    /* Feedback outbox: one-tap capture under the FPS meter (see FeedbackOutbox). */
+    private LinearLayout feedbackBar;
+    private TextView feedbackButton;
+    private int feedbackPollTick;
     private final float[] frameSamples = new float[120];
     private int frameSampleCount, frameSamplePos;
     private final android.os.Handler perfHandler =
@@ -1193,6 +1197,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         graphParams.topMargin = dp(30);
         mLayout.addView(frameGraph, graphParams);
         startFrameSampling();
+        buildFeedbackBar();
 
         android.widget.AbsoluteLayout toggles = new android.widget.AbsoluteLayout(this);
         String[][] tgl = {{"SWAP", "4"}, {"SAME", "6"},
@@ -3524,6 +3529,9 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             if (tuningPanelView != null) {
                 tuningPanelView.setVisibility(forceHudHidden ? View.GONE : View.VISIBLE);
             }
+            if (feedbackBar != null) {
+                feedbackBar.setVisibility(forceHudHidden ? View.GONE : View.VISIBLE);
+            }
         });
         Log.i(TAG, "HUD hidden=" + forceHudHidden);
     }
@@ -4551,10 +4559,96 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                 debugView.setText((note == null || note.isEmpty() ? "" : note + "\n")
                         + (busyOn ? "BUSY - hands off  |  " : "FREE  |  ")
                         + BUILD_NAME + "  " + buildBranch());
+                // Feedback badge: the directory can change behind the app when
+                // an agent pulls and deletes over adb, so re-count every 2 s.
+                if ((feedbackPollTick++ & 3) == 0) {
+                    refreshFeedbackBadge();
+                }
                 h.postDelayed(this, 500);
             }
         });
     }
+
+    /**
+     * Feedback outbox controls, directly under the FPS meter / frame graph:
+     * one tap captures (no text), long press captures with a note, CLEAR
+     * empties the outbox for the user. Agents pull and delete over adb instead
+     * (see AGENTS.md); the item count is the badge.
+     */
+    private void buildFeedbackBar() {
+        if (mLayout == null) return;
+        LinearLayout bar = new LinearLayout(this);
+        bar.setOrientation(LinearLayout.HORIZONTAL);
+        bar.setBackgroundColor(0x55000000);
+
+        TextView fb = new TextView(this);
+        feedbackButton = fb;
+        fb.setTextSize(13);
+        fb.setTextColor(0xFFFFD966);
+        fb.setPadding(dp(8), dp(4), dp(8), dp(4));
+        fb.setOnClickListener(v -> captureFeedback(null));
+        fb.setOnLongClickListener(v -> {
+            promptFeedbackText();
+            return true;
+        });
+        bar.addView(fb);
+
+        TextView clear = new TextView(this);
+        clear.setText("CLEAR");
+        clear.setTextSize(11);
+        clear.setTextColor(0xFF999999);
+        clear.setPadding(dp(8), dp(4), dp(6), dp(4));
+        clear.setOnClickListener(v -> {
+            int n = FeedbackOutbox.clear(this);
+            refreshFeedbackBadge();
+            Toast.makeText(this, n == 0 ? "feedback outbox already empty"
+                    : "cleared " + n + " feedback item(s)", Toast.LENGTH_SHORT).show();
+        });
+        bar.addView(clear);
+
+        android.widget.RelativeLayout.LayoutParams lp =
+                new android.widget.RelativeLayout.LayoutParams(
+                        android.widget.RelativeLayout.LayoutParams.WRAP_CONTENT,
+                        android.widget.RelativeLayout.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = dp(112);      // FPS text at 0, graph ends at 30+78
+        lp.leftMargin = dp(4);
+        mLayout.addView(bar, lp);
+        feedbackBar = bar;
+        refreshFeedbackBadge();
+    }
+
+    /** Pending-item badge: "FEEDBACK (n)"; long press adds a note. */
+    private void refreshFeedbackBadge() {
+        if (feedbackButton == null) return;
+        int n = FeedbackOutbox.count(this);
+        feedbackButton.setText(n > 0 ? "FEEDBACK (" + n + ")" : "FEEDBACK");
+        feedbackButton.setTextColor(n > 0 ? 0xFFFFD966 : 0xFFCCCCCC);
+    }
+
+    /** Long-press path: optional text, then the same capture. */
+    private void promptFeedbackText() {
+        final android.widget.EditText input = new android.widget.EditText(this);
+        input.setHint("what to look at / what went wrong (optional)");
+        input.setTextSize(15);
+        new android.app.AlertDialog.Builder(this)
+                .setTitle("Feedback")
+                .setView(input)
+                .setPositiveButton("CAPTURE", (d, w) ->
+                        captureFeedback(input.getText().toString()))
+                .setNegativeButton("CANCEL", null)
+                .show();
+    }
+
+    private void captureFeedback(String text) {
+        FeedbackOutbox.capture(this, text == null ? "" : text, this::refreshFeedbackBadge);
+    }
+
+    /** adb: cmd feedback [--es text "..."] - remote capture for tests. */
+    void debugFeedback(String text) {
+        Log.i(TAG, "FEEDBACK capture requested (remote)");
+        runOnUiThread(() -> captureFeedback(text == null ? "" : text));
+    }
+
 
     /** which: 0 = IPD px, 1 = convergence px, 2 = depth percent. */
     private native void nativeSetStereo(int which, int value);
@@ -5136,7 +5230,8 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                     + " shadow=" + nativeGetShadow(0) + "/" + nativeGetShadow(1)
                     + " str=" + nativeGetShadow(3) + " bias=" + nativeGetShadow(4)
                     + " soft=" + nativeGetShadow(6) + " taps=" + nativeGetShadow(7)
-                    + " range=" + nativeGetShadow(8) + " dbg=" + nativeGetShadow(11));
+                    + " range=" + nativeGetShadow(8) + " dbg=" + nativeGetShadow(11)
+                    + " fb=" + FeedbackOutbox.count(this));
             Log.i(TAG, nativePtcStatus());
             if (touchOverlay != null) {
                 Log.i(TAG, "LAYOUT " + touchOverlay.statusLine());

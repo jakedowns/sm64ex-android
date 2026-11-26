@@ -238,6 +238,41 @@ public final class DebugLog {
         }
     }
 
+    /**
+     * Copy the tail of the rolling app log into {@code out}, bounded to
+     * {@code maxBytes}. Used by the feedback outbox; it reads the same file the
+     * EXPORT tab would, so a feedback item needs no separate log capture and
+     * never touches the rotation.
+     */
+    public static boolean writeLogTail(File out, int maxBytes) {
+        File src = getLogFile(appContext);
+        if (src == null || !src.isFile()) return false;
+        if (maxBytes < 1024) maxBytes = 1024;
+        flush();
+        try (java.io.RandomAccessFile raf = new java.io.RandomAccessFile(src, "r");
+             FileOutputStream fos = new FileOutputStream(out, false)) {
+            long len = raf.length();
+            long start = Math.max(0L, len - maxBytes);
+            raf.seek(start);
+            String header = "===== app log tail (" + (len - start) + " of " + len
+                    + " bytes" + (start > 0 ? ", cut mid-line" : "") + ") =====\n";
+            fos.write(header.getBytes(StandardCharsets.UTF_8));
+            byte[] buf = new byte[8192];
+            long remain = len - start;
+            while (remain > 0) {
+                int n = raf.read(buf, 0, (int) Math.min(buf.length, remain));
+                if (n <= 0) break;
+                fos.write(buf, 0, n);
+                remain -= n;
+            }
+            fos.flush();
+            return true;
+        } catch (Throwable t) {
+            Log.w(TAG, "log tail copy failed", t);
+            return false;
+        }
+    }
+
     /** The live rolling log file, or null if logging failed to initialise. */
     public static File getLogFile(Context context) {
         synchronized (LOCK) {
