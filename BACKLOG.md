@@ -116,6 +116,23 @@ vs `f_light_on` / `c_bloom`.
 
 ---
 
+### Reserved fx key ranges (registered 2026-11-25)
+Parallel agents must not invent ranges. Claim one here before adding dials, and
+keep a feature inside its block:
+
+| range | owner |
+| --- | --- |
+| `250`-`260` | crepuscular rays (taken) |
+| `261`-`273` | emissive / bloom / jetpack light (taken) |
+| `274`-`278` | occluder punch-through (taken) |
+| `280`-`289` | tone mapping + colour grading |
+| `290`-`299` | cam-stick curve + heatmap |
+| `300`-`309` | on-screen layout editor + profiles |
+| `310`-`319` | grapple targeting debug view |
+| `320`-`329` | wall-run stick vector + cooldown |
+| `330`-`339` | camera sensitivity picker / cycler fix |
+| `340`-`349` | feedback outbox (reserved, likely unused) |
+
 ## Known bugs and limits
 
 - **"Black 3D layer" screenshots are usually a locked/asleep tablet.**
