@@ -104,3 +104,32 @@ already exist. Two examples from this repo:
 3. Have I batched all the edits I want in this build?
 4. Have I written the measurement matrix, and does it fit in one lock hold?
 5. Does the change add a dial + status field so the next experiment is free?
+
+## Parallelism cap (learned the hard way, 2026-11-25)
+
+Nine build-heavy worktrees at once do not scale on this VM. Measured from the
+lock event log over one hour:
+
+| symptom | number |
+| --- | --- |
+| longest single build hold | 1568 s (26 min) for a build that takes 20-60 s alone |
+| waits that hit the timeout | 3600 s, 3103 s, 2889 s, 2288 s, 1800 s, 1500 s, 900 s |
+| totals | every worktree spent ~20-50 min queued for ~10 min of work |
+
+The lock was doing its job; the machine was not. Nine gradle JVMs plus nine
+NDK compiles under the qemu toolchain oversubscribe the CPU, so every build
+takes 25x longer and the queue turns into timeouts. The lock is the symptom,
+not the cause.
+
+Rules that follow:
+
+- **Cap build-heavy parallel worktrees at ~3.** More than that and the wall
+  time is worse than doing them in sequence.
+- **Do not retry a timed-out build in a loop** while others are queued; you are
+  competing with yourself. Wait for the queue to drain, or hand the build to the
+  parent to run once.
+- **Design-only work parallelizes fine** (no build, no device); a wave can be
+  ten agents if only three of them need to compile.
+- A shared `ccache`/`sccache` for the ndk-build translation units would remove
+  most of this, but neither is installed here yet.
+
