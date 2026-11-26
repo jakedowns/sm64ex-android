@@ -242,6 +242,11 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     // Debug panel: slider drag mode, tab styling, changelog.
     private LinearLayout tuningPanelView;
     private LinearLayout topTabBar;
+    /** Holds the first-order tab strip and the pages: tabs above pages in the
+     *  bottom dock, tabs as a left column beside the pages in the vertical dock. */
+    private LinearLayout panelNavRow;
+    /** Weighted spacer that right-aligns SRC/RESET in the horizontal tab row. */
+    private View topTabSpacer;
     /** Debug panel orientation: false = pinned across the bottom, true = left half. */
     private boolean panelVertical = false;
     /** Drawer header and its fixed-position children (re-laid out per orientation). */
@@ -818,9 +823,13 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
 
     /** Height of the panel with the drawer content in the given state. */
     private int measurePanel(boolean withContent) {
-        int vis = withContent ? View.VISIBLE : View.GONE;
-        tabContent.setVisibility(vis);
-        if (topTabBar != null) topTabBar.setVisibility(vis);
+        if (panelVertical && withContent) {
+            // The vertical dock is pinned top-to-bottom, so its open height is
+            // the display height; there is nothing content-dependent to measure.
+            setPanelBodyVisible(true);
+            return panelFullHeight();
+        }
+        setPanelBodyVisible(withContent);
         android.view.ViewGroup.LayoutParams lp = tuningPanelView.getLayoutParams();
         int old = lp.height;
         lp.height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT;
@@ -832,6 +841,22 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         int h = tuningPanelView.getMeasuredHeight();
         lp.height = old;
         return h;
+    }
+
+    /** Pixel height the vertical dock's MATCH_PARENT resolves against. */
+    private int panelFullHeight() {
+        int h = mLayout != null ? mLayout.getHeight() : 0;
+        if (h <= 0) h = getResources().getDisplayMetrics().heightPixels;
+        return h;
+    }
+
+    /** Show/hide the drawer body and keep the nav geometry in sync with it. */
+    private void setPanelBodyVisible(boolean visible) {
+        int vis = visible ? View.VISIBLE : View.GONE;
+        if (tabContent != null) tabContent.setVisibility(vis);
+        if (topTabBar != null) topTabBar.setVisibility(vis);
+        if (panelNavRow != null) panelNavRow.setVisibility(vis);
+        updateNavGeometry();
     }
 
     /** Animate the black panel background between two heights (ease-in-out). */
@@ -850,11 +875,13 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         va.addListener(new android.animation.AnimatorListenerAdapter() {
             @Override
             public void onAnimationEnd(android.animation.Animator animation) {
-                lp.height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT;
+                lp.height = (opening && panelVertical)
+                        ? android.view.ViewGroup.LayoutParams.MATCH_PARENT
+                        : android.view.ViewGroup.LayoutParams.WRAP_CONTENT;
                 if (!opening) {
-                    tabContent.setVisibility(View.GONE);
-                    if (topTabBar != null) topTabBar.setVisibility(View.GONE);
+                    setPanelBodyVisible(false);
                 } else {
+                    setPanelBodyVisible(true);
                     tabContent.setAlpha(1f);
                 }
                 tuningPanelView.requestLayout();
@@ -901,8 +928,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                 ? tuningPanelView.getHeight() : measurePanel(true);
         int collapsed = measurePanel(false);
         // Keep the content visible while the panel shrinks.
-        tabContent.setVisibility(View.VISIBLE);
-        if (topTabBar != null) topTabBar.setVisibility(View.VISIBLE);
+        setPanelBodyVisible(true);
         tabContent.animate().alpha(0f).setDuration(240)
                 .setInterpolator(new android.view.animation.AccelerateDecelerateInterpolator())
                 .start();
@@ -968,6 +994,94 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         }
     }
 
+    /**
+     * Width of the first-order tab column in the vertical dock. At the
+     * 2560x1600 panel (density 2) 110 dp = 220 px: room for "ABOUT" plus its
+     * enable dot and the RESET/SRC chips, and it leaves 1008 px (504 dp) for
+     * the page, which still fits the two-column control grids.
+     */
+    private int tabStripWidth() {
+        return dp(110);
+    }
+
+    /**
+     * Lay out the nav row for the current dock. Horizontal: the tabs stay a row
+     * above the pages (unchanged). Vertical: the same tabs become a column down
+     * the dock's left edge and the page fills (and scrolls in) the rest of the
+     * row. Selection state and dots are the chips' own, so nothing is duplicated.
+     */
+    private void updateNavGeometry() {
+        if (panelNavRow == null || topTabBar == null || tabContent == null) return;
+        boolean open = debugPanelOpen();
+        LinearLayout.LayoutParams nav =
+                (LinearLayout.LayoutParams) panelNavRow.getLayoutParams();
+        LinearLayout.LayoutParams strip =
+                (LinearLayout.LayoutParams) topTabBar.getLayoutParams();
+        LinearLayout.LayoutParams content =
+                (LinearLayout.LayoutParams) tabContent.getLayoutParams();
+        if (panelVertical) {
+            panelNavRow.setOrientation(LinearLayout.HORIZONTAL);
+            // Open: the row takes everything under the header (weight fills it).
+            // Collapsed: it wraps to nothing, so the collapsed bar stays short.
+            nav.width = LinearLayout.LayoutParams.MATCH_PARENT;
+            nav.height = open ? 0 : LinearLayout.LayoutParams.WRAP_CONTENT;
+            nav.weight = open ? 1f : 0f;
+            strip.width = tabStripWidth();
+            strip.height = LinearLayout.LayoutParams.MATCH_PARENT;
+            strip.weight = 0f;
+            content.width = 0;
+            content.height = LinearLayout.LayoutParams.MATCH_PARENT;
+            content.weight = 1f;
+            topTabBar.setOrientation(LinearLayout.VERTICAL);
+        } else {
+            panelNavRow.setOrientation(LinearLayout.VERTICAL);
+            nav.width = LinearLayout.LayoutParams.MATCH_PARENT;
+            nav.height = LinearLayout.LayoutParams.WRAP_CONTENT;
+            nav.weight = 0f;
+            strip.width = LinearLayout.LayoutParams.MATCH_PARENT;
+            strip.height = LinearLayout.LayoutParams.WRAP_CONTENT;
+            strip.weight = 0f;
+            content.width = LinearLayout.LayoutParams.MATCH_PARENT;
+            content.height = LinearLayout.LayoutParams.WRAP_CONTENT;
+            content.weight = 0f;
+            topTabBar.setOrientation(LinearLayout.HORIZONTAL);
+        }
+        panelNavRow.setLayoutParams(nav);
+        topTabBar.setLayoutParams(strip);
+        tabContent.setLayoutParams(content);
+        // Horizontal: the weighted spacer right-aligns SRC/RESET. Vertical:
+        // no weight, so SRC/RESET stack directly under the three top tabs
+        // instead of drifting to the bottom of the full-height column.
+        if (topTabSpacer != null) {
+            android.view.ViewGroup.LayoutParams raw = topTabSpacer.getLayoutParams();
+            if (raw instanceof LinearLayout.LayoutParams) {
+                LinearLayout.LayoutParams sp = (LinearLayout.LayoutParams) raw;
+                sp.width = 0;
+                sp.height = 1;
+                sp.weight = panelVertical ? 0f : 1f;
+                topTabSpacer.setLayoutParams(sp);
+            }
+        }
+    }
+
+    /** Page fill: vertical dock stretches the visible page over the free
+     *  height and scrolls inside it; horizontal keeps the wrapped pages. */
+    private void applyPageLayoutParams() {
+        for (int i = 0; i < tabViews.size(); i++) {
+            View v = tabViews.get(i);
+            android.view.ViewGroup.LayoutParams raw = v.getLayoutParams();
+            if (!(raw instanceof LinearLayout.LayoutParams)) continue;
+            LinearLayout.LayoutParams lp = (LinearLayout.LayoutParams) raw;
+            lp.width = LinearLayout.LayoutParams.MATCH_PARENT;
+            lp.height = panelVertical ? 0 : LinearLayout.LayoutParams.WRAP_CONTENT;
+            lp.weight = panelVertical ? 1f : 0f;
+            v.setLayoutParams(lp);
+        }
+        for (int i = 0; i < pageScrollers.size(); i++) {
+            pageScrollers.get(i).fillHeight = panelVertical;
+        }
+    }
+
     /** Apply the dock geometry to the panel, its pages and the header. */
     private void applyPanelOrientation(boolean relayout) {
         if (tuningPanelView == null) return;
@@ -984,9 +1098,13 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             if (panelVertical) {
                 lp.width = Math.max(dp(500),
                         getResources().getDisplayMetrics().widthPixels / 2);
-                // Wrapped height: tall pages still fill the screen, short ones
-                // leave the lower-left corner of the game (and touch stick) free.
-                lp.height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT;
+                // Pinned top-to-bottom while open: the page scrolls inside the
+                // remaining height instead of the dock hugging the page. When
+                // collapsed it still wraps to the header, so it never covers
+                // half the screen as an empty black slab.
+                lp.height = debugPanelOpen()
+                        ? android.view.ViewGroup.LayoutParams.MATCH_PARENT
+                        : android.view.ViewGroup.LayoutParams.WRAP_CONTENT;
                 lp.addRule(android.widget.RelativeLayout.ALIGN_PARENT_LEFT);
                 lp.addRule(android.widget.RelativeLayout.ALIGN_PARENT_TOP);
             } else {
@@ -996,6 +1114,8 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             }
             tuningPanelView.setLayoutParams(lp);
         }
+        updateNavGeometry();
+        applyPageLayoutParams();
         for (int i = 0; i < pageScrollers.size(); i++) {
             pageScrollers.get(i).setMaxHeight(pageMaxHeight());
         }
@@ -1005,8 +1125,16 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             tuningPanelView.requestLayout();
             updateStereoPictogramVisibility();
         }
+        int pw = tuningPanelView.getLayoutParams().width;
+        if (pw <= 0) pw = getResources().getDisplayMetrics().widthPixels;
+        int inner = pw - tuningPanelView.getPaddingLeft()
+                - tuningPanelView.getPaddingRight();
         Log.i(TAG, "PANEL dock=" + (panelVertical ? "V" : "H")
-                + " width=" + (tuningPanelView.getLayoutParams().width)
+                + " width=" + pw
+                + " strip=" + (panelVertical ? tabStripWidth() : 0)
+                + " page=" + (panelVertical ? inner - tabStripWidth() : inner)
+                + " height=" + (panelVertical
+                        ? (debugPanelOpen() ? "full" : "wrap") : "wrap")
                 + " pageMax=" + pageMaxHeight());
     }
 
@@ -1359,6 +1487,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         }
         tabBar.addView(new View(this), new LinearLayout.LayoutParams(
                 0, 1, 1f));       // spacer: RESET sits on the right edge
+        topTabSpacer = tabBar.getChildAt(tabBar.getChildCount() - 1);
         TextView reset = new TextView(this);
         reset.setText("RESET");
         reset.setTextColor(0xFFFFCC66);
@@ -1367,11 +1496,22 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         reset.setOnClickListener(v -> debugReset());
         tabBar.addView(reset);
         topTabBar = tabBar;
-        panel.addView(tabBar);
+
+        /* Nav row: a vertical stack (tabs above pages) in the horizontal dock;
+         * the vertical dock turns it into a row so the first-order tabs become
+         * a column down the panel's left edge and the page gets the rest. */
+        panelNavRow = new LinearLayout(this);
+        panelNavRow.setOrientation(LinearLayout.VERTICAL);
+        panelNavRow.addView(tabBar, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
 
         tabContent = new LinearLayout(this);
         tabContent.setOrientation(LinearLayout.VERTICAL);
-        panel.addView(tabContent, new LinearLayout.LayoutParams(
+        panelNavRow.addView(tabContent, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+        panel.addView(panelNavRow, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
         buildStrips(tabContent);
@@ -1393,8 +1533,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         // Collapsed by default: the open panel covers the bottom of the screen
         // and swallowed taps meant for the overlay's START button. HIDE/SHOW
         // toggles all tab pages at once (see the hide listener below).
-        tabContent.setVisibility(android.view.View.GONE);
-        if (topTabBar != null) topTabBar.setVisibility(android.view.View.GONE);
+        setPanelBodyVisible(false);
 
         grid = newGrid(controls);
         addSlider("IPD / baseline", -300, 300, 300, " px", 0);
@@ -4646,6 +4785,10 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
      */
     private final class PageScroll extends android.widget.ScrollView {
         int maxH;
+        /** Vertical dock: fill the height the parent hands down and scroll
+         *  inside it (the dock is pinned top-to-bottom). Horizontal keeps the
+         *  wrapped, content-sized page. */
+        boolean fillHeight;
 
         PageScroll() {
             super(sm64portActivity.this);
@@ -4657,6 +4800,10 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
 
         @Override
         protected void onMeasure(int widthSpec, int heightSpec) {
+            if (fillHeight) {
+                super.onMeasure(widthSpec, heightSpec);
+                return;
+            }
             int cap = Math.max(dp(80), maxH);
             super.onMeasure(widthSpec,
                     MeasureSpec.makeMeasureSpec(cap, MeasureSpec.AT_MOST));
