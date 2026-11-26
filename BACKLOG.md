@@ -190,6 +190,35 @@ Remaining wins on this thread, in order:
    GI bilinearly with one depth tap, or fold it into the existing bloom
    upsample when both are on.
 
+### MXAO cost: reduced-resolution chain (worktree `w3-mxao-perf`, 2026-11-26)
+MXAO was **30.5 ms in 3D** (17.96 over the 12.5 ms empty FX pass) and 15.8 ms in
+2D at 12 taps, radius 120. Cause: everything ran at full eye resolution and the
+AO loop was 13 depth fetches per pixel per eye (1 centre + 2 for the normal +
+12 taps), each re-deriving `linZ` with a divide and `viewPos` with two more,
+plus a `sin`/`cos` pair per tap; there was no blur at all, no sky early-out and
+no skip at intensity 0. Cost was exactly linear in taps (1.33 ms/tap in 3D,
+0.66/tap/eye), i.e. fetch-bound; the normal reconstruction was already free.
+
+Now three small per-eye passes at `scene_res/2` (fx **390-396**, defaults pick
+it): prepass `(packed linear z, octahedral view normal)` → 12-tap spiral gather
+reading only that field → depth-aware 4-tap apply that multiplies the scene
+colour, so the FX shader keeps no AO code and no extra sampler. The chain runs
+after the denoise and C.DOF prepasses, and when AO is the only effect the big
+FX pass is skipped entirely (that alone was 8.4 ms of the 30.5).
+
+**3D 30.5 → 12.1 ms (2.5×), 2D 15.8 → 6.8 ms**; the whole chain (6.3 ms 3D) is
+cheaper than the empty post pass it removes, and `LOW + AO8` in 3D went 35.8 →
+28.2 ms, so 30 Hz with contact AO now fits. Half res keeps the look (AO ~2 px
+softer at silhouettes, no halos); quarter res stair-steps thin geometry
+(Mario's cap brim) and is a dial, not the default. `392`'s per-pixel rotation
+is the textbook fix for banding but costs 1.9-3.1 ms in 3D and leaves speckle
+on flat walls, so the default keeps the legacy one-direction-per-frame pattern.
+Keys, measurements, stills and the rerun recipe:
+[`findings/mxao-perf-11-26.md`](findings/mxao-perf-11-26.md). Still open:
+quarter-res as a performance mode, an `RGBA16F` gather field so 6 bilinear taps
+replace 12 NEAREST ones, and a half-res 3×3 depth-aware blur that would make 8
+taps plus a static pattern viable.
+
 ### Shipped this wave (merged 2026-11-25)
 Rays (`6c55b1e`), the reduced-res denoiser, slow-motion interpolation, the
 emissive/bloom/GLOW work, the occluded-Mario punch-through and the HFR held-object
@@ -419,6 +448,8 @@ keep a feature inside its block:
 | `350`-`359` | painting ripple presentation-time interpolation (taken) |
 | `360`-`369` | camera vs ground COLLIDE/CLIP (taken: `360` mode, `361`-`369` free) |
 | `370`-`379` | UI layout box + skybox fine-tune (taken: `370` scale X %, `371` scale Y %, `372` offset X %, `373` offset Y %; `374`-`379` free) |
+| `380`-`389` | reduced-resolution C.DOF (taken, see the C.DOF section: `380` path, `381` divisor, `382` near field, `383` taps, `384` upsample, `385` CoC, `386` bokeh, `387` bilinear, `388` stage log, `389` sharpness) |
+| `390`-`399` | reduced-resolution MXAO (taken: `390` path, `391` divisor, `392` rotation, `393` upsample, `394` sky skip, `395` tap trig, `396` stage probe; `397`-`399` free) |
 | `400`-`409` | reduced-resolution SSGI (taken: `400` divisor, `401` blur, `402` roto jitter, `403` debug view, `404` sky skip, `405` normal reject) |
 
 ## Known bugs and limits

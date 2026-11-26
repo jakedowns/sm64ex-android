@@ -1901,6 +1901,16 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addFxSlider("Samples", 4, 32, 12, "", 4);
         addFxSlider("Bias", 0, 100, 20, " u", 5);
         addFxSlider("Power", 50, 400, 150, " %", 6);
+        beginSection("AO RESOLUTION (ADVANCED)", false);
+        addFxCycle("AO PATH", 390, new String[] { "FULL RES", "LOW RES" },
+                   nativeGetSSFX(390));
+        addIntSlider("Low-res 1/n", 2, 4, 2, v -> debugFx(391, v));
+        addIntSlider("Rotate per pixel 0/1", 0, 1, 0, v -> debugFx(392, v));
+        addIntSlider("Upsample 0=bilat 1=bilin", 0, 1, 0, v -> debugFx(393, v));
+        addIntSlider("Sky skip 0/1", 0, 1, 1, v -> debugFx(394, v));
+        addIntSlider("Tap trig 0=rot 1=sin/cos", 0, 1, 0, v -> debugFx(395, v));
+        addIntSlider("Stage probe 0/1/2", 0, 2, 0, v -> debugFx(396, v));
+        endSection();
 
         // --- Cinematic DOF ---
         beginTab();

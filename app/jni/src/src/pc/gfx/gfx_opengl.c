@@ -942,6 +942,20 @@ static int s_fx_ao_radius = 120;      // world units
 static int s_fx_ao_samples = 12;
 static int s_fx_ao_bias = 20;         // world units (self-occlusion reject)
 static int s_fx_ao_power = 150;       // percent (contrast)
+/* 390-396: reduced-resolution AO chain (see "Half-resolution AO" below). */
+static int s_fx_ao_path = 1;      /* 390: 0 = full-res in-shader, 1 = low-res  */
+static int s_fx_ao_div = 2;       /* 391: low-res divisor (2 = half)           */
+/* 392: 0 = per-frame rotation (the legacy pattern: one direction set for the
+ * whole frame, no static grain but temporal shimmer), 1 = static per-pixel
+ * IGN rotation.  Measured 2026-11-26: per-pixel rotation costs +1.9 to +3.1 ms
+ * in 3D (neighbouring pixels stop sharing tap directions, so the fetch pattern
+ * goes incoherent) and leaves visible speckle on flat walls at half res, so
+ * the shipping default stays with the look the legacy path already had. */
+static int s_fx_ao_jitter = 0;    /* 392: 1 = static per-pixel rotation        */
+static int s_fx_ao_up = 0;        /* 393: 0 = 4-tap depth-aware, 1 = bilinear  */
+static int s_fx_ao_sky = 1;       /* 394: 1 = skip the gather on sky/far       */
+static int s_fx_ao_trig = 0;      /* 395: 0 = rotation matrix, 1 = per-tap trig*/
+static int s_fx_ao_probe = 0;     /* 396: 1 = prepass only, 2 = no apply       */
 
 static int s_fx_dof_on = 0;
 static int s_fx_dof_focus = 800;      // world units (manual mode)
@@ -1186,6 +1200,7 @@ static const char *s_fx_fs =
     "uniform float uAOSamples;\n"
     "uniform float uAOBias;\n"
     "uniform float uAOPower;\n"
+    "uniform float uAOProbe;\n"
     "uniform float uDOFOn;\n"
     "uniform float uFocus;\n"
     "uniform float uAperture;\n"
@@ -1625,7 +1640,7 @@ static const char *s_fx_fs =
     "  vec3 refl = vec3(0.0);\n"
     "  if (uSSRTXOn > 0.5) refl = ssrtxReflect(P, N, cuv);\n"
     "  float ao = 1.0;\n"
-    "  if (uAOOn > 0.5) {\n"
+    "  if (uAOOn > 0.5 && uAOProbe < 0.5) {\n"
     "    float occ = 0.0;\n"
     "    float wsum = 0.0;\n"
     "    float ns = max(uAOSamples, 1.0);\n"
@@ -2328,7 +2343,7 @@ static int    s_dn_src[2] = {0, 0};      // last à-trous stage per eye
 
 static struct {
     GLint color, depth, res, canvas, nearv, farv, tanhalf, aspect, frame;
-    GLint ao_on, ao_intensity, ao_radius, ao_samples, ao_bias, ao_power;
+    GLint ao_on, ao_intensity, ao_radius, ao_samples, ao_bias, ao_power, ao_probe;
     GLint dof_on, dof_focus, dof_aperture, dof_maxblur, dof_samples, dof_pre;
     GLint gi_on, gi_intensity, gi_radius, gi_steps, gi_rays;
     GLint debug, normal_flip;
@@ -2387,8 +2402,11 @@ static GLint  s_lut_u_tex = -1, s_lut_u_lut = -1, s_lut_u_slices = -1;
 static GLint  s_lut_u_h = -1, s_lut_u_strength = -1;
 
 static int stereo_fx_any(void) {
-    /* GI with intensity 0 adds nothing, so it must not run the pass either. */
-    return s_fx_ao_on || s_fx_dof_on || (s_fx_gi_on && s_fx_gi_intensity > 0)
+    /* GI with intensity 0 adds nothing, and AO with intensity 0 resolves to
+     * ao == 1.0, so neither must keep the pass alive (the legacy AO path used
+     * to pay for the whole gather first). */
+    return (s_fx_ao_on && s_fx_ao_intensity > 0) || s_fx_dof_on
+        || (s_fx_gi_on && s_fx_gi_intensity > 0)
         || s_fx_debug != 0
         || (gfx_shadow_enabled && s_shadow_map_valid)
         || s_fx_ssrtx_on || s_fx_mb_on || s_light_count > 0 || s_probe_vis
@@ -2396,6 +2414,19 @@ static int stereo_fx_any(void) {
         || s_ray_on
         || s_grade_on           /* tonemap/grade needs the FX pass */
         || (s_denoise_path && s_denoise_on);   /* denoise needs the FX pass */
+}
+
+/* Everything stereo_fx_any() lists except AO: when this is 0 the reduced-res
+ * AO chain has already produced the final colour and the big FX pass can be
+ * skipped entirely (it was 8.4 ms of the 30.5 ms AO cost in 3D).  Keep this in
+ * step with stereo_fx_any(): an effect that stops running at 0 intensity must
+ * not keep the pass alive here either. */
+static int stereo_fx_other(void) {
+    return s_fx_dof_on || (s_fx_gi_on && s_fx_gi_intensity > 0) || s_fx_debug != 0
+        || (gfx_shadow_enabled && s_shadow_map_valid)
+        || s_fx_ssrtx_on || s_fx_mb_on || s_light_count > 0 || s_probe_vis
+        || s_glow_on || s_ray_on || s_grade_on
+        || (s_denoise_path && s_denoise_on);
 }
 
 // Row-vector matrix (translation in row 3). GLSL matrices are column-major,
@@ -2413,6 +2444,15 @@ void gfx_opengl_ssfx_set(int which, int value) {
         case 4:  s_fx_ao_samples = value < 1 ? 1 : (value > 32 ? 32 : value); break;
         case 5:  s_fx_ao_bias = value < 0 ? 0 : value; break;
         case 6:  s_fx_ao_power = value < 1 ? 1 : value; break;
+        /* 390-396: reduced-res AO chain.  All of these are A/B dials, so the
+         * full-res path stays one key away and every stage can be timed. */
+        case 390: s_fx_ao_path = value ? 1 : 0; break;
+        case 391: s_fx_ao_div = value < 1 ? 1 : (value > 4 ? 4 : value); break;
+        case 392: s_fx_ao_jitter = value ? 1 : 0; break;
+        case 393: s_fx_ao_up = value ? 1 : 0; break;
+        case 394: s_fx_ao_sky = value ? 1 : 0; break;
+        case 395: s_fx_ao_trig = value ? 1 : 0; break;
+        case 396: s_fx_ao_probe = value < 0 ? 0 : (value > 2 ? 2 : value); break;
         case 11: s_fx_dof_on = value ? 1 : 0; break;
         case 12: s_fx_dof_focus = value < 1 ? 1 : value; break;
         case 13: s_fx_dof_aperture = value < 0 ? 0 : value; break;
@@ -2693,6 +2733,13 @@ int gfx_opengl_ssfx_get(int which) {
         case 4:  return s_fx_ao_samples;
         case 5:  return s_fx_ao_bias;
         case 6:  return s_fx_ao_power;
+        case 390: return s_fx_ao_path;
+        case 391: return s_fx_ao_div;
+        case 392: return s_fx_ao_jitter;
+        case 393: return s_fx_ao_up;
+        case 394: return s_fx_ao_sky;
+        case 395: return s_fx_ao_trig;
+        case 396: return s_fx_ao_probe;
         case 11: return s_fx_dof_on;
         case 12: return s_fx_dof_focus;
         case 16: return s_fx_dof_auto;
@@ -2933,6 +2980,7 @@ static void stereo_fx_init(void) {
     s_fx_u.ao_samples = glGetUniformLocation(s_fx_prog, "uAOSamples");
     s_fx_u.ao_bias = glGetUniformLocation(s_fx_prog, "uAOBias");
     s_fx_u.ao_power = glGetUniformLocation(s_fx_prog, "uAOPower");
+    s_fx_u.ao_probe = glGetUniformLocation(s_fx_prog, "uAOProbe");
     s_fx_u.dof_on = glGetUniformLocation(s_fx_prog, "uDOFOn");
     s_fx_u.dof_focus = glGetUniformLocation(s_fx_prog, "uFocus");
     s_fx_u.dof_aperture = glGetUniformLocation(s_fx_prog, "uAperture");
@@ -4840,6 +4888,480 @@ static void stereo_gi_composite(void) {
     glUseProgram(0);
 }
 
+/* ---------------- Half-resolution AO (fx 390-396) ------------------------
+ * The legacy MXAO is a full-res 12-tap depth gather inside the big FX shader:
+ * a 3-tap normal reconstruction, a sin/cos pair per tap, a divide per tap and
+ * no blur, no sky early-out, at 1280x1534 per eye.  This chain moves the whole
+ * thing to 1/div resolution in three small passes (the s_dn_* pattern) and
+ * hands the FX shader a colour buffer that already has AO folded in, so the
+ * big shader needs no extra sampler, no extra fetch and no AO block at all:
+ *
+ *   mode 0  prepass: full-res depth -> low-res RGBA8 (packed linear z, oct N)
+ *   mode 1  gather:  low-res spiral AO -> low-res RGBA8 (ao, packed linear z)
+ *   mode 2  apply:   depth-aware 4-tap upsample, multiplies the scene colour
+ *   mode 3  apply:   plain bilinear upsample (1 tap, no depth test)
+ *
+ * The upsample is its own pass: BACKLOG records that folding a 4-tap
+ * reduced-res upsample into the big shader cost ~30 ms, and that adding a
+ * seventh sampler there slowed the whole post chain.
+ *
+ * The gather takes the tap offsets from a golden-angle spiral rotated by a
+ * per-pixel interleaved-gradient-noise angle (uJitter 1, static: no temporal
+ * shimmer) or by the frame counter (uJitter 0, the legacy behaviour).  The
+ * spiral is advanced with a rotation matrix instead of cos/sin per tap
+ * (uTrig 0); uTrig 1 keeps the per-tap trig for an A/B.
+ */
+static const char *s_ao_vs =
+    "attribute vec2 aPos; attribute vec2 aUV; varying vec2 vUV;\n"
+    "void main(){ vUV = aUV; gl_Position = vec4(aPos, 0.0, 1.0); }\n";
+
+static const char *s_ao_fs =
+    "precision highp float;\n"
+    "varying vec2 vUV;\n"
+    "uniform sampler2D uDepth;\n"   /* full-res eye depth            (mode 0) */
+    "uniform sampler2D uZD;\n"      /* low-res packed z + oct normal (mode 1) */
+    "uniform sampler2D uAO;\n"      /* low-res ao + packed z         (mode 2/3) */
+    "uniform sampler2D uColor;\n"   /* full-res scene colour         (mode 2/3) */
+    "uniform vec2 uRes;\n"          /* eye buffer, pixels                      */
+    "uniform vec2 uLow;\n"          /* low-res buffer, pixels                  */
+    "uniform vec2 uTexel;\n"        /* 1 / uRes                                */
+    "uniform vec4 uCanvas;\n"
+    "uniform float uNear;\n"
+    "uniform float uFar;\n"
+    "uniform float uTanHalf;\n"
+    "uniform float uAspect;\n"
+    "uniform float uShear;\n"
+    "uniform float uToe;\n"
+    "uniform float uFlipY;\n"
+    "uniform float uNormalFlip;\n"
+    "uniform float uMode;\n"
+    "uniform float uAORadius;\n"
+    "uniform float uAOSamples;\n"
+    "uniform float uAOBias;\n"
+    "uniform float uAOPower;\n"
+    "uniform float uAOIntensity;\n"
+    "uniform float uFrame;\n"
+    "uniform float uJitter;\n"
+    "uniform float uSky;\n"
+    "uniform float uTrig;\n"
+    "uniform float uUpSigma;\n"
+    "float linZ(float d) {\n"
+    "  float z = d * 2.0 - 1.0;\n"
+    "  return (2.0 * uNear * uFar) / (uFar + uNear - z * (uFar - uNear));\n"
+    "}\n"
+    "vec3 viewPos(vec2 cuv, float z) {\n"
+    "  vec2 ndc = cuv * 2.0 - 1.0;\n"
+    "  float ndcz = (uFar + uNear - 2.0 * uNear * uFar / z) / (uFar - uNear);\n"
+    "  if (uFlipY > 0.5) ndc.y = -ndc.y;\n"
+    "  ndc.x -= uShear + uToe * ndcz;\n"
+    "  return vec3(ndc.x * z * uTanHalf * uAspect,\n"
+    "              ndc.y * z * uTanHalf, -z);\n"
+    "}\n"
+    "vec2 canvasUV(vec2 eyeUV) {\n"
+    "  return (eyeUV * uRes - uCanvas.xy) / uCanvas.zw;\n"
+    "}\n"
+    /* 16-bit-ish fixed point: 65025 steps over 0..far, ~0.05 world units. */
+    "vec2 packZ(float z) {\n"
+    "  float v = clamp(z / uFar, 0.0, 1.0) * 65025.0;\n"
+    "  float hi = floor(v / 255.0);\n"
+    "  float lo = v - hi * 255.0;\n"
+    "  return vec2(hi / 255.0, lo / 255.0);\n"
+    "}\n"
+    "float unpackZ(vec4 c) {\n"
+    "  return ((c.r * 255.0) * 255.0 + c.g * 255.0) / 65025.0 * uFar;\n"
+    "}\n"
+    "float unpackZB(vec4 c) {\n"
+    "  return ((c.g * 255.0) * 255.0 + c.b * 255.0) / 65025.0 * uFar;\n"
+    "}\n"
+    /* Octahedral normal in two 8-bit channels (view space, z >= 0). */
+    "vec2 octEncode(vec3 n) {\n"
+    "  n /= max(abs(n.x) + abs(n.y) + abs(n.z), 0.0001);\n"
+    "  if (n.z < 0.0) {\n"
+    "    n.xy = (1.0 - abs(n.yx)) * vec2(n.x >= 0.0 ? 1.0 : -1.0,\n"
+    "                                    n.y >= 0.0 ? 1.0 : -1.0);\n"
+    "  }\n"
+    "  return n.xy * 0.5 + 0.5;\n"
+    "}\n"
+    "vec3 octDecode(vec2 e) {\n"
+    "  vec2 f = e * 2.0 - 1.0;\n"
+    "  vec3 n = vec3(f, 1.0 - abs(f.x) - abs(f.y));\n"
+    "  float t = max(-n.z, 0.0);\n"
+    "  n.x += (n.x >= 0.0) ? -t : t;\n"
+    "  n.y += (n.y >= 0.0) ? -t : t;\n"
+    "  return normalize(n);\n"
+    "}\n"
+    "float ign(vec2 p) {\n"
+    "  return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));\n"
+    "}\n"
+    "void main() {\n"
+    "  if (uMode < 0.5) {\n"
+    /* ---- prepass: depth + view normal once, at reduced resolution ---- */
+    "    float z = linZ(texture2D(uDepth, vUV).r);\n"
+    "    vec3 P = viewPos(canvasUV(vUV), z);\n"
+    "    float zx = linZ(texture2D(uDepth, vUV + vec2(uTexel.x, 0.0)).r);\n"
+    "    float zy = linZ(texture2D(uDepth, vUV + vec2(0.0, uTexel.y)).r);\n"
+    "    vec3 Px = viewPos(canvasUV(vUV + vec2(uTexel.x, 0.0)), zx);\n"
+    "    vec3 Py = viewPos(canvasUV(vUV + vec2(0.0, uTexel.y)), zy);\n"
+    "    vec3 N = normalize(cross(Px - P, Py - P));\n"
+    "    if (N.z < 0.0) N = -N;\n"
+    "    if (uNormalFlip > 0.5) N = -N;\n"
+    "    gl_FragColor = vec4(packZ(z), octEncode(N));\n"
+    "  } else if (uMode < 1.5) {\n"
+    /* ---- gather: golden-angle spiral, rotated per pixel ---- */
+    "    vec4 c0 = texture2D(uZD, vUV);\n"
+    "    float z = unpackZ(c0);\n"
+    "    vec3 N = octDecode(c0.ba);\n"
+    "    vec2 sc0 = canvasUV(vUV);\n"
+    "    float occ = 0.0;\n"
+    "    float wsum = 0.0;\n"
+    "    bool offscreen = (sc0.x < 0.0 || sc0.x > 1.0 || sc0.y < 0.0 || sc0.y > 1.0);\n"
+    "    bool sky = (uSky > 0.5) && (z > uFar * 0.95);\n"
+    "    if (!offscreen && !sky) {\n"
+    "      vec3 P = viewPos(sc0, z);\n"
+    "      float ns = max(uAOSamples, 1.0);\n"
+    "      float invn = 1.0 / ns;\n"
+    "      float ang = (uJitter > 0.5) ? ign(vUV * uLow) * 6.2831853\n"
+    "                                 : uFrame * 0.618;\n"
+    "      vec2 dir = vec2(cos(ang), sin(ang));\n"
+    "      float izt = 1.0 / (z * uTanHalf);\n"
+    "      float ia = 1.0 / uAspect;\n"
+    "      vec2 csuv = vec2(uCanvas.z, uCanvas.w) / uRes;\n"
+    "      float maxd = uAORadius * 2.0;\n"
+    "      for (int i = 0; i < 32; i++) {\n"
+    "        if (float(i) >= ns) break;\n"
+    "        float fi = (float(i) + 0.5) * invn;\n"
+    "        vec2 ndcOff = vec2(dir.x * ia, dir.y) * (uAORadius * fi * izt);\n"
+    "        vec2 suv = vUV + ndcOff * 0.5 * csuv;\n"
+    "        wsum += 1.0;\n"
+    "        if (suv.x >= 0.0 && suv.x <= 1.0 && suv.y >= 0.0 && suv.y <= 1.0) {\n"
+    "          vec2 scuv = canvasUV(suv);\n"
+    "          if (scuv.x >= 0.0 && scuv.x <= 1.0 && scuv.y >= 0.0 && scuv.y <= 1.0) {\n"
+    "            float sz = unpackZ(texture2D(uZD, suv));\n"
+    "            if (abs(sz - z) >= uAOBias) {\n"
+    "              vec3 d = viewPos(scuv, sz) - P;\n"
+    "              float dist = length(d);\n"
+    "              if (dist > 0.001 && dist < maxd) {\n"
+    "                float ndl = max(dot(N, d / dist), 0.0);\n"
+    "                float fall = 1.0 - dist / maxd;\n"
+    "                occ += ndl * fall * fall;\n"
+    "              }\n"
+    "            }\n"
+    "          }\n"
+    "        }\n"
+    "        if (uTrig < 0.5) {\n"
+    /* rotate by the golden angle with a matrix: no trig in the loop */
+    "          dir = vec2(dir.x * -0.7373689 - dir.y * 0.6754903,\n"
+    "                     dir.x * 0.6754903 + dir.y * -0.7373689);\n"
+    "        } else {\n"
+    "          float a2 = ang + float(i + 1) * 2.39996323;\n"
+    "          dir = vec2(cos(a2), sin(a2));\n"
+    "        }\n"
+    "      }\n"
+    "      float amount = clamp(occ / max(wsum, 1.0) * (uAOIntensity / 100.0) * 3.0,\n"
+    "                           0.0, 1.0);\n"
+    "      float ao = pow(1.0 - amount, max(uAOPower, 1.0) / 100.0);\n"
+    "      gl_FragColor = vec4(ao, packZ(z), 1.0);\n"
+    "    } else {\n"
+    "      gl_FragColor = vec4(1.0, packZ(z), 1.0);\n"
+    "    }\n"
+    "  } else if (uMode < 2.5) {\n"
+    /* ---- apply: depth-aware 4-tap upsample, fold into the colour ---- */
+    "    vec2 upstep = 1.0 / uLow;\n"
+    "    vec2 p = vUV * uLow - 0.5;\n"
+    "    vec2 f = p - floor(p);\n"
+    "    vec2 base = (floor(p) + 0.5) / uLow;\n"
+    "    float cz = 0.0;\n"
+    "    float bws = 0.0;\n"
+    "    for (int i = 0; i < 4; i++) {\n"
+    "      float ox = (i == 1 || i == 3) ? 1.0 : 0.0;\n"
+    "      float oy = (i >= 2) ? 1.0 : 0.0;\n"
+    "      vec2 suv = base + vec2(ox, oy) * upstep;\n"
+    "      float bw = mix(1.0 - f.x, f.x, ox) * mix(1.0 - f.y, f.y, oy);\n"
+    "      cz += bw * unpackZB(texture2D(uAO, suv));\n"
+    "      bws += bw;\n"
+    "    }\n"
+    "    cz = bws > 0.0001 ? cz / bws : uFar;\n"
+    "    float acc = 0.0;\n"
+    "    float ws = 0.0;\n"
+    "    for (int i = 0; i < 4; i++) {\n"
+    "      float ox = (i == 1 || i == 3) ? 1.0 : 0.0;\n"
+    "      float oy = (i >= 2) ? 1.0 : 0.0;\n"
+    "      vec2 suv = base + vec2(ox, oy) * upstep;\n"
+    "      vec4 t = texture2D(uAO, suv);\n"
+    "      float bw = mix(1.0 - f.x, f.x, ox) * mix(1.0 - f.y, f.y, oy);\n"
+    "      float w = bw * exp(-abs(unpackZB(t) - cz) * uUpSigma);\n"
+    "      acc += t.r * w;\n"
+    "      ws += w;\n"
+    "    }\n"
+    "    float ao = ws > 0.0001 ? acc / ws : 1.0;\n"
+    "    gl_FragColor = vec4(texture2D(uColor, vUV).rgb * ao, 1.0);\n"
+    "  } else {\n"
+    /* ---- apply: plain bilinear, for an A/B without the 4 taps ---- */
+    "    float ao = texture2D(uAO, vUV).r;\n"
+    "    gl_FragColor = vec4(texture2D(uColor, vUV).rgb * ao, 1.0);\n"
+    "  }\n"
+    "}\n";
+
+/* ---------------- Half-resolution AO targets (fx 390-396) ---------------- */
+static GLuint s_ao_prog = 0;
+static int    s_ao_prog_state = 0;       // 0 = untried, 1 = ok, -1 = failed
+static GLint  s_ao_apos = -1, s_ao_auv = -1;
+static struct {
+    GLint depth, zd, ao, color;
+    GLint res, low, texel, canvas;
+    GLint nearv, farv, tanhalf, aspect, shear, toe, flipy, normalflip;
+    GLint mode, radius, samples, bias, power, intensity;
+    GLint frame, jitter, sky, trig, upsigma;
+} s_ao_u;
+static GLuint s_ao_zdfbo[2] = {0, 0};    // low-res packed z + oct normal
+static GLuint s_ao_zd[2] = {0, 0};
+static GLuint s_ao_fbo[2] = {0, 0};      // low-res ao + packed z
+static GLuint s_ao_tex[2] = {0, 0};
+static GLuint s_ao_ofbo[2] = {0, 0};     // full-res colour with AO folded in
+static GLuint s_ao_otex[2] = {0, 0};
+static int    s_ao_w = 0, s_ao_h = 0, s_ao_div = 0;
+static int    s_ao_valid[2] = {0, 0};    // ofbo holds this frame's AO colour
+
+/* ---------------- Half-resolution AO prepass (fx 390-396) ----------------
+ * Three passes per eye over the eye depth/colour fields, at 1/div resolution
+ * for the two that cost anything:
+ *
+ *   0 prepass  full-res depth  -> low-res (packed linear z, octahedral normal)
+ *   1 gather   low-res taps    -> low-res (ao, packed linear z)
+ *   2/3 apply  low-res ao      -> full-res scene colour * ao
+ *
+ * s_ao_valid[eye] means s_ao_otex[eye] holds this frame's AO'd colour, which
+ * the FX pass (or the composite, when AO is the only effect) reads instead of
+ * the raw scene colour.  Every stage is skipped when s_fx_ao_probe asks for a
+ * shorter chain, which is how the stage cost is measured from the dials.
+ */
+static int ao_ensure_program(void) {
+    if (s_ao_prog_state != 0) return s_ao_prog_state == 1;
+    GLuint vs = compile_shader_checked(GL_VERTEX_SHADER, s_ao_vs, "ao vertex");
+    GLuint fs = compile_shader_checked(GL_FRAGMENT_SHADER, s_ao_fs, "ao fragment");
+    if (!vs || !fs) {
+        if (vs) glDeleteShader(vs);
+        if (fs) glDeleteShader(fs);
+        s_ao_prog_state = -1;
+        return 0;
+    }
+    s_ao_prog = glCreateProgram();
+    glAttachShader(s_ao_prog, vs);
+    glAttachShader(s_ao_prog, fs);
+    glLinkProgram(s_ao_prog);
+    GLint ok = 0;
+    glGetProgramiv(s_ao_prog, GL_LINK_STATUS, &ok);
+    glDeleteShader(vs);
+    glDeleteShader(fs);
+    if (!ok) {
+        glDeleteProgram(s_ao_prog);
+        s_ao_prog = 0;
+        s_ao_prog_state = -1;
+        return 0;
+    }
+    s_ao_apos = glGetAttribLocation(s_ao_prog, "aPos");
+    s_ao_auv = glGetAttribLocation(s_ao_prog, "aUV");
+    s_ao_u.depth = glGetUniformLocation(s_ao_prog, "uDepth");
+    s_ao_u.zd = glGetUniformLocation(s_ao_prog, "uZD");
+    s_ao_u.ao = glGetUniformLocation(s_ao_prog, "uAO");
+    s_ao_u.color = glGetUniformLocation(s_ao_prog, "uColor");
+    s_ao_u.res = glGetUniformLocation(s_ao_prog, "uRes");
+    s_ao_u.low = glGetUniformLocation(s_ao_prog, "uLow");
+    s_ao_u.texel = glGetUniformLocation(s_ao_prog, "uTexel");
+    s_ao_u.canvas = glGetUniformLocation(s_ao_prog, "uCanvas");
+    s_ao_u.nearv = glGetUniformLocation(s_ao_prog, "uNear");
+    s_ao_u.farv = glGetUniformLocation(s_ao_prog, "uFar");
+    s_ao_u.tanhalf = glGetUniformLocation(s_ao_prog, "uTanHalf");
+    s_ao_u.aspect = glGetUniformLocation(s_ao_prog, "uAspect");
+    s_ao_u.shear = glGetUniformLocation(s_ao_prog, "uShear");
+    s_ao_u.toe = glGetUniformLocation(s_ao_prog, "uToe");
+    s_ao_u.flipy = glGetUniformLocation(s_ao_prog, "uFlipY");
+    s_ao_u.normalflip = glGetUniformLocation(s_ao_prog, "uNormalFlip");
+    s_ao_u.mode = glGetUniformLocation(s_ao_prog, "uMode");
+    s_ao_u.radius = glGetUniformLocation(s_ao_prog, "uAORadius");
+    s_ao_u.samples = glGetUniformLocation(s_ao_prog, "uAOSamples");
+    s_ao_u.bias = glGetUniformLocation(s_ao_prog, "uAOBias");
+    s_ao_u.power = glGetUniformLocation(s_ao_prog, "uAOPower");
+    s_ao_u.intensity = glGetUniformLocation(s_ao_prog, "uAOIntensity");
+    s_ao_u.frame = glGetUniformLocation(s_ao_prog, "uFrame");
+    s_ao_u.jitter = glGetUniformLocation(s_ao_prog, "uJitter");
+    s_ao_u.sky = glGetUniformLocation(s_ao_prog, "uSky");
+    s_ao_u.trig = glGetUniformLocation(s_ao_prog, "uTrig");
+    s_ao_u.upsigma = glGetUniformLocation(s_ao_prog, "uUpSigma");
+    s_ao_prog_state = 1;
+    __android_log_print(ANDROID_LOG_INFO, "SM64FX",
+            "half-res AO program ready (%u)", s_ao_prog);
+    return 1;
+}
+
+static void stereo_ensure_ao(int div) {
+    int w = s_eye_w / div;
+    int h = s_eye_h / div;
+    if (w < 1) w = 1;
+    if (h < 1) h = 1;
+    if (w == s_ao_w && h == s_ao_h && s_ao_div == div && s_ao_fbo[0] != 0) return;
+    for (int i = 0; i < 2; i++) {
+        if (s_ao_zdfbo[i]) glDeleteFramebuffers(1, &s_ao_zdfbo[i]);
+        if (s_ao_zd[i]) glDeleteTextures(1, &s_ao_zd[i]);
+        glGenTextures(1, &s_ao_zd[i]);
+        glBindTexture(GL_TEXTURE_2D, s_ao_zd[i]);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA,
+                     GL_UNSIGNED_BYTE, NULL);
+        /* Packed z: never blend it, the fixed-point halves do not interpolate. */
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glGenFramebuffers(1, &s_ao_zdfbo[i]);
+        glBindFramebuffer(GL_FRAMEBUFFER, s_ao_zdfbo[i]);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                               GL_TEXTURE_2D, s_ao_zd[i], 0);
+
+        if (s_ao_fbo[i]) glDeleteFramebuffers(1, &s_ao_fbo[i]);
+        if (s_ao_tex[i]) glDeleteTextures(1, &s_ao_tex[i]);
+        glGenTextures(1, &s_ao_tex[i]);
+        glBindTexture(GL_TEXTURE_2D, s_ao_tex[i]);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA,
+                     GL_UNSIGNED_BYTE, NULL);
+        /* LINEAR so the uAO 1-tap apply mode gets hardware bilinear. */
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glGenFramebuffers(1, &s_ao_fbo[i]);
+        glBindFramebuffer(GL_FRAMEBUFFER, s_ao_fbo[i]);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                               GL_TEXTURE_2D, s_ao_tex[i], 0);
+
+        if (s_ao_ofbo[i]) glDeleteFramebuffers(1, &s_ao_ofbo[i]);
+        if (s_ao_otex[i]) glDeleteTextures(1, &s_ao_otex[i]);
+        glGenTextures(1, &s_ao_otex[i]);
+        glBindTexture(GL_TEXTURE_2D, s_ao_otex[i]);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, s_eye_w, s_eye_h, 0, GL_RGB,
+                     GL_UNSIGNED_BYTE, NULL);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glGenFramebuffers(1, &s_ao_ofbo[i]);
+        glBindFramebuffer(GL_FRAMEBUFFER, s_ao_ofbo[i]);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                               GL_TEXTURE_2D, s_ao_otex[i], 0);
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    s_ao_w = w;
+    s_ao_h = h;
+    s_ao_div = div;
+    __android_log_print(ANDROID_LOG_INFO, "SM64FX",
+            "AO fbo eye0 zd=%u ao=%u out=%u %dx%d div=%d (eye %dx%d)",
+            s_ao_zd[0], s_ao_tex[0], s_ao_otex[0], w, h, div, s_eye_w, s_eye_h);
+}
+
+static void stereo_ao_prepass(int div) {
+    s_ao_valid[0] = s_ao_valid[1] = 0;
+    stereo_ensure_ao(div);
+    if (!ao_ensure_program()) return;
+
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
+    glDisable(GL_SCISSOR_TEST);
+    glUseProgram(s_ao_prog);
+
+    static const float quad[] = {
+        -1.0f, -1.0f, 0.0f, 0.0f,
+         1.0f, -1.0f, 1.0f, 0.0f,
+        -1.0f,  1.0f, 0.0f, 1.0f,
+         1.0f,  1.0f, 1.0f, 1.0f,
+    };
+    if (!s_comp_vbo) glGenBuffers(1, &s_comp_vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, s_comp_vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(quad), quad, GL_STREAM_DRAW);
+    glEnableVertexAttribArray(s_ao_apos);
+    glVertexAttribPointer(s_ao_apos, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float),
+                          (void *)0);
+    glEnableVertexAttribArray(s_ao_auv);
+    glVertexAttribPointer(s_ao_auv, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float),
+                          (void *)(2 * sizeof(float)));
+
+    glUniform1i(s_ao_u.depth, 0);
+    glUniform1i(s_ao_u.zd, 1);
+    glUniform1i(s_ao_u.ao, 2);
+    glUniform1i(s_ao_u.color, 3);
+    glUniform2f(s_ao_u.res, (float)s_eye_w, (float)s_eye_h);
+    glUniform2f(s_ao_u.low, (float)s_ao_w, (float)s_ao_h);
+    glUniform2f(s_ao_u.texel, 1.0f / (float)(s_eye_w ? s_eye_w : 1),
+                1.0f / (float)(s_eye_h ? s_eye_h : 1));
+    glUniform4f(s_ao_u.canvas, (float)s_canvas_x, (float)s_canvas_y,
+                (float)s_canvas_w, (float)s_canvas_h);
+    glUniform1f(s_ao_u.nearv, gfx_cam_near);
+    glUniform1f(s_ao_u.farv, gfx_cam_far);
+    glUniform1f(s_ao_u.tanhalf, gfx_cam_tan_half_fov_y);
+    glUniform1f(s_ao_u.aspect, (float)s_canvas_w / (float)(s_canvas_h ? s_canvas_h : 1));
+    glUniform1f(s_ao_u.normalflip, (float)s_fx_normal_flip);
+    glUniform1f(s_ao_u.radius, (float)s_fx_ao_radius);
+    glUniform1f(s_ao_u.samples, (float)s_fx_ao_samples);
+    glUniform1f(s_ao_u.bias, (float)s_fx_ao_bias);
+    glUniform1f(s_ao_u.power, (float)s_fx_ao_power);
+    glUniform1f(s_ao_u.intensity, (float)s_fx_ao_intensity);
+    glUniform1f(s_ao_u.frame, (float)(frame_count & 1023));
+    glUniform1f(s_ao_u.jitter, s_fx_ao_jitter ? 1.0f : 0.0f);
+    glUniform1f(s_ao_u.sky, s_fx_ao_sky ? 1.0f : 0.0f);
+    glUniform1f(s_ao_u.trig, s_fx_ao_trig ? 1.0f : 0.0f);
+    /* Same edge stop the denoiser upsample uses: taps are only `div` screen
+     * pixels from the centre, so the tolerance is divided by div. */
+    glUniform1f(s_ao_u.upsigma, 0.25f / (float)div);
+
+    for (int eye = 0; eye < 2; eye++) {
+        if (gfx_single_eye >= 0 && eye != gfx_single_eye) continue;
+
+        glViewport(0, 0, s_ao_w, s_ao_h);
+        glUniform1f(s_ao_u.shear, gfx_eye_shear[eye]);
+        glUniform1f(s_ao_u.toe, gfx_eye_toe[eye]);
+        glUniform1f(s_ao_u.flipy, gfx_eye_flip[eye] ? 1.0f : 0.0f);
+
+        /* 1. depth + normal -> low-res packed field */
+        glBindFramebuffer(GL_FRAMEBUFFER, s_ao_zdfbo[eye]);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, s_eye_depth[eye]);
+        glUniform1f(s_ao_u.mode, 0.0f);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        if (s_fx_ao_probe == 1) continue;
+
+        /* 2. the gather, reading only the low-res field */
+        glBindFramebuffer(GL_FRAMEBUFFER, s_ao_fbo[eye]);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, s_ao_zd[eye]);
+        /* Never leave this eye's own gather target bound to a sampler. */
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glUniform1f(s_ao_u.mode, 1.0f);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        if (s_fx_ao_probe == 2) continue;
+
+        /* 3. upsample + multiply into the full-res colour */
+        int apply = s_fx_ao_up ? 3 : 2;
+        glBindFramebuffer(GL_FRAMEBUFFER, s_ao_ofbo[eye]);
+        glViewport(0, 0, s_eye_w, s_eye_h);
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, s_ao_tex[eye]);
+        glActiveTexture(GL_TEXTURE3);
+        glBindTexture(GL_TEXTURE_2D,
+                      s_dof_valid[eye] ? s_dof_result[eye]
+                      : (s_dn_valid[eye] ? s_dn_result[eye]
+                                         : s_eye_tex[eye]));
+        glUniform1f(s_ao_u.mode, (float)apply);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        s_ao_valid[eye] = 1;
+    }
+
+    glDisableVertexAttribArray(s_ao_apos);
+    glDisableVertexAttribArray(s_ao_auv);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glUseProgram(0);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, 0);
+}
+
 /* ---------------- Emissive materials + bloom ----------------
  * Tagged draw batches (see GFX_OP_EMISSIVE_MARKER in gfx_pc.h) are copied at
  * draw time and re-drawn into a half-resolution per-eye EMISSIVE buffer. That
@@ -5522,6 +6044,9 @@ static void stereo_rays_prepass(void) {
 /* Runs the post pass for both eyes. Returns 1 if s_pp_tex is valid to composite. */
 
 static int stereo_fx_pass(void) {
+    /* Recomputed every frame: the composite reads s_ao_otex only when this
+     * frame's chain wrote it. */
+    s_ao_valid[0] = s_ao_valid[1] = 0;
     if (!stereo_fx_any()) return 0;
     if (!s_depth_tex_mode) {
         static int warned = 0;
@@ -5532,9 +6057,21 @@ static int stereo_fx_pass(void) {
         }
         return 0;
     }
-    stereo_fx_init();
-    if (s_fx_prog_state != 1) return 0;
-    stereo_ensure_pp(s_eye_w, s_eye_h);
+    /* AO path choice (fx 390).  The reduced-resolution chain cannot serve the
+     * AO debug view (it leaves no `ao` value in the FX shader) and SSRTX still
+     * wants the AO factor for its blend weight, so those two keep the full-res
+     * in-shader gather. */
+    int ao_on_eff = s_fx_ao_on && s_fx_ao_intensity > 0;
+    int ao_legacy = ao_on_eff && (s_fx_ao_path == 0 || s_fx_debug != 0
+                                  || s_fx_ssrtx_on);
+    int ao_chain = ao_on_eff && !ao_legacy;
+    int ao_only = ao_chain && !stereo_fx_other();
+
+    if (!ao_only) {
+        stereo_fx_init();
+        if (s_fx_prog_state != 1) return 0;
+        stereo_ensure_pp(s_eye_w, s_eye_h);
+    }
 
     /* Alternative path + denoiser at divisor > 1: the reduced-res chain runs
      * offscreen and its mixed result becomes the FX pass's scene colour.
@@ -5562,6 +6099,24 @@ static int stereo_fx_pass(void) {
         }
     } else {
         s_dof_valid[0] = s_dof_valid[1] = 0;
+    }
+
+    /* Reduced-resolution AO, after the denoise and C.DOF prepasses so it
+     * darkens their finished colour.  s_ao_otex[eye] then replaces the FX
+     * pass's uColor, and when AO is the only enabled effect the pass itself is
+     * skipped (the composite samples s_ao_otex directly). */
+    if (ao_chain) {
+        stereo_ao_prepass(s_fx_ao_div);
+        if (ao_only && (s_ao_valid[0] || s_ao_valid[1])) {
+            return 0;
+        }
+        if (ao_only) {
+            /* chain failed to build: fall back to the in-shader gather */
+            ao_chain = 0;
+            stereo_fx_init();
+            if (s_fx_prog_state != 1) return 0;
+            stereo_ensure_pp(s_eye_w, s_eye_h);
+        }
     }
 
     /* Crepuscular rays: quarter-res march + blur per eye.  Skipped entirely
@@ -5853,13 +6408,23 @@ static int stereo_fx_pass(void) {
         }
         glBindFramebuffer(GL_FRAMEBUFFER, s_pp_fbo[eye]);
         glViewport(0, 0, s_eye_w, s_eye_h);
+        /* Reduced-res AO already folded AO into the colour; in that case the
+         * in-shader gather must stay off.  If the chain did not produce this
+         * eye's buffer, fall back to the full-res gather. */
+        int ao_here = ao_chain && s_ao_valid[eye];
+        glUniform1f(s_fx_u.ao_on, ao_here ? 0.0f : (ao_on_eff ? 1.0f : 0.0f));
+        if (s_fx_u.ao_probe >= 0) {
+            glUniform1f(s_fx_u.ao_probe, ao_here ? 0.0f : (float)s_fx_ao_probe);
+        }
         glActiveTexture(GL_TEXTURE0);
         /* Reduced-res denoise: the prepass already wrote the mixed result;
          * hand it to the FX shader as the scene colour.  The DOF prepass runs
-         * on top of that and its finished colour replaces both. */
+         * on top of that and its finished colour replaces both; the AO apply
+         * runs on top of that in turn. */
         glBindTexture(GL_TEXTURE_2D,
-                      s_dof_valid[eye] ? s_dof_result[eye]
-                      : (s_dn_valid[eye] ? s_dn_result[eye] : s_eye_tex[eye]));
+                      ao_here ? s_ao_otex[eye]
+                      : (s_dof_valid[eye] ? s_dof_result[eye]
+                      : (s_dn_valid[eye] ? s_dn_result[eye] : s_eye_tex[eye])));
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, s_eye_depth[eye]);
         glUniform1f(s_fx_u.shear, gfx_eye_shear[eye]);
@@ -6159,7 +6724,8 @@ void gfx_opengl_stereo_composite(int w, int h, int full_w, int full_h, int has_u
                                  : (fx_ready
                                     ? (s_lut_out_valid[src] ? s_lut_out_tex[src]
                                                             : s_pp_tex[src])
-                                    : s_eye_tex[src]);
+                                    : (s_ao_valid[src] ? s_ao_otex[src]
+                                                       : s_eye_tex[src]));
         // GLOW debug view: show the emissive buffer (or the blurred bloom
         // buffer) on its own, so it is obvious the glow comes from world-space
         // geometry and not from a screen-space blur of the final image.

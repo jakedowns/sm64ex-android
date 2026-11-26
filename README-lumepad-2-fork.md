@@ -168,6 +168,7 @@ A per-eye post pass runs after the scene is rendered (options tabs **MXAO**,
 **C.DOF**, **SSGI**, **SSRTX**, **RAYS**):
 
 - **MXAO-style ambient occlusion** — intensity, radius, samples, bias, power.
+  Runs at half resolution by default (see below).
 - **Cinematic DOF** — focus, aperture, max blur, samples, CoC debug view.
   **AUTO FOCUS** (default on) keeps the focusing plane on Mario: distance to his
   centre minus his hitbox radius, i.e. the front of his body, so the plane sits
@@ -283,6 +284,42 @@ edge-local: thin streaks along silhouettes and surface junctions, plus the odd
 blotch on a flat surface next to a strongly coloured neighbour; flat areas and
 the amount of bleed are indistinguishable. Stills, raw tables and the stage
 breakdown: `/media/share/tmp/artifacts/sm64/ssgi-quarter/` (`RESULTS.md`).
+
+### MXAO at reduced resolution (MXAO tab, `ADVANCED`)
+
+The original MXAO was a full-res gather inside the big FX shader: per pixel a
+3-tap normal reconstruction, then 12 taps that each paid a `sin`/`cos`, a
+divide and a depth fetch, with no blur, no sky early-out, and no skip when the
+intensity was 0. It now runs as three small passes per eye at `scene_res/2`:
+
+1. **prepass** — one pass that reconstructs the view normal from the depth
+   buffer once and stores `(packed linear z, octahedral normal)` in RGBA8;
+2. **gather** — the spiral AO loop, reading only that low-res field, with the
+   tap offsets advanced by a rotation matrix instead of trigonometry;
+3. **apply** — a depth-aware 4-tap upsample in its own pass, multiplied into
+   the scene colour. The FX shader then needs no extra sampler and no AO code
+   at all (it cost ~30 ms to fold such an upsample into the big shader).
+
+The chain runs after the denoiser and the C.DOF prepass, so it darkens their
+finished colour (the legacy `dofColor * ao` order). When AO is the only enabled
+effect the big FX pass is skipped entirely: the composite samples the AO'd
+colour directly. The full-res in-shader gather is still there behind `390 0`,
+and is used automatically for the AO debug view and when SSRTX is on (the
+reflection blend wants the AO factor).
+
+| Control | Headless | Default | Effect |
+|---|---|---|---|
+| `AO PATH` | `390` | LOW RES | 0 = full-res in-shader, 1 = reduced-res chain |
+| `Low-res 1/n` | `391` | 2 | low-res divisor (2 = half, 4 = quarter) |
+| `Rotate per pixel` | `392` | 0 | 1 = static per-pixel IGN rotation (grain, +1.9-3.1 ms 3D), 0 = per-frame |
+| `Upsample` | `393` | 0 | 0 = 4-tap depth-aware, 1 = 1-tap bilinear |
+| `Sky skip` | `394` | 1 | skip the gather on far/sky pixels |
+| `Tap trig` | `395` | 0 | 0 = rotation matrix, 1 = per-tap `sin`/`cos` |
+| `Stage probe` | `396` | 0 | 1 = prepass only, 2 = stop before the apply |
+
+`cmd dump` reports `aop=path,div,samples,jitter,up,sky,probe`. `396` is a
+measurement probe: its rows keep the big FX pass alive as a fallback, so
+subtract the `floor` row, not `base`.
 
 ### Crepuscular rays (RAYS tab)
 
