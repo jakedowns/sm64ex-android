@@ -1922,6 +1922,13 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addFxSlider("Radius", 10, 500, 150, " u", 23);
         addFxSlider("Steps", 2, 12, 6, "", 24);
         addFxSlider("Rays", 2, 8, 4, "", 25);
+        // Reduced-resolution GI: 4 = quarter res (default), 1 = the original
+        // full-res in-shader loop for A/B.
+        addFxSlider("Resolution 1/", 1, 4, 4, "", 400);
+        addFxSlider("Blur", 0, 3, 1, "", 401);
+        addFxToggle("Roto jitter", 402, true);
+        addFxSlider("Sky skip", 0, 100, 95, " %", 404);
+        addFxToggle("Normal reject", 405, false);
 
         // --- SSRTX: screen-space ray-traced reflections ---
         beginTab();

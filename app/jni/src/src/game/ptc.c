@@ -5073,7 +5073,8 @@ void ptc_format_status(char *buf, int len) {
              "slowmo=%d,%d,%d rays=%d,%d,%d glow=%d,%d,%d,%d,%d occl=%d,%d,%d "
              "dof=%d,%d,%d,%d "
              "qd=%d,%d,%d lvl=%d sens=%d,%d,%d wr=%d,%d,%d,%d,%d,%.2f,%.2f "
-             "grade=%d,%d,%d,%d grp=%d,%d,%.1f,%.0f,%.0f,%.0f,%.0f camclip=%s",
+             "grade=%d,%d,%d,%d grp=%d,%d,%.1f,%.0f,%.0f,%.0f,%.0f camclip=%s "
+             "gi=%d,%d,%d,%d",
              gCurrLevelNum, gCurrAreaIndex, s_phase, s_testMode, s_testActive, s_failed, s_failReason,
              s_starCollected[0], s_starCollected[1], ptc_star_visible(), portal_count(), s_shotA, s_shotB, g_portal_debug,
              g_portal_view.active, g_portal_view.source, portal_view_enabled(),
@@ -5160,7 +5161,9 @@ void ptc_format_status(char *buf, int len) {
              gfx_opengl_ssfx_get(284), gfx_opengl_ssfx_get(285),
              gfx_opengl_ssfx_get(310), grpStatus, grpRayDeg, grpDist,
              grpHit[0], grpHit[1], grpHit[2],
-             custom_camera_ground_clip() ? "clip" : "collide");
+             custom_camera_ground_clip() ? "clip" : "collide",
+             gfx_opengl_ssfx_get(21), gfx_opengl_ssfx_get(400),
+             gfx_opengl_ssfx_get(401), gfx_opengl_ssfx_get(405));
 
     {
         size_t used = strlen(buf);

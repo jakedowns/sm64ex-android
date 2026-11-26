@@ -173,6 +173,8 @@ A per-eye post pass runs after the scene is rendered (options tabs **MXAO**,
   centre minus his hitbox radius, i.e. the front of his body, so the plane sits
   a little closer than his middle.
 - **SSGI-lite** — intensity, radius, steps, rays (screen-space colour bleed).
+  The gather runs at a quarter of the per-eye resolution with its own upsample
+  (below); `fx 400 1` restores the old full-resolution loop for A/B.
 - **SSRTX** — screen-space ray-traced reflections (ReShade SSR/SSRT-style):
   intensity, max ray distance, steps, rays, depth thickness, roughness cone,
   edge fade, and a reflection debug view. Opt-in (off by default) because it is
@@ -204,6 +206,83 @@ keys are `cmd fx` `70`–`77` (`70` enable, `71` intensity, `72` distance,
 SSRTX cost scales with `Steps × Rays × pixels × eyes`; at 200 % intensity and
 24 steps the 120 Hz cap dropped to ~56 fps in the castle grounds, so leave it
 off unless you want the effect and tune down from the defaults.
+
+### Reduced-resolution SSGI (SSGI tab, `fx` 400-405)
+
+The GI gather — a screen-space ray/tap loop that averages neighbour colour
+inside a world-space radius — is pure low-frequency colour bleed, so it does not
+need full-resolution pixels. It runs at `canvas_res/div` (default **1/4** of the
+per-eye canvas, i.e. 1/16 of the pixels) in its own chain, and a dedicated
+full-resolution pass adds it back:
+
+```
+downsample colour      -> low-res RGBA            (mode 0)
+linear z + view normal -> low-res packed z/normal (mode 1)
+rays x steps gather    -> low-res GI              (mode 2)
+edge-aware 3x3 blur    -> low-res GI (ping-pong)  (mode 3)
+bilateral upsample, added into the FX output      (mode 4)
+```
+
+Linear depth and the view-space normal are computed **once per low-res texel**,
+not per tap, and the tap offsets are derived in canvas UV from the same NDC
+offset the full-res loop used — so the radius stays a 150-unit **world** radius
+at every divisor, and only the number of pixels changes. A rotated-grid
+per-pixel offset plus a per-frame jitter (`402`) replaces the samples the
+resolution removes; the blur (`401`) smooths the low-res buffer before the
+upsample, which is edge-stopped by the full-resolution depth so background
+colour cannot bleed over a silhouette.
+
+The upsample is its own GL pass on purpose: adding a sampler to the big FX
+shader measured ~30 ms once already (see BACKLOG), which is exactly the pattern
+this chain copies from the denoiser.
+
+| Control | Effect |
+|---|---|
+| `Resolution 1/N` | divisor: 4 = quarter res (default), 2, 1 = today's full-res in-shader loop (A/B) |
+| `Blur` | edge-aware 3x3 passes over the low-res GI (0-3, default 1) |
+| `Roto jitter` | rotated-grid tap angles + per-frame jitter (default on) |
+| `Sky skip %` | pixels farther than this fraction of the far plane keep their own colour and skip every tap (default 95, 100 = off) |
+| `Normal reject` | reject taps whose surface faces away (kills silhouette bleed; default off for parity with the legacy look) |
+| `SHOW GI` | debug view; at divisor > 1 the low-res buffer is viewable with `fx 403` (1 GI, 2 depth, 3 normals) |
+
+Headless keys `400`-`405`, status field `gi=<on>,<div>,<blur>,<norm>`. With GI
+off, or with intensity `0`, no target is allocated and no pass runs — the FX
+pass itself is skipped, so the main path is untouched. At divisor 1 everything
+below is bypassed and the original full-res loop runs unchanged.
+
+Measured (PTC level 38, `ptc annex`, pacer off, per-eye canvas 1279×1534,
+`fps=` from `cmd dump`, median of 3; `floor` = the FX pass with no effect).
+Δ is over that floor, so it is the effect's own cost:
+
+| GI 6 steps × 4 rays | 2D ms | 3D ms | Δ 2D | Δ 3D |
+|---|---|---|---|---|
+| floor (FX pass, no effect) | 7.81 | 14.29 | — | — |
+| GI off, or GI at intensity 0 | 3.80 | 6.49 | FX pass skipped | FX pass skipped |
+| full-res loop (`400 1`, today) | **26.32** | **52.63** | +18.5 | +38.3 |
+| 1/2 res (`400 2`) | 27.03 | 52.63 | +19.2 | +38.3 |
+| **1/4 res (default)** | **11.90** | **23.26** | **+4.1** | **+9.0** |
+
+At 12 steps × 8 rays: 111.1 → 20.4 ms (2D) and 166.7 → 31.3 ms (3D). Quarter
+res removes 78 % of the GI cost in 2D and 77 % in 3D.
+
+**Half res is not a win on this GPU** (27.0 ms 2D, the same as the full-res
+loop): the gather's per-tap cost is 6.7× the 1/4-res figure for only 4× fewer
+pixels, which is what a working set that no longer fits the texture cache looks
+like (1/4 res ≈ 1 MB of colour+depth, 1/2 res ≈ 4 MB). The win only appears at
+1/4.
+
+Of the 4.1 ms a default quarter-res GI costs in 2D, **1.6 ms is the fixed
+chain** (two downsample passes + blur + the full-res upsample/composite; measured
+with `404 0`, which skips every tap) and 2.5 ms is the 24 taps. Per tap, 1/4 res
+is 7.4× cheaper than full res, not 16×.
+
+Quality, one fixed camera, mean |diff| /255 against today's full-res GI: **1/2
+res 2.6, 1/4 res 3.2** (7–8 % of pixels differ by more than 6/255; the GI
+contribution and the mean luminance are identical). The difference is
+edge-local: thin streaks along silhouettes and surface junctions, plus the odd
+blotch on a flat surface next to a strongly coloured neighbour; flat areas and
+the amount of bleed are indistinguishable. Stills, raw tables and the stage
+breakdown: `/media/share/tmp/artifacts/sm64/ssgi-quarter/` (`RESULTS.md`).
 
 ### Crepuscular rays (RAYS tab)
 

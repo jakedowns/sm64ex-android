@@ -134,6 +134,62 @@ full-res bilateral upsample as its own pass. Result is fed to the FX shader as
 unchanged. Still to do: automatic "no near field in frame" detection needs a
 CoC-max reduction plus a throttled 1×1 readback; only the forced dial exists.
 
+### Reduced-resolution SSGI (worktree `w3-ssgi-perf`, `fx` 400-405)
+SSGI was the most expensive effect measured (+30.7 ms in 3D at the default 6x4,
+142.9 ms at 12x8) for output that is pure low-frequency colour bleed with a
+150-unit radius, so the gather now runs at `canvas_res/div` (default 4) in its
+own chain and is added back by a dedicated full-res pass — the same shape as the
+denoiser (`s_dn_*`), because adding a sampler to the big FX shader cost ~30 ms
+once already.
+
+Chain, per eye: downsample colour -> gather the ray/tap loop at 1/16 the pixels
+-> edge-aware 3x3 blur there -> bilateral (depth-stopped) upsample that is added
+into the FX output with `GL_ONE/GL_ONE`. Linear depth and view-space normals are
+precomputed once per low-res texel, so taps never reconstruct them. Tap offsets
+are canvas-UV (derived from the same NDC offset), so the 150-unit world radius
+stays 150 units at every divisor; only the pixel count changes. Rotated-grid
+per-pixel offsets plus per-frame jitter replace the samples the resolution
+removes.
+
+Dials: `400` divisor (1 = today's full-res in-shader loop, for A/B), `401`
+low-res blur passes (default 1), `402` rotated-grid/temporal jitter, `403`
+low-res debug view (1 GI, 2 depth, 3 normals; adb only), `404` far/sky skip
+percent (default 95), `405` normal-aware tap reject. Status field
+`gi=<on>,<div>,<blur>,<norm>`; panel controls on the SSGI tab.
+
+GI with intensity 0 now costs nothing at all: `stereo_fx_any()` ignores GI when
+`22=0`, so the whole post pass is skipped.
+
+Measured (PTC level 38, `ptc annex`, pacer off, `fps=`, median of 3, Δ over the
+empty FX pass): 6 steps × 4 rays goes **26.32 → 11.90 ms in 2D** (+18.5 → +4.1)
+and **52.63 → 23.26 ms in 3D** (+38.3 → +9.0); 12 × 8 goes 111.1 → 20.4 ms (2D)
+and 166.7 → 31.3 ms (3D). Half res is *not* a win on this GPU (27.0 ms 2D,
+same as full res — the gather's working set stops fitting the texture cache),
+so 1/4 is the only useful divisor. Stage split at the default in 2D: 1.6 ms
+fixed (downsample + blur + upsample/composite) and 2.5 ms for the 24 taps;
+per tap 1/4 res is 7.4× cheaper than full res, not 16×. Quality against today's
+full res on one fixed camera: mean |diff| 2.6/255 at 1/2 and 3.2/255 at 1/4, and
+the residue is edge-local (silhouettes, surface junctions). Raw numbers, stills
+and `RESULTS.md`: `/media/share/tmp/artifacts/sm64/ssgi-quarter/`.
+
+Two traps found on the way, worth remembering: **Adreno rejects integer `%` in
+a fragment shader** ("supported in pack/unpack shaders only") and the failure is
+invisible from outside — the chain silently falls back to the legacy full-res
+loop, so every divisor measures identically until the compile log is read; and
+the **idle chase camera is not static** for stills (check `cam=` and take all
+rows in one settle window, with `s:41=0 s:42=0`).
+
+Remaining wins on this thread, in order:
+1. **Drop the normal prepass when it is not used.** Mode 1 exists only for
+   `405` (default off) and the `403 3` debug view, and it reads three full-res
+   depth texels per low-res texel — the cache-hostile third of the fixed cost.
+2. **Allow divisor 8.** The taps are 2.5 ms of the 4.1 ms default in 2D; at 1/8
+   that falls to ~0.6 ms and the 1.6 ms fixed chain dominates. One line.
+3. **Cheapen the full-res composite.** It is the biggest single piece of the
+   fixed cost: 4 depth fetches + a GI fetch per pixel per eye. Either sample the
+   GI bilinearly with one depth tap, or fold it into the existing bloom
+   upsample when both are on.
+
 ### Shipped this wave (merged 2026-11-25)
 Rays (`6c55b1e`), the reduced-res denoiser, slow-motion interpolation, the
 emissive/bloom/GLOW work, the occluded-Mario punch-through and the HFR held-object
@@ -363,6 +419,7 @@ keep a feature inside its block:
 | `350`-`359` | painting ripple presentation-time interpolation (taken) |
 | `360`-`369` | camera vs ground COLLIDE/CLIP (taken: `360` mode, `361`-`369` free) |
 | `370`-`379` | UI layout box + skybox fine-tune (taken: `370` scale X %, `371` scale Y %, `372` offset X %, `373` offset Y %; `374`-`379` free) |
+| `400`-`409` | reduced-resolution SSGI (taken: `400` divisor, `401` blur, `402` roto jitter, `403` debug view, `404` sky skip, `405` normal reject) |
 
 ## Known bugs and limits
 
@@ -431,6 +488,18 @@ keep a feature inside its block:
   attributed to the previous holder, and an `adb` shim refuses power verbs
   inside a device hold (exit 97, logged as `power_blocked`).
 
+- **Adreno's GLES2 compiler rejects integer `%` in a fragment shader**
+  (`ERROR: 0:126: '%' : supported in pack/unpack shaders only`, 2026-11-26).
+  Integer `/` happens to be accepted. The dangerous part is not the error but
+  the silence: a failed optional chain just falls back to its legacy path, so
+  every dial keeps reading back correctly while nothing changes. Spell 2-D
+  offsets out as comparisons, and make any measurement script abort if the
+  program did not build.
+- **The idle chase camera is not static.** Two screencaps 2 s apart on an idle
+  Mario shift by ~1 px, which is a mean |diff| of ~20/255 on a high-contrast
+  scene — more than the effect being compared. Take still rows in one settle
+  window, verify `cam=` (and `focus=`) are unchanged, and turn head
+  tracking/gyro off (`cmd set --ei k 41 --ei v 0`, `42 0`) for stills.
 - **`osGetTime()` is stubbed to `0` in this port.** Anything time-based must use
   `gfx_wall_time_sec()` (`gfx_sdl2.c`, SDL_GetTicks). The scripted camera orbits
   were frozen at phase 0 for weeks because of this (`c626ce1`).

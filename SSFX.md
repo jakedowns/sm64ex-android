@@ -31,7 +31,7 @@ The bottom panel now has four pages:
 | `STEREO` | all existing Leia/stereo knobs |
 | `MXAO` | enable, intensity %, radius (world units), samples, bias, power %, `SHOW AO` debug view |
 | `C.DOF` | enable, focus (world units), aperture %, max blur px, samples, `SHOW CoC` debug view |
-| `SSGI` | enable, intensity %, radius, steps, rays, `SHOW GI` debug view |
+| `SSGI` | enable, intensity %, radius, steps, rays, resolution divisor, blur, roto jitter, sky skip, normal reject, `SHOW GI` debug view |
 
 `RESET` restores every slider, including the FX pages.
 
@@ -50,6 +50,11 @@ FX knob keys (`cmd fx`):
 - AO: `1` enable, `2` intensity %, `3` radius, `4` samples, `5` bias, `6` power %
 - DOF: `11` enable, `12` focus, `13` aperture %, `14` max blur px, `15` samples
 - SSGI: `21` enable, `22` intensity %, `23` radius, `24` steps, `25` rays
+- SSGI resolution (the gather runs at canvas/div in its own chain, then a
+  dedicated upsample adds it back; see README "Reduced-resolution SSGI"):
+  `400` divisor (1 = old full-res loop, 2, 4 default), `401` low-res blur
+  passes, `402` rotated-grid/temporal jitter, `403` low-res debug view
+  (1 GI, 2 depth, 3 normals), `404` far/sky skip %, `405` normal-aware tap reject
 - SSRTX: `70` enable, `71` intensity %, `72` distance, `73` steps, `74` rays,
   `75` thickness, `76` roughness %, `77` edge fade %
 - Debug views: `31` (0 off, 1 AO, 2 CoC, 3 GI, 4 SSRTX), `32` invert normals

@@ -1026,6 +1026,18 @@ static int s_fx_gi_radius = 150;      // world units
 static int s_fx_gi_steps = 6;
 static int s_fx_gi_rays = 4;
 
+/* Reduced-resolution SSGI (fx 400-405).  The gather runs at canvas/div and a
+ * dedicated pass adds it back; div 1 keeps the original full-res in-shader
+ * loop as the A/B.  400 divisor, 401 low-res blur passes, 402 rotated-grid +
+ * per-frame jitter, 403 low-res debug view, 404 far/sky skip percent,
+ * 405 normal-aware tap reject. */
+static int s_fx_gi_div = 4;
+static int s_fx_gi_blur = 1;
+static int s_fx_gi_jitter = 1;
+static int s_fx_gi_debug = 0;
+static int s_fx_gi_skip = 95;
+static int s_fx_gi_norm = 0;
+
 /* ---------------- Tone mapping + colour grading (GRADE tab, fx 280-289) ---
  * Runs at the very end of the FX shader, after AO/DOF/shadow/GI/SSRTX/lights/
  * rays have been composited into `outc` and after the debug-view chain, so
@@ -1940,6 +1952,221 @@ static const char *s_dn_fs =
     "  }\n"
     "}\n";
 
+/* ---------------- Reduced-resolution SSGI prepass -----------------------
+ * The full-res in-shader GI loop costs 30.7 ms in 3D at 6x4 (findings/
+ * fx-sweep-11-25-26.md §4) for a low-frequency colour bleed with a 150-unit
+ * radius, so it runs here at canvas_res/div instead and is added back by its
+ * own full-res pass.  Same shape as the denoise chain above (and for the same
+ * reason: putting an extra sampler / the upsample into the big FX shader cost
+ * ~30 ms once already).
+ *
+ *   mode 0  downsample scene colour  -> low-res colour
+ *   mode 1  linear z + view normal   -> low-res packed z (.rg) + oct normal (.ba)
+ *   mode 2  the ray/tap gather       -> low-res GI colour
+ *   mode 3  depth-aware 3x3 blur     -> low-res GI colour (ping-pong)
+ *   mode 4  bilateral upsample, added into the FX output with GL_ONE/GL_ONE
+ *   mode 5  debug view of the low-res buffer (replace, no blend)
+ *
+ * All offsets inside mode 2 are in canvas UV, i.e. derived from the NDC offset
+ * the full-res path uses, so the 150-unit radius stays 150 world units at every
+ * divisor: only the number of pixels changes, not the footprint.  Modes 0/1/2/3
+ * run at 1/div^2 the pixels, so a rotated-grid + per-frame jitter offset and a
+ * blur pass buy back the sample count the resolution took away.
+ */
+static const char *s_gi_vs =
+    "attribute vec2 aPos; attribute vec2 aUV; varying vec2 vUV;\n"
+    "void main(){ vUV = aUV; gl_Position = vec4(aPos, 0.0, 1.0); }\n";
+
+static const char *s_gi_fs =
+    "precision highp float;\n"
+    "varying vec2 vUV;\n"
+    "uniform sampler2D uColor;\n"      /* full-res eye colour          (mode 0) */
+    "uniform sampler2D uDepth;\n"      /* full-res eye depth       (0,1,4,5) */
+    "uniform sampler2D uCol;\n"        /* low-res scene colour         (mode 2) */
+    "uniform sampler2D uDep;\n"        /* low-res packed z + normal (2,3,4,5) */
+    "uniform sampler2D uSrcG;\n"       /* low-res GI in                (mode 3) */
+    "uniform vec2 uRes;\n"             /* full-res eye size */
+    "uniform vec2 uLow;\n"             /* low-res canvas size */
+    "uniform vec4 uCanvas;\n"          /* canvas x,y,w,h in eye pixels */
+    "uniform float uNear;\n"
+    "uniform float uFar;\n"
+    "uniform float uTanHalf;\n"
+    "uniform float uAspect;\n"
+    "uniform float uMode;\n"
+    "uniform float uRadius;\n"
+    "uniform float uSteps;\n"
+    "uniform float uRays;\n"
+    "uniform float uJitter;\n"
+    "uniform float uFrame;\n"
+    "uniform float uSkip;\n"           /* far/sky early-out, percent of uFar */
+    "uniform float uNorm;\n"           /* normal-aware tap reject 0/1 */
+    "uniform float uFlipY;\n"
+    "uniform float uShear;\n"
+    "uniform float uToe;\n"
+    "uniform float uStep;\n"           /* blur step, low-res texels */
+    "uniform float uGain;\n"           /* composite gain (intensity * 0.6 / 100) */
+    "uniform float uDebug;\n"          /* 1 GI, 2 depth, 3 normals */
+    "float linZ(float d) {\n"
+    "  float z = d * 2.0 - 1.0;\n"
+    "  return (2.0 * uNear * uFar) / (uFar + uNear - z * (uFar - uNear));\n"
+    "}\n"
+    "vec2 packZ(float z) {\n"
+    "  float v = clamp(z / uFar, 0.0, 1.0) * 65025.0;\n"
+    "  float hi = floor(v / 255.0);\n"
+    "  float lo = v - hi * 255.0;\n"
+    "  return vec2(hi / 255.0, lo / 255.0);\n"
+    "}\n"
+    "float unpackZ(vec4 c) {\n"
+    "  return ((c.r * 255.0) * 255.0 + c.g * 255.0) / 65025.0 * uFar;\n"
+    "}\n"
+    "vec2 octEnc(vec3 n) {\n"
+    "  n /= max(abs(n.x) + abs(n.y) + abs(n.z), 1.0e-5);\n"
+    "  if (n.z < 0.0) n.xy = (1.0 - abs(n.yx)) * sign(n.xy + vec2(1.0e-6));\n"
+    "  return n.xy * 0.5 + 0.5;\n"
+    "}\n"
+    "vec3 octDec(vec2 e) {\n"
+    "  e = e * 2.0 - 1.0;\n"
+    "  vec3 n = vec3(e, 1.0 - abs(e.x) - abs(e.y));\n"
+    "  if (n.z < 0.0) n.xy = (1.0 - abs(n.yx)) * sign(n.xy + vec2(1.0e-6));\n"
+    "  return normalize(n);\n"
+    "}\n"
+    "float hash12(vec2 p) {\n"
+    "  return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);\n"
+    "}\n"
+    "vec3 viewPos(vec2 cuv, float z) {\n"
+    "  vec2 ndc = cuv * 2.0 - 1.0;\n"
+    "  float ndcz = (uFar + uNear - 2.0 * uNear * uFar / z) / (uFar - uNear);\n"
+    "  if (uFlipY > 0.5) ndc.y = -ndc.y;\n"
+    "  ndc.x -= uShear + uToe * ndcz;\n"
+    "  return vec3(ndc.x * z * uTanHalf * uAspect,\n"
+    "              ndc.y * z * uTanHalf, -z);\n"
+    "}\n"
+    "vec2 eyeUV(vec2 cuv) {\n"
+    "  return (cuv * uCanvas.zw + uCanvas.xy) / uRes;\n"
+    "}\n"
+    "vec2 canvasUV(vec2 euv) {\n"
+    "  return (euv * uRes - uCanvas.xy) / uCanvas.zw;\n"
+    "}\n"
+    "void main() {\n"
+    /* 0: the scene colour for the gather, at low res. */
+    "  if (uMode < 0.5) {\n"
+    "    gl_FragColor = vec4(texture2D(uColor, eyeUV(vUV)).rgb, 1.0);\n"
+    /* 1: linear depth + view-space normal, computed once per low-res texel so
+     *    the gather never reconstructs a normal per tap. */
+    "  } else if (uMode < 1.5) {\n"
+    "    float z = linZ(texture2D(uDepth, eyeUV(vUV)).r);\n"
+    "    vec2 duv = 1.0 / uLow;\n"
+    "    float zx = linZ(texture2D(uDepth, eyeUV(vUV + vec2(duv.x, 0.0))).r);\n"
+    "    float zy = linZ(texture2D(uDepth, eyeUV(vUV + vec2(0.0, duv.y))).r);\n"
+    "    vec3 P = viewPos(vUV, z);\n"
+    "    vec3 Px = viewPos(vUV + vec2(duv.x, 0.0), zx);\n"
+    "    vec3 Py = viewPos(vUV + vec2(0.0, duv.y), zy);\n"
+    "    vec3 N = normalize(cross(Px - P, Py - P));\n"
+    "    if (N.z < 0.0) N = -N;\n"
+    "    gl_FragColor = vec4(packZ(z), octEnc(N));\n"
+    /* 2: the gather. Same tap window and weights as the in-shader path; the
+     *    offsets are canvas-UV so the world radius is resolution independent. */
+    "  } else if (uMode < 2.5) {\n"
+    "    vec4 d0 = texture2D(uDep, vUV);\n"
+    "    float z = unpackZ(d0);\n"
+    "    vec3 selfc = texture2D(uCol, vUV).rgb;\n"
+    /* Sky/far: its neighbours are sky too, so the legacy path's result is the
+     * pixel's own colour.  Returning it keeps the look and skips the taps. */
+    "    if (z / uFar > uSkip / 100.0) { gl_FragColor = vec4(selfc, 1.0); return; }\n"
+    "    vec3 N = octDec(d0.ba);\n"
+    "    float nr = max(uRays, 1.0);\n"
+    "    float nst = max(uSteps, 1.0);\n"
+    "    float jit = uJitter > 0.5 ? hash12(vUV * uLow + vec2(uFrame * 1.37, uFrame * 2.11)) : 0.0;\n"
+    "    vec3 gi = vec3(0.0);\n"
+    "    float ws = 0.0;\n"
+    "    for (int r = 0; r < 8; r++) {\n"
+    "      if (float(r) >= nr) break;\n"
+    "      float ang = (float(r) + jit) / nr * 6.2831853;\n"
+    "      vec2 dir = vec2(cos(ang), sin(ang));\n"
+    "      for (int s = 1; s <= 12; s++) {\n"
+    "        if (float(s) > nst) break;\n"
+    "        float t = float(s) / nst;\n"
+    "        vec2 ndcOff = dir * (t * uRadius) / (z * uTanHalf);\n"
+    "        ndcOff.x /= uAspect;\n"
+    "        vec2 cuv = vUV + ndcOff * 0.5;\n"
+    "        if (cuv.x < 0.0 || cuv.x > 1.0 || cuv.y < 0.0 || cuv.y > 1.0) continue;\n"
+    "        vec4 ds = texture2D(uDep, cuv);\n"
+    "        float sz = unpackZ(ds);\n"
+    "        float diff = sz - z;\n"
+    "        if (diff > -uRadius * 0.5 && diff < uRadius * 2.0) {\n"
+    /* Opposite-facing surfaces are two sides of one silhouette; bleeding
+     * between them is the classic half-res GI artefact, so reject them. */
+    "          if (uNorm > 0.5 && dot(N, octDec(ds.ba)) < -0.2) continue;\n"
+    "          vec3 sc = texture2D(uCol, cuv).rgb;\n"
+    "          float dw = exp(-abs(diff) / (uRadius + 1.0));\n"
+    "          float tw = 1.0 - t;\n"
+    "          gi += sc * dw * tw;\n"
+    "          ws += dw * tw;\n"
+    "        }\n"
+    "      }\n"
+    "    }\n"
+    "    gl_FragColor = vec4(ws > 0.0 ? gi / ws : vec3(0.0), 1.0);\n"
+    /* 3: edge-aware 3x3 blur over the low-res GI buffer. */
+    "  } else if (uMode < 3.5) {\n"
+    "    float z = unpackZ(texture2D(uDep, vUV));\n"
+    "    vec3 acc = texture2D(uSrcG, vUV).rgb;\n"
+    "    float wsum = 1.0;\n"
+    "    for (int k = 0; k < 9; k++) {\n"
+    "      if (k == 4) continue;\n"
+    /* GLES2 forbids integer '%' outside pack/unpack shaders on this driver
+     * ("ERROR: '%' : supported in pack/unpack shaders only"), so the 3x3
+     * offsets are spelled out instead of k%3 / k/3. */
+    "      int dx = (k == 2 || k == 5 || k == 8) ? 1\n"
+    "             : ((k == 0 || k == 3 || k == 6) ? -1 : 0);\n"
+    "      int dy = (k >= 6) ? 1 : ((k <= 2) ? -1 : 0);\n"
+    "      vec2 cuv = vUV + vec2(float(dx), float(dy)) * uStep / uLow;\n"
+    "      if (cuv.x < 0.0 || cuv.x > 1.0 || cuv.y < 0.0 || cuv.y > 1.0) continue;\n"
+    "      float sz = unpackZ(texture2D(uDep, cuv));\n"
+    "      float w = exp(-abs(sz - z) * (1.5 / max(uRadius, 1.0)));\n"
+    "      acc += texture2D(uSrcG, cuv).rgb * w;\n"
+    "      wsum += w;\n"
+    "    }\n"
+    "    gl_FragColor = vec4(acc / wsum, 1.0);\n"
+    /* 4: bilateral upsample, drawn into the FX output with additive blending.
+     *    The full-res depth is the edge stop, so a low-res texel from the
+     *    background cannot bleed across a silhouette. */
+    "  } else if (uMode < 4.5) {\n"
+    "    vec2 cuv = canvasUV(vUV);\n"
+    "    if (cuv.x < 0.0 || cuv.x > 1.0 || cuv.y < 0.0 || cuv.y > 1.0) {\n"
+    "      gl_FragColor = vec4(0.0);\n"
+    "      return;\n"
+    "    }\n"
+    "    float z = linZ(texture2D(uDepth, vUV).r);\n"
+    "    vec2 base = cuv * uLow - 0.5;\n"
+    "    vec2 f = base - floor(base);\n"
+    "    vec2 i0 = floor(base);\n"
+    "    vec3 acc = vec3(0.0);\n"
+    "    float wsum = 0.0;\n"
+    "    float sig = 2.0 / max(uRadius, 1.0);\n"
+    "    for (int k = 0; k < 4; k++) {\n"
+    "      float ox = (k == 1 || k == 3) ? 1.0 : 0.0;\n"
+    "      float oy = (k >= 2) ? 1.0 : 0.0;\n"
+    "      vec2 tc = clamp((i0 + vec2(ox, oy) + 0.5) / uLow, vec2(0.0), vec2(1.0));\n"
+    "      float sz = unpackZ(texture2D(uDep, tc));\n"
+    "      vec3 sc = texture2D(uSrcG, tc).rgb;\n"
+    "      float bw = mix(1.0 - f.x, f.x, ox) * mix(1.0 - f.y, f.y, oy);\n"
+    "      float w = bw * exp(-abs(sz - z) * sig);\n"
+    "      acc += sc * w;\n"
+    "      wsum += w;\n"
+    "    }\n"
+    "    gl_FragColor = vec4(wsum > 0.0001 ? acc / wsum * uGain : vec3(0.0), 1.0);\n"
+    /* 5: debug view of the low-res buffers (replace, gain applied). */
+    "  } else {\n"
+    "    vec2 cuv = clamp(canvasUV(vUV), vec2(0.0), vec2(1.0));\n"
+    "    vec4 d = texture2D(uDep, cuv);\n"
+    "    vec3 c;\n"
+    "    if (uDebug < 1.5) c = texture2D(uSrcG, cuv).rgb * 3.0;\n"
+    "    else if (uDebug < 2.5) c = vec3(unpackZ(d) / uFar);\n"
+    "    else c = octDec(d.ba) * 0.5 + 0.5;\n"
+    "    gl_FragColor = vec4(c, 1.0);\n"
+    "  }\n"
+    "}\n";
+
 /* ---------------- Crepuscular rays (screen-space light shafts) -----------
  * Quarter-resolution, per eye, additive.  Runs as its own small program
  * before the FX pass and hands the FX shader a blurred visibility buffer:
@@ -2057,6 +2284,26 @@ static GLuint s_ray_result[2] = {0, 0};   // per-eye texture for the FX pass
 static int    s_ray_valid[2] = {0, 0};
 static float  s_ray_lightuv[2][2] = {{0.5f, 0.5f}, {0.5f, 0.5f}};
 
+/* Reduced-resolution SSGI targets: [eye][0 = low colour, 1 = packed z+normal,
+ * 2/3 = GI ping-pong].  Sized in canvas pixels / div, never allocated when the
+ * chain is off. */
+static GLuint s_gi_prog = 0;
+static int    s_gi_prog_state = 0;    // 0 = untried, 1 = ok, -1 = failed
+static GLint  s_gi_apos = -1, s_gi_auv = -1;
+static struct {
+    GLint color, depth, col, dep, srcg;
+    GLint res, low, canvas, nearv, farv, tanhalf, aspect;
+    GLint mode, radius, steps, rays, jitter, frame, skip, norm;
+    GLint flipy, shear, toe, step, gain, debug;
+} s_gi_u;
+static GLuint s_gi_fbo[2][4] = {{0, 0, 0, 0}, {0, 0, 0, 0}};
+static GLuint s_gi_tex[2][4] = {{0, 0, 0, 0}, {0, 0, 0, 0}};
+static int    s_gi_w = 0, s_gi_h = 0, s_gi_div = 0;
+static int    s_gi_src[2] = {0, 0};   // last blur stage per eye
+static int    s_gi_valid[2] = {0, 0};
+
+
+
 static GLuint s_dn_prog = 0;
 static int    s_dn_prog_state = 0;   // 0 = untried, 1 = ok, -1 = failed
 static GLint  s_dn_apos = -1, s_dn_auv = -1;
@@ -2140,7 +2387,9 @@ static GLint  s_lut_u_tex = -1, s_lut_u_lut = -1, s_lut_u_slices = -1;
 static GLint  s_lut_u_h = -1, s_lut_u_strength = -1;
 
 static int stereo_fx_any(void) {
-    return s_fx_ao_on || s_fx_dof_on || s_fx_gi_on || s_fx_debug != 0
+    /* GI with intensity 0 adds nothing, so it must not run the pass either. */
+    return s_fx_ao_on || s_fx_dof_on || (s_fx_gi_on && s_fx_gi_intensity > 0)
+        || s_fx_debug != 0
         || (gfx_shadow_enabled && s_shadow_map_valid)
         || s_fx_ssrtx_on || s_fx_mb_on || s_light_count > 0 || s_probe_vis
         || s_glow_on            /* bloom needs the FX pass output as its base */
@@ -2175,6 +2424,13 @@ void gfx_opengl_ssfx_set(int which, int value) {
         case 23: s_fx_gi_radius = value < 1 ? 1 : value; break;
         case 24: s_fx_gi_steps = value < 1 ? 1 : (value > 12 ? 12 : value); break;
         case 25: s_fx_gi_rays = value < 1 ? 1 : (value > 8 ? 8 : value); break;
+        /* Reduced-resolution SSGI (see the GI prepass below). */
+        case 400: s_fx_gi_div = value < 1 ? 1 : (value > 4 ? 4 : value); break;
+        case 401: s_fx_gi_blur = value < 0 ? 0 : (value > 3 ? 3 : value); break;
+        case 402: s_fx_gi_jitter = value ? 1 : 0; break;
+        case 403: s_fx_gi_debug = value < 0 ? 0 : (value > 3 ? 3 : value); break;
+        case 404: s_fx_gi_skip = value < 0 ? 0 : (value > 100 ? 100 : value); break;
+        case 405: s_fx_gi_norm = value ? 1 : 0; break;
         case 31: s_fx_debug = value < 0 ? 0 : (value > 9 ? 9 : value); break;
         case 32: s_fx_normal_flip = value ? 1 : 0; break;
         /* Skybox fine-tune (fx 370-373): stored here so `cmd fx` and the panel
@@ -2449,6 +2705,12 @@ int gfx_opengl_ssfx_get(int which) {
         case 23: return s_fx_gi_radius;
         case 24: return s_fx_gi_steps;
         case 25: return s_fx_gi_rays;
+        case 400: return s_fx_gi_div;
+        case 401: return s_fx_gi_blur;
+        case 402: return s_fx_gi_jitter;
+        case 403: return s_fx_gi_debug;
+        case 404: return s_fx_gi_skip;
+        case 405: return s_fx_gi_norm;
         case 31: return s_fx_debug;
         case 32: return s_fx_normal_flip;
         case 370: return (int) (gfx_sky_scale_x * 100.0f + 0.5f);
@@ -4306,6 +4568,278 @@ static int stereo_dof_prepass(int div) {
     return (s_dof_valid[0] || s_dof_valid[1]) ? 1 : 0;
 }
 
+/* ---- Reduced-resolution SSGI passes (shader + dials above) ----
+ * Prep: colour + packed z/normal at 1/div, gather, optional blur.
+ * Composite: full-res bilateral upsample added into the FX output.
+ * Nothing is allocated until the chain is actually used. */
+static int gi_ensure_program(void) {
+    if (s_gi_prog_state != 0) return s_gi_prog_state == 1;
+    GLuint vs = compile_shader_checked(GL_VERTEX_SHADER, s_gi_vs, "gi vertex");
+    GLuint fs = compile_shader_checked(GL_FRAGMENT_SHADER, s_gi_fs, "gi fragment");
+    if (!vs || !fs) {
+        s_gi_prog_state = -1;
+        return 0;
+    }
+    s_gi_prog = glCreateProgram();
+    glAttachShader(s_gi_prog, vs);
+    glAttachShader(s_gi_prog, fs);
+    glLinkProgram(s_gi_prog);
+    GLint ok = 0;
+    glGetProgramiv(s_gi_prog, GL_LINK_STATUS, &ok);
+    glDeleteShader(vs);
+    glDeleteShader(fs);
+    if (!ok) {
+        char log[512] = {0};
+        glGetProgramInfoLog(s_gi_prog, sizeof(log), NULL, log);
+        __android_log_print(ANDROID_LOG_ERROR, "SM64FX", "gi link: %s", log);
+        glDeleteProgram(s_gi_prog);
+        s_gi_prog = 0;
+        s_gi_prog_state = -1;
+        return 0;
+    }
+    s_gi_apos = glGetAttribLocation(s_gi_prog, "aPos");
+    s_gi_auv = glGetAttribLocation(s_gi_prog, "aUV");
+    s_gi_u.color = glGetUniformLocation(s_gi_prog, "uColor");
+    s_gi_u.depth = glGetUniformLocation(s_gi_prog, "uDepth");
+    s_gi_u.col = glGetUniformLocation(s_gi_prog, "uCol");
+    s_gi_u.dep = glGetUniformLocation(s_gi_prog, "uDep");
+    s_gi_u.srcg = glGetUniformLocation(s_gi_prog, "uSrcG");
+    s_gi_u.res = glGetUniformLocation(s_gi_prog, "uRes");
+    s_gi_u.low = glGetUniformLocation(s_gi_prog, "uLow");
+    s_gi_u.canvas = glGetUniformLocation(s_gi_prog, "uCanvas");
+    s_gi_u.nearv = glGetUniformLocation(s_gi_prog, "uNear");
+    s_gi_u.farv = glGetUniformLocation(s_gi_prog, "uFar");
+    s_gi_u.tanhalf = glGetUniformLocation(s_gi_prog, "uTanHalf");
+    s_gi_u.aspect = glGetUniformLocation(s_gi_prog, "uAspect");
+    s_gi_u.mode = glGetUniformLocation(s_gi_prog, "uMode");
+    s_gi_u.radius = glGetUniformLocation(s_gi_prog, "uRadius");
+    s_gi_u.steps = glGetUniformLocation(s_gi_prog, "uSteps");
+    s_gi_u.rays = glGetUniformLocation(s_gi_prog, "uRays");
+    s_gi_u.jitter = glGetUniformLocation(s_gi_prog, "uJitter");
+    s_gi_u.frame = glGetUniformLocation(s_gi_prog, "uFrame");
+    s_gi_u.skip = glGetUniformLocation(s_gi_prog, "uSkip");
+    s_gi_u.norm = glGetUniformLocation(s_gi_prog, "uNorm");
+    s_gi_u.flipy = glGetUniformLocation(s_gi_prog, "uFlipY");
+    s_gi_u.shear = glGetUniformLocation(s_gi_prog, "uShear");
+    s_gi_u.toe = glGetUniformLocation(s_gi_prog, "uToe");
+    s_gi_u.step = glGetUniformLocation(s_gi_prog, "uStep");
+    s_gi_u.gain = glGetUniformLocation(s_gi_prog, "uGain");
+    s_gi_u.debug = glGetUniformLocation(s_gi_prog, "uDebug");
+    s_gi_prog_state = 1;
+    __android_log_print(ANDROID_LOG_INFO, "SM64FX", "gi program ready (%u)", s_gi_prog);
+    return 1;
+}
+
+static void stereo_ensure_gi(int div) {
+    int cw = s_canvas_w > 0 ? s_canvas_w : s_eye_w;
+    int ch = s_canvas_h > 0 ? s_canvas_h : s_eye_h;
+    int w = cw / div;
+    int h = ch / div;
+    if (w < 8) w = 8;
+    if (h < 8) h = 8;
+    if (w == s_gi_w && h == s_gi_h && div == s_gi_div && s_gi_fbo[0][0] != 0) return;
+    for (int eye = 0; eye < 2; eye++) {
+        for (int k = 0; k < 4; k++) {
+            if (s_gi_fbo[eye][k]) glDeleteFramebuffers(1, &s_gi_fbo[eye][k]);
+            if (s_gi_tex[eye][k]) glDeleteTextures(1, &s_gi_tex[eye][k]);
+            glGenTextures(1, &s_gi_tex[eye][k]);
+            glBindTexture(GL_TEXTURE_2D, s_gi_tex[eye][k]);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA,
+                         GL_UNSIGNED_BYTE, NULL);
+            /* Low-res colour is sampled bilinearly by the gather; packed
+             * depth/normal and the GI result must stay unfiltered. */
+            GLint filt = k == 0 ? GL_LINEAR : GL_NEAREST;
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filt);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filt);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glGenFramebuffers(1, &s_gi_fbo[eye][k]);
+            glBindFramebuffer(GL_FRAMEBUFFER, s_gi_fbo[eye][k]);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                   GL_TEXTURE_2D, s_gi_tex[eye][k], 0);
+        }
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    s_gi_w = w;
+    s_gi_h = h;
+    s_gi_div = div;
+    __android_log_print(ANDROID_LOG_INFO, "SM64FX",
+            "GI fbo %dx%d div=%d (eye %dx%d canvas %dx%d)",
+            w, h, div, s_eye_w, s_eye_h, cw, ch);
+}
+
+/* Downsample + gather + blur per eye; leaves s_gi_valid set for the composite. */
+static void stereo_gi_prepass(int div) {
+    s_gi_valid[0] = s_gi_valid[1] = 0;
+    stereo_ensure_gi(div);
+    if (!gi_ensure_program()) return;
+
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
+    glDisable(GL_SCISSOR_TEST);
+    glUseProgram(s_gi_prog);
+
+    static const float quad[] = {
+        -1.0f, -1.0f, 0.0f, 0.0f,
+         1.0f, -1.0f, 1.0f, 0.0f,
+        -1.0f,  1.0f, 0.0f, 1.0f,
+         1.0f,  1.0f, 1.0f, 1.0f,
+    };
+    if (!s_comp_vbo) glGenBuffers(1, &s_comp_vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, s_comp_vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(quad), quad, GL_STREAM_DRAW);
+    glEnableVertexAttribArray(s_gi_apos);
+    glVertexAttribPointer(s_gi_apos, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void *)0);
+    glEnableVertexAttribArray(s_gi_auv);
+    glVertexAttribPointer(s_gi_auv, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float),
+                          (void *)(2 * sizeof(float)));
+
+    glUniform1i(s_gi_u.color, 0);
+    glUniform1i(s_gi_u.depth, 1);
+    glUniform1i(s_gi_u.col, 2);
+    glUniform1i(s_gi_u.dep, 3);
+    glUniform1i(s_gi_u.srcg, 4);
+    glUniform2f(s_gi_u.res, (float)s_eye_w, (float)s_eye_h);
+    glUniform2f(s_gi_u.low, (float)s_gi_w, (float)s_gi_h);
+    glUniform4f(s_gi_u.canvas, (float)s_canvas_x, (float)s_canvas_y,
+                (float)s_canvas_w, (float)s_canvas_h);
+    glUniform1f(s_gi_u.nearv, gfx_cam_near);
+    glUniform1f(s_gi_u.farv, gfx_cam_far);
+    glUniform1f(s_gi_u.tanhalf, gfx_cam_tan_half_fov_y);
+    glUniform1f(s_gi_u.aspect, (float)s_canvas_w / (float)(s_canvas_h ? s_canvas_h : 1));
+    glUniform1f(s_gi_u.radius, (float)s_fx_gi_radius);
+    glUniform1f(s_gi_u.steps, (float)s_fx_gi_steps);
+    glUniform1f(s_gi_u.rays, (float)s_fx_gi_rays);
+    glUniform1f(s_gi_u.jitter, s_fx_gi_jitter ? 1.0f : 0.0f);
+    glUniform1f(s_gi_u.frame, (float)(frame_count & 1023));
+    glUniform1f(s_gi_u.skip, (float)s_fx_gi_skip);
+    glUniform1f(s_gi_u.norm, s_fx_gi_norm ? 1.0f : 0.0f);
+
+    glViewport(0, 0, s_gi_w, s_gi_h);
+    for (int eye = 0; eye < 2; eye++) {
+        if (gfx_single_eye >= 0 && eye != gfx_single_eye) continue;
+
+        glUniform1f(s_gi_u.shear, gfx_eye_shear[eye]);
+        glUniform1f(s_gi_u.toe, gfx_eye_toe[eye]);
+        glUniform1f(s_gi_u.flipy, gfx_eye_flip[eye] ? 1.0f : 0.0f);
+        GLuint scene = s_dn_valid[eye] ? s_dn_result[eye] : s_eye_tex[eye];
+
+        /* 1. scene colour -> low-res colour */
+        glBindFramebuffer(GL_FRAMEBUFFER, s_gi_fbo[eye][0]);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, scene);
+        glUniform1f(s_gi_u.mode, 0.0f);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+
+        /* 2. depth -> low-res packed z + view normal */
+        glBindFramebuffer(GL_FRAMEBUFFER, s_gi_fbo[eye][1]);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, s_eye_depth[eye]);
+        glUniform1f(s_gi_u.mode, 1.0f);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+
+        /* 3. the gather, at low res */
+        glBindFramebuffer(GL_FRAMEBUFFER, s_gi_fbo[eye][2]);
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, s_gi_tex[eye][0]);
+        glActiveTexture(GL_TEXTURE3);
+        glBindTexture(GL_TEXTURE_2D, s_gi_tex[eye][1]);
+        glUniform1f(s_gi_u.mode, 2.0f);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+
+        /* 4. optional edge-aware blur at the same low res */
+        int src = 2;
+        int passes = s_fx_gi_blur < 0 ? 0 : (s_fx_gi_blur > 3 ? 3 : s_fx_gi_blur);
+        for (int p = 0; p < passes; p++) {
+            int dst = src == 2 ? 3 : 2;
+            glBindFramebuffer(GL_FRAMEBUFFER, s_gi_fbo[eye][dst]);
+            glActiveTexture(GL_TEXTURE4);
+            glBindTexture(GL_TEXTURE_2D, s_gi_tex[eye][src]);
+            glUniform1f(s_gi_u.step, (float)(1 << p));
+            glUniform1f(s_gi_u.mode, 3.0f);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            src = dst;
+        }
+        s_gi_src[eye] = src;
+        s_gi_valid[eye] = 1;
+    }
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glUseProgram(0);
+}
+
+/* Full-res bilateral upsample added into the FX output (or a debug view). */
+static void stereo_gi_composite(void) {
+    if (!s_gi_valid[0] && !s_gi_valid[1]) return;
+    if (s_gi_prog_state != 1) return;
+
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_SCISSOR_TEST);
+    glUseProgram(s_gi_prog);
+    static const float quad[] = {
+        -1.0f, -1.0f, 0.0f, 0.0f,
+         1.0f, -1.0f, 1.0f, 0.0f,
+        -1.0f,  1.0f, 0.0f, 1.0f,
+         1.0f,  1.0f, 1.0f, 1.0f,
+    };
+    if (!s_comp_vbo) glGenBuffers(1, &s_comp_vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, s_comp_vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(quad), quad, GL_STREAM_DRAW);
+    glEnableVertexAttribArray(s_gi_apos);
+    glVertexAttribPointer(s_gi_apos, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void *)0);
+    glEnableVertexAttribArray(s_gi_auv);
+    glVertexAttribPointer(s_gi_auv, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float),
+                          (void *)(2 * sizeof(float)));
+
+    glUniform1i(s_gi_u.depth, 1);
+    glUniform1i(s_gi_u.dep, 3);
+    glUniform1i(s_gi_u.srcg, 4);
+    glUniform2f(s_gi_u.res, (float)s_eye_w, (float)s_eye_h);
+    glUniform2f(s_gi_u.low, (float)s_gi_w, (float)s_gi_h);
+    glUniform4f(s_gi_u.canvas, (float)s_canvas_x, (float)s_canvas_y,
+                (float)s_canvas_w, (float)s_canvas_h);
+    glUniform1f(s_gi_u.nearv, gfx_cam_near);
+    glUniform1f(s_gi_u.farv, gfx_cam_far);
+    glUniform1f(s_gi_u.tanhalf, gfx_cam_tan_half_fov_y);
+    glUniform1f(s_gi_u.aspect, (float)s_canvas_w / (float)(s_canvas_h ? s_canvas_h : 1));
+    glUniform1f(s_gi_u.radius, (float)s_fx_gi_radius);
+    glUniform1f(s_gi_u.gain, (float)s_fx_gi_intensity * 0.6f / 100.0f);
+    glUniform1f(s_gi_u.debug, (float)s_fx_gi_debug);
+
+    int debug = s_fx_gi_debug > 0;
+    if (debug) {
+        glDisable(GL_BLEND);
+    } else {
+        /* Additive: the FX pass already wrote dof*ao*shadow + lights + grade,
+         * exactly like the bloom chain below. */
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_ONE, GL_ONE);
+    }
+    for (int eye = 0; eye < 2; eye++) {
+        if (gfx_single_eye >= 0 && eye != gfx_single_eye) continue;
+        if (!s_gi_valid[eye]) continue;
+        glBindFramebuffer(GL_FRAMEBUFFER, s_pp_fbo[eye]);
+        glViewport(0, 0, s_eye_w, s_eye_h);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, s_eye_depth[eye]);
+        glActiveTexture(GL_TEXTURE3);
+        glBindTexture(GL_TEXTURE_2D, s_gi_tex[eye][1]);
+        glActiveTexture(GL_TEXTURE4);
+        glBindTexture(GL_TEXTURE_2D, s_gi_tex[eye][s_gi_src[eye]]);
+        glUniform1f(s_gi_u.mode, debug ? 5.0f : 4.0f);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    }
+    glDisable(GL_BLEND);
+    glDisableVertexAttribArray(s_gi_apos);
+    glDisableVertexAttribArray(s_gi_auv);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glUseProgram(0);
+}
+
 /* ---------------- Emissive materials + bloom ----------------
  * Tagged draw batches (see GFX_OP_EMISSIVE_MARKER in gfx_pc.h) are copied at
  * draw time and re-drawn into a half-resolution per-eye EMISSIVE buffer. That
@@ -5038,6 +5572,18 @@ static int stereo_fx_pass(void) {
         s_ray_valid[0] = s_ray_valid[1] = 0;
     }
 
+    /* Reduced-resolution SSGI: gather at canvas/div, blur there, then add back
+     * with a dedicated full-res pass after the FX draws below.  Divisor 1 (or
+     * the GI debug view) keeps the original in-shader full-res loop. */
+    int gi_low = s_fx_gi_on && s_fx_gi_intensity > 0 && s_fx_gi_div > 1
+                 && s_fx_debug != 3;
+    if (gi_low) {
+        stereo_gi_prepass(s_fx_gi_div);
+        if (!s_gi_valid[0] && !s_gi_valid[1]) gi_low = 0;
+    } else {
+        s_gi_valid[0] = s_gi_valid[1] = 0;
+    }
+
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_BLEND);
     glDisable(GL_SCISSOR_TEST);
@@ -5264,7 +5810,8 @@ static int stereo_fx_pass(void) {
     glUniform1f(s_fx_u.dof_aperture, (float)s_fx_dof_aperture);
     glUniform1f(s_fx_u.dof_maxblur, (float)s_fx_dof_maxblur);
     glUniform1f(s_fx_u.dof_samples, (float)s_fx_dof_samples);
-    glUniform1f(s_fx_u.gi_on, s_fx_gi_on ? 1.0f : 0.0f);
+    glUniform1f(s_fx_u.gi_on,
+                (s_fx_gi_on && s_fx_gi_intensity > 0 && !gi_low) ? 1.0f : 0.0f);
     glUniform1f(s_fx_u.gi_intensity, (float)s_fx_gi_intensity);
     glUniform1f(s_fx_u.gi_radius, (float)s_fx_gi_radius);
     glUniform1f(s_fx_u.gi_steps, (float)s_fx_gi_steps);
@@ -5327,6 +5874,10 @@ static int stereo_fx_pass(void) {
         }
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     }
+
+    /* GI added back after the per-eye FX draws, so it never adds a sampler to
+     * the big shader.  Same slot relative to bloom as the legacy in-shader GI. */
+    if (gi_low) stereo_gi_composite();
 
     glDisableVertexAttribArray(apos);
     glDisableVertexAttribArray(auv);
