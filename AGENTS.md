@@ -100,7 +100,7 @@ export ANDROID_SDK_ROOT="$ANDROID_HOME"
 export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/27.2.12479018"
 export GRADLE_USER_HOME=/home/ubuntu/opencode/gradle-home
 export GNUMAKE=/usr/bin/make
-export PATH="$JAVA_HOME/bin:/media/share/lp2-test/toolchain/hostbin:/media/share/lp2-test/toolchain/x86bin:$PATH"
+export PATH="$JAVA_HOME/bin:/home/ubuntu/opencode/toolchain-bin/hostbin:/home/ubuntu/opencode/toolchain-bin/x86bin:$PATH"
 
 scripts/agent-lock.sh build --reason "my change" -- ./gradlew assembleDebug --no-daemon
 ```
@@ -118,6 +118,16 @@ The main checkout has neither problem, which is why a central incremental build
 is still the cheapest way to compile an agent's patch.
 
 APK: `app/build/outputs/apk/debug/app-debug.apk`.
+
+The x86_64 host tools run through qemu wrappers. Prefer the **local copy** of
+those wrappers (`/home/ubuntu/opencode/toolchain-bin/`), not the 9p share: the
+same 20 `clang --version` invocations take 1.62 s through /media/share and
+0.054 s locally (30x), because every exec crosses fuse+9p. The share
+(`/media/share/lp2-test/toolchain/`) is the source of truth; re-copy it with
+`cp -a /media/share/lp2-test/toolchain/{hostbin,x86bin} /home/ubuntu/opencode/toolchain-bin/`
+when the host side changes. The wrappers themselves reference local paths
+(qemu in `/home/ubuntu/opencode/pkg/qemu`, sysroot in `/home/ubuntu/opencode/x86root`,
+NDK in `/home/ubuntu/opencode/sdk`), so the copy is self-contained.
 
 The NDK toolchain runs under qemu here and occasionally crashes with a spurious
 `python3: Syntax error` or header corruption. Re-run the build; it is not

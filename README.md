@@ -47,7 +47,7 @@ export ANDROID_SDK_ROOT="$ANDROID_HOME"
 export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/27.2.12479018"
 export GRADLE_USER_HOME=/home/ubuntu/opencode/gradle-home
 export GNUMAKE=/usr/bin/make
-export PATH="$JAVA_HOME/bin:/media/share/lp2-test/toolchain/hostbin:/media/share/lp2-test/toolchain/x86bin:$PATH"
+export PATH="$JAVA_HOME/bin:/home/ubuntu/opencode/toolchain-bin/hostbin:/home/ubuntu/opencode/toolchain-bin/x86bin:$PATH"
 
 # all builds go through the shared lock (see AGENTS.md)
 scripts/agent-lock.sh build --reason "my change" -- ./gradlew assembleDebug --no-daemon
