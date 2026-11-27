@@ -1128,6 +1128,8 @@ channel instead of an integer key:
 B="am broadcast -n com.vdavid003.sm64port/.DebugReceiver -a com.vdavid003.sm64port.CMD"
 adb shell $B --es cmd layout --es action toggle   # flip edit mode (chip equivalent)
 adb shell $B --es cmd layout --es action on       # enter edit mode
+adb shell $B --es cmd layout --es action save     # SAVE: commit the working copy, stay editing
+adb shell $B --es cmd layout --es action discard  # DISCARD: revert to the last save and leave
 adb shell $B --es cmd layout --es action off      # leave + save the active profile
 adb shell $B --es cmd layout --es action save --es profile wide
 adb shell $B --es cmd layout --es action switch --es profile default
@@ -1136,11 +1138,31 @@ adb shell $B --es cmd layout --es action delete --es profile couch
 adb shell $B --es cmd layout --es action status
 ```
 
+`save` with no `profile` is the in-editor SAVE; with a `profile` it still saves
+the current layout under that name and activates it.
+
 The same on/off/toggle path is reachable with one tap from the game: the
 **EDIT LAYOUT** chip at the end of the FEEDBACK/CLEAR bar under the FPS meter
 shows `● DONE` (filled amber) while the editor is active, and exits through the
 same `TouchOverlay.setEditMode()` call that commits the profile. `cmd dump`
-reports it as `LAYOUT … edit=0|1`.
+reports it as `LAYOUT … edit=0|1,unsaved=0|1`.
+
+Inside the editor there is no long-press: entry is the chip, DEBUG > SYS >
+TOUCH LAYOUT, `fx 300` or `cmd layout on|toggle`. Dragging moves a control and
+the corner grip resizes it; the drawn control and its hit area are rebuilt from
+the model on every drag delta, so the box and the control stay together.
+Two canvas buttons sit under the banner, so they work with the panel closed:
+
+- **SAVE** writes the working layout to the active profile (the same
+  `TouchLayoutStore.saveActive()` path the exit uses) and **stays** in edit
+  mode, so tune → save → tune needs one tap. It also resets the DISCARD point.
+- **DISCARD** restores the layout as of editor entry / the last SAVE, writes it
+  back and leaves edit mode.
+
+Drag deltas only change the working copy; the profile is committed by SAVE, by
+leaving through the chip/panel/`cmd layout off`, or by any other explicit
+profile action. Plain exit still saves exactly as before; DISCARD is the
+explicit way out that does not.
 
 Layouts are stored as JSON in SharedPreferences (`touch_layout/store`) and
 mirrored to `Android/data/com.vdavid003.sm64port/files/layouts/`:

@@ -97,9 +97,10 @@ subsequent launches skip the logo/attract sequence.
 
 ## Controls
 
-Touch controls with an on-screen layout editor (drag + corner resize, saved
-profiles), controller and keyboard support with rumble, and a debug panel in
-four docks (bottom/top, horizontal/vertical) that exposes every graphics knob.
+Touch controls with an on-screen layout editor (drag + corner resize, SAVE /
+DISCARD in the editor, saved profiles), controller and keyboard support with
+rumble, and a debug panel in four docks (bottom/top, horizontal/vertical) that
+exposes every graphics knob.
 The panel's DEBUG → MOVE / PORTAL / BALL / SYS / LOGS pages drive the test rigs
 and produce bug reports.
 

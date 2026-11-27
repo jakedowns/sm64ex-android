@@ -14,6 +14,8 @@ import android.util.Log;
  *   adb shell am broadcast -a com.vdavid003.sm64port.CMD --es cmd toggle --es name TINT
  *   adb shell am broadcast -a com.vdavid003.sm64port.CMD --es cmd reinit
  *   adb shell am broadcast -a com.vdavid003.sm64port.CMD --es cmd quickdev --ei v 1
+ *   adb shell am broadcast -a com.vdavid003.sm64port.CMD --es cmd layout --es action save
+ *   adb shell am broadcast -a com.vdavid003.sm64port.CMD --es cmd layout --es action discard
  *   adb shell am broadcast -a com.vdavid003.sm64port.CMD --es cmd layout --es action save --es profile mine
  */
 public class DebugReceiver extends BroadcastReceiver {

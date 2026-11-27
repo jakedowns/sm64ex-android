@@ -5442,11 +5442,11 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
 
     /**
      * Single enter/exit path for the layout editor. The SYS panel toggle, the
-     * HUD chip, long-press on the overlay, `fx 300` and `cmd layout on|off|
-     * toggle` all end up here, and TouchOverlay.setEditMode() is the only
-     * state owner (it clears held input on entry and commits the active
-     * profile on exit, so leaving from the chip saves exactly like leaving
-     * from the panel).
+     * HUD chip, `fx 300` and `cmd layout on|off|toggle` all end up here, and
+     * TouchOverlay.setEditMode() is the only state owner (it clears held input
+     * on entry and commits the active profile on exit, so leaving from the chip
+     * saves exactly like leaving from the panel).  The in-editor DISCARD button
+     * is the explicit non-committing way out.
      */
     private void setLayoutEdit(boolean on, String via) {
         if (touchOverlay == null) {
@@ -5468,7 +5468,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         setLayoutEdit(!touchOverlay.isEditMode(), via);
     }
 
-    /** TouchOverlay tells us the editor flipped (long-press, fx, cmd, chip). */
+    /** TouchOverlay tells us the editor flipped (fx, cmd, chip, SAVE/DISCARD). */
     void layoutEditModeChanged() {
         if (layoutEditChip == null && layoutEditButton == null) return;
         refreshLayoutUi();
@@ -5604,7 +5604,17 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                 touchOverlay.resetLayout();
                 break;
             case "save":
-                ok = touchOverlay.saveProfileAs(profile);
+                /* `save` with a profile = save-as (unchanged); without one it is
+                 * the in-editor SAVE: commit the working copy to the active
+                 * profile and stay in edit mode. */
+                if (profile == null || profile.trim().isEmpty()) {
+                    ok = touchOverlay.saveEditLayout();
+                } else {
+                    ok = touchOverlay.saveProfileAs(profile);
+                }
+                break;
+            case "discard":
+                ok = touchOverlay.discardEditLayout();
                 break;
             case "switch":
                 ok = touchOverlay.switchProfile(profile);

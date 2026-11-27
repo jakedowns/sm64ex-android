@@ -147,19 +147,20 @@ public class TouchOverlay extends View {
     private static final float GRID = 0.0125f;   // snap step (~32 px at 2560)
     private static final float SCALE_MIN = 0.4f, SCALE_MAX = 2.5f;
 
-    private final android.os.Handler lpHandler =
-            new android.os.Handler(android.os.Looper.getMainLooper());
-    private boolean lpArmed;
-    private float lpDownX, lpDownY;
-    private final Runnable longPressRunnable = new Runnable() {
-        @Override
-        public void run() {
-            if (!lpArmed || editMode) return;
-            lpArmed = false;
-            setEditMode(true);
-            android.util.Log.i("SM64Layout", "edit mode via long-press");
-        }
-    };
+    /* Last committed layout of the active profile, captured on entering the
+     * editor and refreshed by SAVE. Drags only touch nx/ny/ns, so DISCARD can
+     * put the working copy back without reading the store. */
+    private final float[] savedX = new float[ELEM_COUNT];
+    private final float[] savedY = new float[ELEM_COUNT];
+    private final float[] savedS = new float[ELEM_COUNT];
+    /* SAVE / DISCARD hit boxes under the editor banner, and a one-line note
+     * ("saved default") that the next touch clears. */
+    private final float[] editBtnRects = new float[8];
+    private String editNote;
+
+    /* Pixel size the btnPos/cPos/... caches were built for. A resize or a drag
+     * changes the model, so this is checked before draw and touch. */
+    private int layoutW = -1, layoutH = -1;
 
     // Overall opacity of the control layer (0.1 .. 1.0).
     private float overlayAlpha = 1f;
@@ -325,6 +326,8 @@ public class TouchOverlay extends View {
     private void layoutButtons() {
         float w = getWidth(), h = getHeight();
         if (w <= 0 || h <= 0) return;
+        layoutW = (int) w;
+        layoutH = (int) h;
         btnPos[0][0] = nx[E_A] * w;   btnPos[0][1] = ny[E_A] * h;
         btnPos[1][0] = nx[E_B] * w;   btnPos[1][1] = ny[E_B] * h;
         btnPos[2][0] = nx[E_Z] * w;   btnPos[2][1] = ny[E_Z] * h;
@@ -347,6 +350,18 @@ public class TouchOverlay extends View {
         toolPos[0] = nx[E_TOOL] * w;   toolPos[1] = ny[E_TOOL] * h;
         jetPos[0] = nx[E_JET] * w;     jetPos[1] = ny[E_JET] * h;
         modePos[0] = nx[E_MODE] * w;   modePos[1] = ny[E_MODE] * h;
+    }
+
+    /** Rebuild the pixel caches when the panel size changed (first draw, rotation). */
+    private void syncGeometry() {
+        if (getWidth() != layoutW || getHeight() != layoutH) layoutButtons();
+    }
+
+    /** Rebuild the pixel caches after the model moved, so a drag/resize edits the
+     *  control that is drawn and hit-tested, not just the editor's boxes. */
+    private void rebindGeometry() {
+        layoutButtons();
+        invalidate();
     }
 
     private boolean portalGunHeld() {
@@ -504,23 +519,11 @@ public class TouchOverlay extends View {
             controlsHidden = false;
             invalidate();
         }
-        if (btnPos[0][0] == 0) layoutButtons();
-        float x = e.getX(), y = e.getY();
+        syncGeometry();
         int action = e.getActionMasked();
 
         if (editMode) {
             return handleEditTouch(e);
-        }
-
-        /* Long-press (600 ms) anywhere on the overlay opens the layout editor.
-         * A drag or a second finger cancels it, so play is unaffected. */
-        if (action == MotionEvent.ACTION_DOWN) {
-            armLongPress(x, y);
-        } else if (action == MotionEvent.ACTION_MOVE) {
-            if (Math.hypot(x - lpDownX, y - lpDownY) > dp(18f)) cancelLp();
-        } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL
-                || action == MotionEvent.ACTION_POINTER_DOWN) {
-            cancelLp();
         }
 
         switch (action) {
@@ -906,26 +909,13 @@ public class TouchOverlay extends View {
         }
     }
 
-    private void armLongPress(float x, float y) {
-        cancelLp();
-        lpArmed = true;
-        lpDownX = x;
-        lpDownY = y;
-        lpHandler.postDelayed(longPressRunnable, 600);
-    }
-
-    private void cancelLp() {
-        lpArmed = false;
-        lpHandler.removeCallbacks(longPressRunnable);
-    }
-
     @Override
     protected void onDraw(Canvas c) {
         super.onDraw(c);
         if (controlsHidden && !editMode) {
             return;
         }
-        if (btnPos[0][0] == 0) layoutButtons();
+        syncGeometry();
 
         // 0 = portal gun, 1 = grapple.  Read once so the portal buttons and
         // the tool button agree within a frame.
@@ -1333,6 +1323,43 @@ public class TouchOverlay extends View {
         return Math.max(14f, elemRadiusPx(e) * 0.20f);
     }
 
+    /** Banner font size, shared by the drawing and the button-row geometry. */
+    private float editBannerTextSize() {
+        return Math.max(18f, 22f * uiScale());
+    }
+
+    /**
+     * Screen boxes of the SAVE / DISCARD buttons, left-aligned under the
+     * three-line editor banner: {x, y, w, h} for SAVE then DISCARD.  The
+     * banner height is fixed (three lines), so the row does not move while a
+     * control is dragged and the buttons stay under the same finger.
+     */
+    private void editButtonRects(float[] out) {
+        float ts = editBannerTextSize();
+        float pad = 10f, lh = ts * 1.35f;
+        float y = dp(8) + (3f * lh + pad) + dp(8);
+        float h = Math.max(dp(36), lh + pad);
+        float gap = dp(8);
+        paint.setTextSize(ts);
+        float w0 = Math.max(dp(92), paint.measureText("SAVE") + pad * 2f);
+        float w1 = Math.max(dp(92), paint.measureText("DISCARD") + pad * 2f);
+        out[0] = dp(8);  out[1] = y; out[2] = w0; out[3] = h;
+        out[4] = out[0] + w0 + gap; out[5] = y; out[6] = w1; out[7] = h;
+    }
+
+    /** 0 = SAVE, 1 = DISCARD, -1 = neither. */
+    private int hitEditButton(float x, float y) {
+        editButtonRects(editBtnRects);
+        for (int i = 0; i < 2; i++) {
+            float bx = editBtnRects[i * 4], by = editBtnRects[i * 4 + 1];
+            if (x >= bx && x <= bx + editBtnRects[i * 4 + 2]
+                    && y >= by && y <= by + editBtnRects[i * 4 + 3]) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
     private int hitEditable(float x, float y) {
         // Grip first, so a grip that pokes into a neighbour stays grabbable.
         for (int e = 0; e < ELEM_COUNT; e++) {
@@ -1381,6 +1408,24 @@ public class TouchOverlay extends View {
         switch (action) {
             case MotionEvent.ACTION_DOWN: {
                 float px = e.getX(), py = e.getY();
+                /* SAVE / DISCARD live under the banner; they never start a
+                 * drag, so a tap there cannot nudge the control beneath. */
+                int btn = hitEditButton(px, py);
+                if (btn >= 0) {
+                    selectedElem = -1;
+                    dragElem = -1;
+                    dragPointer = -1;
+                    dragMode = DRAG_NONE;
+                    infoValid = false;
+                    if (btn == 0) {
+                        saveEditLayout();
+                    } else {
+                        discardEditLayout();
+                    }
+                    invalidate();
+                    return true;
+                }
+                editNote = null;
                 int hit = hitEditable(px, py);
                 selectedElem = hit;
                 dragElem = hit;
@@ -1415,6 +1460,7 @@ public class TouchOverlay extends View {
                 if (dragElem < 0) return true;
                 int idx = e.findPointerIndex(dragPointer);
                 if (idx < 0) return true;
+                editNote = null;
                 float px = e.getX(idx), py = e.getY(idx);
                 if (dragMode == DRAG_MOVE) {
                     float cx = px + dragOffX, cy = py + dragOffY;
@@ -1430,7 +1476,11 @@ public class TouchOverlay extends View {
                 infoX = nx[dragElem];
                 infoY = ny[dragElem];
                 infoValid = true;
-                invalidate();
+                /* The boxes are drawn from nx/ny/ns, but every control's hit
+                 * area and render position comes from the pixel caches.  Rebind
+                 * them with the drag, or the box moves while the control does
+                 * not.  Twenty multiplies + three array writes per delta. */
+                rebindGeometry();
                 return true;
             }
             case MotionEvent.ACTION_UP:
@@ -1441,7 +1491,9 @@ public class TouchOverlay extends View {
                     dragElem = -1;
                     dragPointer = -1;
                     dragMode = DRAG_NONE;
-                    persistLayout();
+                    /* Deliberately no persist here: a drag edits the working
+                     * copy.  SAVE, or leaving the editor (chip / panel toggle /
+                     * `cmd layout off`), commits it; DISCARD throws it away. */
                     invalidate();
                 }
                 return true;
@@ -1450,7 +1502,7 @@ public class TouchOverlay extends View {
         return true;
     }
 
-    /** Draw boxes, names, resize grips and a live coordinate banner. */
+    /** Draw boxes, names, resize grips, SAVE / DISCARD and a live banner. */
     private void drawEditOverlay(Canvas c) {
         float w = getWidth(), h = getHeight();
         float base = Math.max(16f, 20f * uiScale());
@@ -1480,31 +1532,34 @@ public class TouchOverlay extends View {
         }
 
         paint.setTextAlign(Paint.Align.LEFT);
-        paint.setTextSize(Math.max(18f, 22f * uiScale()));
+        paint.setTextSize(editBannerTextSize());
         float pad = 10f;
         float lh = paint.getTextSize() * 1.35f;
         String head = "EDIT LAYOUT  -  drag = move, corner grip = resize"
                 + "  |  grid " + Math.round(GRID * 1000f) / 10f + "%";
         String profile = "profile: " + activeProfile() + "   (DEBUG > SYS > RESET LAYOUT)";
-        String drag = null;
+        String status = null;
         if (dragElem >= 0) {
             int e = dragElem;
-            drag = ELEM_LABELS[e] + "  x=" + String.format(java.util.Locale.US, "%.3f", nx[e])
+            status = ELEM_LABELS[e] + "  x=" + String.format(java.util.Locale.US, "%.3f", nx[e])
                     + "  y=" + String.format(java.util.Locale.US, "%.3f", ny[e])
                     + "  scale=" + String.format(java.util.Locale.US, "%.2f", ns[e])
                     + "  px=" + Math.round(nx[e] * w) + "," + Math.round(ny[e] * h)
                     + "  r=" + Math.round(elemRadiusPx(e));
+        } else if (editNote != null) {
+            status = editNote;
         } else if (infoValid && selectedElem >= 0) {
             int e = selectedElem;
-            drag = ELEM_LABELS[e] + "  x=" + String.format(java.util.Locale.US, "%.3f", nx[e])
+            status = ELEM_LABELS[e] + "  x=" + String.format(java.util.Locale.US, "%.3f", nx[e])
                     + "  y=" + String.format(java.util.Locale.US, "%.3f", ny[e])
                     + "  scale=" + String.format(java.util.Locale.US, "%.2f", ns[e]);
         }
-        int lines = drag == null ? 2 : 3;
+        /* Always three lines, even when the status line is empty, so the
+         * SAVE / DISCARD row below never jumps during a drag. */
         float bw = Math.max(paint.measureText(head), paint.measureText(profile));
-        if (drag != null) bw = Math.max(bw, paint.measureText(drag));
+        if (status != null) bw = Math.max(bw, paint.measureText(status));
         bw += pad * 2;
-        float bh = lines * lh + pad;
+        float bh = 3f * lh + pad;
         float x0 = dp(8), y0 = dp(8);
         paint.setStyle(Paint.Style.FILL);
         paint.setColor(0xCC101820);
@@ -1513,17 +1568,49 @@ public class TouchOverlay extends View {
         c.drawText(head, x0 + pad, y0 + pad + lh * 0.8f, paint);
         paint.setColor(0xFFAACCFF);
         c.drawText(profile, x0 + pad, y0 + pad + lh * 1.8f, paint);
-        if (drag != null) {
+        if (status != null) {
             paint.setColor(0xFFFFCC33);
-            c.drawText(drag, x0 + pad, y0 + pad + lh * 2.8f, paint);
+            c.drawText(status, x0 + pad, y0 + pad + lh * 2.8f, paint);
+        } else {
+            paint.setColor(0xFF6F8FAF);
+            c.drawText(editDirty() ? "unsaved changes - SAVE commits, DISCARD reverts"
+                    : "tap SAVE to commit, DISCARD to revert and leave",
+                    x0 + pad, y0 + pad + lh * 2.8f, paint);
         }
+
+        /* SAVE / DISCARD: canvas buttons (not Android views) so they work with
+         * the debug panel closed and cannot lose a race with a drag. */
+        editButtonRects(editBtnRects);
+        for (int i = 0; i < 2; i++) {
+            boolean save = i == 0;
+            float bx = editBtnRects[i * 4], by = editBtnRects[i * 4 + 1];
+            float bw2 = editBtnRects[i * 4 + 2], bh2 = editBtnRects[i * 4 + 3];
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(save ? 0xE61E4D2E : 0xE64D1E1E);
+            c.drawRoundRect(bx, by, bx + bw2, by + bh2, 10f, 10f, paint);
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(2f);
+            paint.setColor(save ? 0xFF66E08A : 0xFFE08866);
+            c.drawRoundRect(bx, by, bx + bw2, by + bh2, 10f, 10f, paint);
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(save ? 0xFFB8FFCF : 0xFFFFC4B8);
+            paint.setTextAlign(Paint.Align.CENTER);
+            paint.setTextSize(editBannerTextSize());
+            float ts = paint.getTextSize();
+            c.drawText(save ? "SAVE" : "DISCARD", bx + bw2 * 0.5f,
+                    by + bh2 * 0.5f + ts * 0.35f, paint);
+        }
+        paint.setTextAlign(Paint.Align.LEFT);
     }
 
-    /** Start/stop editing. Entering clears any held game input. */
+    /**
+     * Start/stop editing. Entering clears any held game input and records the
+     * committed layout as the DISCARD target; leaving commits the working copy
+     * (the chip, the panel toggle and `cmd layout off` all exit this way).
+     */
     public void setEditMode(boolean on) {
         if (editMode == on) return;
         editMode = on;
-        cancelLp();
         if (on) {
             clearInput();
             controlsHidden = false;
@@ -1532,18 +1619,78 @@ public class TouchOverlay extends View {
             dragElem = -1;
             dragPointer = -1;
             dragMode = DRAG_NONE;
+            editNote = null;
+            snapshotEditLayout();
         } else {
             persistLayout();
+            snapshotEditLayout();
             selectedElem = -1;
             dragElem = -1;
+            dragPointer = -1;
+            dragMode = DRAG_NONE;
+            editNote = null;
         }
+        /* The drag ran the model forward; make the hit/render caches agree
+         * before the next frame draws either state. */
+        layoutButtons();
         invalidate();
         android.util.Log.i("SM64Layout", "edit mode " + (on ? "ON" : "OFF")
                 + " profile=" + activeProfile());
-        /* Mirror the state in the HUD chip / panel widgets immediately, so a
-         * long-press entry does not wait for the 500 ms readout. */
+        /* Mirror the state in the HUD chip / panel widgets immediately instead
+         * of waiting for the 500 ms readout. */
         sm64portActivity act = sm64portActivity.instance;
         if (act != null) act.layoutEditModeChanged();
+    }
+
+    /** Remember the working copy as the last committed layout. */
+    private void snapshotEditLayout() {
+        System.arraycopy(nx, 0, savedX, 0, ELEM_COUNT);
+        System.arraycopy(ny, 0, savedY, 0, ELEM_COUNT);
+        System.arraycopy(ns, 0, savedS, 0, ELEM_COUNT);
+    }
+
+    /** True while the working copy differs from the last SAVE / entry state. */
+    private boolean editDirty() {
+        for (int e = 0; e < ELEM_COUNT; e++) {
+            if (nx[e] != savedX[e] || ny[e] != savedY[e] || ns[e] != savedS[e]) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * SAVE: commit the working layout to the active profile and stay in edit
+     * mode (so a tune-save-tune loop needs one tap, not an exit and re-entry).
+     * This is the same store write the exit path uses.
+     */
+    public boolean saveEditLayout() {
+        persistLayout();
+        snapshotEditLayout();
+        editNote = "saved '" + activeProfile() + "'";
+        android.util.Log.i("SM64Layout", "layout saved " + activeProfile());
+        invalidate();
+        return true;
+    }
+
+    /**
+     * DISCARD: restore the layout as of editor entry / the last SAVE, write it
+     * back so the store matches the screen (drag deltas are working-copy only),
+     * and leave edit mode.
+     */
+    public boolean discardEditLayout() {
+        if (!editMode) {
+            android.util.Log.i("SM64Layout", "layout discard ignored (not editing)");
+            return false;
+        }
+        System.arraycopy(savedX, 0, nx, 0, ELEM_COUNT);
+        System.arraycopy(savedY, 0, ny, 0, ELEM_COUNT);
+        System.arraycopy(savedS, 0, ns, 0, ELEM_COUNT);
+        infoValid = false;
+        selectedElem = -1;
+        android.util.Log.i("SM64Layout", "layout discarded -> " + activeProfile());
+        setEditMode(false);   // commits the restored (= last saved) layout
+        return true;
     }
 
     public boolean isEditMode() {
@@ -1594,7 +1741,9 @@ public class TouchOverlay extends View {
                     ELEM_KEYS, nx, ny, ns);
         }
         persistLayout();
+        if (editMode) snapshotEditLayout();   // RESET is itself a commit
         infoValid = false;
+        layoutButtons();
         invalidate();
         android.util.Log.i("SM64Layout", "layout reset; active=" + activeProfile());
     }
@@ -1617,6 +1766,8 @@ public class TouchOverlay extends View {
         if (layoutStore == null || name == null) return false;
         if (!layoutStore.applyProfile(name, ELEM_KEYS, nx, ny, ns)) return false;
         infoValid = false;
+        if (editMode) snapshotEditLayout();   // new profile = new commit point
+        layoutButtons();
         invalidate();
         return true;
     }
@@ -1624,6 +1775,7 @@ public class TouchOverlay extends View {
     public boolean saveProfileAs(String name) {
         if (layoutStore == null || name == null) return false;
         boolean ok = layoutStore.saveAs(name, ELEM_KEYS, nx, ny, ns);
+        if (ok && editMode) snapshotEditLayout();
         invalidate();
         return ok;
     }
@@ -1635,6 +1787,8 @@ public class TouchOverlay extends View {
     public boolean deleteProfile(String name) {
         if (layoutStore == null || !layoutStore.delete(name)) return false;
         layoutStore.applyProfile(layoutStore.active(), ELEM_KEYS, nx, ny, ns);
+        if (editMode) snapshotEditLayout();
+        layoutButtons();
         invalidate();
         return true;
     }
@@ -1677,6 +1831,8 @@ public class TouchOverlay extends View {
         infoY = ny[selectedElem];
         infoValid = true;
         persistLayout();
+        if (editMode) snapshotEditLayout();
+        layoutButtons();
         invalidate();
     }
 
@@ -1684,6 +1840,8 @@ public class TouchOverlay extends View {
         if (selectedElem < 0) return;
         ns[selectedElem] = Math.max(SCALE_MIN, Math.min(SCALE_MAX, s));
         persistLayout();
+        if (editMode) snapshotEditLayout();
+        layoutButtons();
         invalidate();
     }
 
@@ -1696,6 +1854,7 @@ public class TouchOverlay extends View {
         return "layout=" + activeProfile()
                 + ",profiles=" + listProfiles().size()
                 + ",edit=" + (editMode ? 1 : 0)
+                + ",unsaved=" + (editMode && editDirty() ? 1 : 0)
                 + ",sel=" + sel + "," + coords
                 + ",elems=" + ELEM_COUNT
                 + ",ext=" + externalDir();
