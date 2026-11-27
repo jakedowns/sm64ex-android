@@ -18,9 +18,8 @@ compaction + docking, Java captions, vertical dock, and the three perf rewrites
       baseline, sub-strips both docks, collapsed, restart persistence.
 - [ ] Cam-stick: heatmap still, dragged-point response, C-bit table, the three
       R-follow clips.
-- [ ] Wall-run: six-case `ptc wrjump` rig, the chain harness, and the 90° corner
-      smoke test — the rig + `scripts/wallrun-corner-test.py` are merged, but the
-      timing window in TESTING.md is predicted, not measured.
+- [ ] Wall-run: six-case `ptc wrjump` rig + the chain harness (the 90° corner
+      test now has a **measured** window, d 1380-1780+, 80/80 checks).
 - [ ] Paint-ripple frame-alternation metric (30/60/120, `fx 350` on/off).
 - [ ] Grading: operator/look/LUT stills + the cost row.
 - [x] Captions in 3D (Java overlay over the weave) — verified 2026-11-26, `mode=java native=1` in 2D and 3D, GAME FONT A/B works.

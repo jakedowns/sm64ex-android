@@ -771,6 +771,36 @@ measured centre, re-run, and update `PTC_WRC_PERFECT_DEF` so the default follows
 `ptc corneroff` clears the rig (freelook off, FOV restored) if a run is aborted;
 the harness calls it at the end of the sweep.
 
+
+### Measured window (2026-11-27, device run)
+
+`scripts/wallrun-corner-test.py` on the Lume Pad 2, PTC L38, one hold, 88 s wall
+time, 80/80 checks passed. `d` is the jump distance before the corner that the
+rig arms with; larger `d` = press earlier.
+
+| `d` | jump tick | re-entry on wall B | outcome |
+| --- | --- | --- | --- |
+| 1780 | 15 | 39 | **corner-pass** |
+| 1680 | 17 | 40 | **corner-pass** |
+| 1580 | 18 | 40 | **corner-pass** |
+| 1480 | 20 | 40 | **corner-pass** (nominal, `wr runs=2`) |
+| 1380 | 22 | 41 | **corner-pass** |
+| 1280 | 24 | – | no re-entry |
+| 1180 | 26 | – | no re-entry |
+| 1080 | 28 | – | no re-entry |
+
+So the measured pass window is **d ≥ 1380 at least** (five consecutive timings at
+100-unit steps pass, re-entering the run 19-21 ticks after the jump, no floor
+contact, no stall, max per-tick step 76-81 u), and it **fails below ~1280**. The
+upper bound was not probed: 1780 still passes, so the window is at least
+1380-1780 (400 units, four steps) and may extend further; the earlier prediction
+of 1280-1690 was ~100 short at both ends.
+
+Artifacts: `/media/share/tmp/artifacts/sm64/wallrun-corner/20261127-100428/`
+(per-case stills `00_1780.png` … `07_1080.png`, `corner-pass-mid.png`, the clip
+`corner-pass.mp4`, `trace-*.txt`, `dump-*.txt`).
+
+
 ## Ninja chain (continuous systems showcase)
 
 `NINJA-CHAIN.md` (project root) has the full brief, course table, phases and
