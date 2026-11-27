@@ -197,6 +197,21 @@ frames until `init_level()` clears the cap. It adds `qd=<on>,<level>,<mute>` to
 `quick-dev.sh --quickdev 1 --level 38 --restart` sets it from the shell. Leave it
 off when reproducing a normal launch.
 
+## Progress tree hygiene
+
+Relay entries (`progress-relay --id <task>-build`) are owned by the command they
+wrap. When a build is taken over centrally, or the wrapped command is killed, the
+entry keeps showing `running` because nothing writes to it again. Close it in the
+same turn:
+
+```bash
+scripts/progress-close.sh dof-build fx420-build --detail "built centrally in the main tree"
+```
+
+A relay entry with no live process is stale by definition; a `-build` entry that
+outlives its build is noise, not state. Same for subagent entries after the
+parent has merged their patch.
+
 ## Todo / backlog
 
 `TODO.md` is the short checked-in "what is left" (blocked-on-hardware list, open
