@@ -32,9 +32,9 @@ compaction + docking, Java captions, vertical dock, and the three perf rewrites
 ## Bugs / loose ends
 
 - [ ] Motion-vector heatmap renders a flat blue frame (`fx 31 9`, `149 2`).
-- [ ] A failed FX shader link silently falls back to the legacy path — add
-      `fxerr=<program>` to the dump so it cannot look like a no-op optimisation.
-- [ ] **Black frame after sleep / resume** — the app can come back with the 3D
+- [x] `fxerr=<programs>` in the dump names any FX shader that failed to link
+      (verified `fxerr=none`); a silent fallback can no longer look like a no-op.
+- [ ] **Black frame after sleep / resume** (subagent on it now) — the app can come back with the 3D
       layer black (touch overlay and panel draw, game does not) and `HOME` + reopen
       does not always recover it; observed twice today while verifying the swipe
       axis. This blocks visual verification of several items and is the most
