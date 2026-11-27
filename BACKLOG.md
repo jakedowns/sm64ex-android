@@ -99,6 +99,7 @@ patch also assumed the pre-layout `TouchOverlay` field `stickRadius`, now
 `stickRadiusPx(E_RSTICK)`.
 
 **Device pass still to run:** panel stills in both docks + restart persistence,
+the dock-following panel swipe axis (vertical left/right, horizontal up/down),
 camera sens/cycler wrap, feedback capture + adb pull/delete, wall-run six-case
 harness, paint-ripple alternation metric, grapple stills, cam-stick heatmap and
 R-follow clips, grading operators/looks/LUT + cost.

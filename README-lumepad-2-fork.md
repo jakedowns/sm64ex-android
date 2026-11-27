@@ -1241,7 +1241,12 @@ Handy bits: `4096` START, `32768` A, `16384` B, `8192` Z, `16` R.
 
 The on-screen tuning panel is collapsed by default. Its drawer is toggled by
 the caret in the top-left (`▾` closed / `▴` open), by tapping a top tab
-while closed, or by a swipe up on the bar. Collapsed it is two short rows:
+while closed, or by a swipe whose axis follows the dock: **up** on the bar in
+the bottom dock, **right** on the bar in the vertical (left-half) dock. The
+perpendicular direction is inert, and the gesture always drags away from the
+edge the panel is anchored to in order to open, back towards it to close. A
+drag that starts on a page (slider, list, scroll area) belongs to the page and
+never moves the drawer. Collapsed it is two short rows:
 the header (`[caret]` then `3D|2D`, `FPS`, `CAM` on the right) and the tab row
 (`FX` `DEBUG` `ABOUT` left, `RESET` right).
 

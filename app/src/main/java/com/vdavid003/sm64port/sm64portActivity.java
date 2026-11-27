@@ -313,7 +313,13 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
      *  native back to the widgets (entry: SeekBar, Integer min, TextView, unit). */
     private final java.util.Map<Integer, Object[]> fxBarByKey =
             new java.util.HashMap<>();
+    /* Panel drawer swipe state. Captured on ACTION_DOWN, so the axis is the
+     * docked edge's own axis at the instant the finger landed: flipping the
+     * dock takes effect on the next touch, with no restart. */
+    private float panelDownX = -1;
     private float panelDownY = -1;
+    private boolean panelSwipeArmed = false;
+    private boolean panelSwipeVerticalDock = false;
     private static final int PANEL_BG = 0xCC101010;
     private static final String CHANGELOG =
             "v1.0-alpha3 - what is new\n"
@@ -1256,74 +1262,110 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     }
 
     /**
-     * Panel gestures: a tap outside the open panel collapses it, and a downward
-     * swipe started on the panel (but not on a slider) collapses it too.
+     * True when (rawX, rawY) lands in a page's scroll container. Those drags
+     * belong to the page (slider thumbs, scrolling), so the drawer swipe must
+     * not arm there: in the vertical dock a horizontal slider drag would
+     * otherwise expand/collapse the panel.
+     */
+    private boolean overPanelScrollable(float rawX, float rawY) {
+        android.graphics.Rect r = new android.graphics.Rect();
+        for (int i = 0; i < pageScrollers.size(); i++) {
+            PageScroll sc = pageScrollers.get(i);
+            if (sc.getVisibility() != View.VISIBLE) continue;
+            if (sc.getGlobalVisibleRect(r) && r.contains((int) rawX, (int) rawY)) {
+                return true;
+            }
+        }
+        // Defensive: a slider row that is not (yet) inside a page scroller.
+        for (int i = 0; i < sliderRows.size(); i++) {
+            View row = sliderRows.get(i);
+            if (row.getVisibility() != View.VISIBLE) continue;
+            if (row.getGlobalVisibleRect(r) && r.contains((int) rawX, (int) rawY)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Panel drawer gestures: one handler for both docks, with the axis taken
+     * from the dock at touch time.
+     *
+     * <pre>
+     * horizontal dock (bottom strip): swipe up opens, swipe down closes
+     * vertical dock  (left half):    swipe right opens, swipe left closes
+     * </pre>
+     *
+     * Both docks use the same relationship: dragging <em>away</em> from the
+     * edge the panel is anchored to pulls the drawer out, dragging back
+     * <em>towards</em> that edge pushes it back. The bottom strip is anchored
+     * to the bottom edge, so "away" is up; the vertical dock is anchored to the
+     * left edge, so "away" is right. The perpendicular axis is not looked at at
+     * all, which is what makes up/down inert in the vertical dock.
+     *
+     * A collapse is only armed from the panel's non-scrolling chrome (header,
+     * tab strip, nav row). A drag that starts inside a page belongs to the page
+     * and its sliders. Events are observed, never consumed, so taps, the caret,
+     * the orientation toggle, sliders and the touch overlay keep their own
+     * touch handling.
      */
     private void handleDebugPanelGestures(android.view.MotionEvent ev) {
-        if (!debugPanelOpen()) {
-            // Collapsed: a swipe up on the bar expands the panel.
-            android.graphics.Rect barRect = new android.graphics.Rect();
-            switch (ev.getActionMasked()) {
-                case android.view.MotionEvent.ACTION_DOWN: {
-                    boolean onBar = false;
-                    if (tuningPanelView != null) {
-                        tuningPanelView.getGlobalVisibleRect(barRect);
-                        onBar = barRect.contains((int) ev.getRawX(), (int) ev.getRawY());
-                    }
-                    panelDownY = onBar ? ev.getRawY() : -1;
-                    break;
-                }
-                case android.view.MotionEvent.ACTION_MOVE:
-                    if (panelDownY >= 0 && panelDownY - ev.getRawY() > dp(70)) {
-                        panelDownY = -1;
-                        expandDebugPanel();
-                    }
-                    break;
-                case android.view.MotionEvent.ACTION_UP:
-                case android.view.MotionEvent.ACTION_CANCEL:
-                    panelDownY = -1;
-                    break;
+        final int action = ev.getActionMasked();
+        if (action == android.view.MotionEvent.ACTION_DOWN) {
+            panelSwipeArmed = false;
+            panelDownX = -1;
+            panelDownY = -1;
+            if (tuningPanelView == null) return;
+            panelSwipeVerticalDock = panelVertical;
+            boolean open = debugPanelOpen();
+            android.graphics.Rect r = new android.graphics.Rect();
+            tuningPanelView.getGlobalVisibleRect(r);
+            boolean inside = r.contains((int) ev.getRawX(), (int) ev.getRawY());
+            if (!inside) {
+                // Tap outside an open panel still collapses it.
+                if (open) collapseDebugPanelIfOpen();
+                return;
+            }
+            /* Collapsed, the panel IS the bar. Open, only its chrome arms the
+             * swipe (scroll rules above); the panel padding is too thin to
+             * matter. */
+            if (!open || !overPanelScrollable(ev.getRawX(), ev.getRawY())) {
+                panelSwipeArmed = true;
+                panelDownX = ev.getRawX();
+                panelDownY = ev.getRawY();
             }
             return;
         }
-        switch (ev.getActionMasked()) {
-            case android.view.MotionEvent.ACTION_DOWN: {
-                boolean inside = false;
-                android.graphics.Rect r = new android.graphics.Rect();
-                if (tuningPanelView != null) {
-                    tuningPanelView.getGlobalVisibleRect(r);
-                    inside = r.contains((int) ev.getRawX(), (int) ev.getRawY());
-                }
-                if (!inside) {
-                    collapseDebugPanelIfOpen();
-                    panelDownY = -1;
-                    break;
-                }
-                // Don't treat vertical slider drags as a collapse swipe.
-                boolean onSlider = false;
-                for (int i = 0; i < sliderRows.size(); i++) {
-                    View row = sliderRows.get(i);
-                    if (row.getVisibility() == View.VISIBLE) {
-                        row.getGlobalVisibleRect(r);
-                        if (r.contains((int) ev.getRawX(), (int) ev.getRawY())) {
-                            onSlider = true;
-                            break;
-                        }
-                    }
-                }
-                panelDownY = onSlider ? -1 : ev.getRawY();
-                break;
-            }
-            case android.view.MotionEvent.ACTION_MOVE:
-                if (panelDownY >= 0 && ev.getRawY() - panelDownY > dp(70)) {
-                    panelDownY = -1;
-                    collapseDebugPanelIfOpen();
-                }
-                break;
-            case android.view.MotionEvent.ACTION_UP:
-            case android.view.MotionEvent.ACTION_CANCEL:
+        if (action == android.view.MotionEvent.ACTION_UP
+                || action == android.view.MotionEvent.ACTION_CANCEL) {
+            panelSwipeArmed = false;
+            panelDownX = -1;
+            panelDownY = -1;
+            return;
+        }
+        if (action != android.view.MotionEvent.ACTION_MOVE || !panelSwipeArmed) {
+            return;
+        }
+        // Positive along the dock's axis = away from the anchored edge.
+        // Vertical dock: +x (right). Horizontal dock: -y (up).
+        final float along = panelSwipeVerticalDock
+                ? ev.getRawX() - panelDownX
+                : panelDownY - ev.getRawY();
+        final boolean open = debugPanelOpen();
+        if (!open) {
+            // Away from the edge: pull the drawer out. Same 70 dp as ever.
+            if (along > dp(70)) {
+                panelSwipeArmed = false;   // one open/close per touch
+                panelDownX = -1;
                 panelDownY = -1;
-                break;
+                expandDebugPanel();
+            }
+        } else if (-along > dp(70)) {
+            // Back towards the edge: push it in.
+            panelSwipeArmed = false;
+            panelDownX = -1;
+            panelDownY = -1;
+            collapseDebugPanelIfOpen();
         }
     }
 

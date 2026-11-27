@@ -16,6 +16,9 @@ compaction + docking, Java captions, vertical dock, and the three perf rewrites
 
 - [ ] Panel stills: VERT short page vs tall page (+ scroll), HORIZ pixel-diff
       baseline, sub-strips both docks, collapsed, restart persistence.
+- [ ] Panel swipe axis (code-complete, needs the charged panel): vertical dock
+      left/right toggles and up/down is inert; horizontal dock up/down unchanged;
+      a drag started on a page/slider must not move the drawer.
 - [ ] Cam-stick: heatmap still, dragged-point response, C-bit table, the three
       R-follow clips.
 - [ ] Wall-run: six-case `ptc wrjump` rig + the chain harness (the 90° corner
