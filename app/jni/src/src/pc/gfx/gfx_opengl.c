@@ -7766,4 +7766,38 @@ struct GfxRenderingAPI gfx_opengl_api = {
     gfx_opengl_shutdown
 };
 
+
+/* Names of FX programs whose shader failed to compile/link, for the status
+ * line: "none" or a comma list like "gi,ao". Without this a failed link looks
+ * exactly like "the optimisation did nothing" — the Adreno integer-% rejection
+ * hid for two measurement rounds before anyone noticed. */
+const char *gfx_opengl_prog_fail_list(void) {
+    static char buf[64];
+    static const struct {
+        int *state;
+        const char *name;
+    } progs[] = {
+        { &s_shadow_prog_state, "shadow" }, { &s_ray_prog_state, "ray" },
+        { &s_gi_prog_state, "gi" },         { &s_dn_prog_state, "dn" },
+        { &s_fx_prog_state, "fx" },         { &s_lut_prog_state, "lut" },
+        { &s_vel_prog_state, "vel" },       { &s_vmax_prog_state, "vmax" },
+        { &s_dof_prog_state, "dof" },       { &s_ao_prog_state, "ao" },
+        { &s_em_prog_state, "em" },         { &s_bl_prog_state, "bl" },
+    };
+    size_t n = 0;
+    int i;
+
+    buf[0] = 0;
+    for (i = 0; i < (int) (sizeof(progs) / sizeof(progs[0])); i++) {
+        if (*progs[i].state == -1) {
+            int w = snprintf(buf + n, sizeof(buf) - n, "%s%s", n ? "," : "", progs[i].name);
+            if (w > 0) n += (size_t) w;
+        }
+    }
+    if (n == 0) {
+        snprintf(buf, sizeof(buf), "none");
+    }
+    return buf;
+}
+
 #endif // RAPI_GL

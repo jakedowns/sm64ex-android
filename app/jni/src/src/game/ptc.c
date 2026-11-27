@@ -6198,4 +6198,14 @@ void ptc_format_status(char *buf, int len) {
             gfx_ui_status(buf + used, len - (int)used);
         }
     }
+    {
+        /* Which FX programs failed to link ("none" when healthy). A silent
+         * fallback to the legacy path must never look like a no-op. */
+        extern const char *gfx_opengl_prog_fail_list(void);
+        size_t used = strlen(buf);
+        if (used + 2 < (size_t)len) {
+            snprintf(buf + used, len - (int)used, " fxerr=%s",
+                     gfx_opengl_prog_fail_list());
+        }
+    }
 }
