@@ -187,8 +187,12 @@ device_sleep() {
     export LD_LIBRARY_PATH="/home/ubuntu/.local/lib/android-tools${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
     command -v "$adb_bin" 9>&- >/dev/null 2>&1 || return 0
     if "$adb_bin" 9>&- shell dumpsys power 2>/dev/null | grep -q "mWakefulness=Awake"; then
+        # 26 alone is a power-button press, which apps holding a wake lock (SDL
+        # keeps one while the game runs) can make a no-op; 223 is an explicit
+        # system sleep request and works regardless.
         "$adb_bin" 9>&- shell input keyevent 26 >/dev/null 2>&1 || true
-        log_event sleep_sent device "$DEVICE_LOCK" "screen off (keyevent 26)" 0 0 0 null
+        "$adb_bin" 9>&- shell input keyevent 223 >/dev/null 2>&1 || true
+        log_event sleep_sent device "$DEVICE_LOCK" "screen off (keyevent 26+223)" 0 0 0 null
     fi
 }
 
