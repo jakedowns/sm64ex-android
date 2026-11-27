@@ -771,6 +771,51 @@ measured centre, re-run, and update `PTC_WRC_PERFECT_DEF` so the default follows
 `ptc corneroff` clears the rig (freelook off, FOV restored) if a run is aborted;
 the harness calls it at the end of the sweep.
 
+### Running it from the panel (no host script)
+
+`DEBUG → MOVE → RUN CORNER SWEEP` runs the same eight timings on the device.
+The sweep is implemented in `ptc.c` next to the rig and warps to L38 itself
+(the rig uses the chamber's SW corner):
+
+1. it arms case 0, then lets one normal frame run — that is the rig's hold
+   tick, the same one the script's `cmd ptc cornerN` gets while it waits for
+   the batch;
+2. from then on `produce_one_frame()` runs `fx 450` ticks per frame (default
+   **10**) through the same `gfx_test_uncapped` path `cmd runticks` uses, then
+   presents that frame so the HUD, the panel and a cancel press stay live.  A
+   case ends within ~150 sim ticks (15 frames at the 10-tick default), so the
+   eight cases take a couple of seconds of wall clock and the whole thing is
+   still deterministic — only the number of ticks between presents changes,
+   never a tick;
+3. each tick the rig classifies the case from its own state (`ptc_csw_tick`),
+   so no trace buffer or adb round trip is needed.  `fx 451` caps a case at 220
+   ticks; a case that overruns is reported as stalled instead of hanging.
+
+A second press cancels, and so do `cmd cornersweep --es action stop|cancel` and
+any manual `ptc cornerN` / `cornerliveN` / `corneroff`.  Progress and the verdict
+come back in `cmd dump`:
+
+```
+csw=<finished>/8,<state>,p=<passing cases>,window=<lo>-<hi>|-
+cswc=<eight per-case outcome digits: 0 none, 1 pass, 2 fell, 3 stuck, 4 bonk>
+```
+
+so a passing run ends as `csw=8/8,pass,p=5,window=1380-1780 cswc=11111400`,
+`csw=3/8,running,p=2,window=1680-1780` mid-run, and the debug note carries the
+one-line summary `CORNER SWEEP: 5/8 pass, window d=1380-1780` (prefixed
+`FAIL, ` when a check fails, with the offending case appended).  `cswc=` exists
+so a panel run can be diffed against the script's outcome table row by row.
+
+Both assert the same criteria: `ACT_WALLRUN` re-entered on wall B
+(`|normal.x| < 0.7`) within `fx 412` ticks of the jump, ≥ 150 units along B
+after that, no floor contact before the re-entry, no per-tick step ≥ 130 u, no
+6-tick stall below 3 u/tick, `wr last_jump=1` on every case, and `runs ≥ 2` for
+the nominal timing.  The script's other checks are host-side by nature and stay
+in the script: dump-vs-trace agreement (there is no trace in-engine), repeat
+determinism, `FATAL`/`ANR` lines, the post-run `fps=`, and the stills/clip.  A
+native crash also cannot be self-reported — if the app dies the sweep simply
+never reaches `csw=8/8`.
+
 
 ### Measured window (2026-11-27, device run)
 

@@ -729,6 +729,26 @@ writes stills plus `results.tsv` to
 **Known mismatch, drawn on purpose:** the attach ray starts at the camera, not
 at the gun. The fan's apex is therefore behind Mario's head, and the view draws
 the hand → point leg separately so the offset is visible instead of hidden.
+
+### 90-degree wall-run corner sweep (DEBUG > MOVE)
+
+**RUN CORNER SWEEP** runs the whole eight-timing corner rig on the device — the
+same eight press distances `scripts/wallrun-corner-test.py` uses (`fx 410`
+nominal 1480, `fx 411` step 100) and the same pass criteria — without a host
+script. It warps to L38 (the rig uses the chamber's own SW corner), arms each
+case, and advances the simulation `fx 450` ticks per frame (default **10**)
+through the fast-forward path `cmd runticks` already uses, presenting a frame
+between slices. The panel and the HUD stay live: the button shows the case
+progress, a second press cancels, and the status line under it turns amber while
+running, green on pass, red on fail.
+
+`cmd cornersweep` starts it (and `cmd cornersweep --es action stop` cancels).
+Progress and the verdict stay in `cmd dump`: `csw=<done>/8,<state>,p=<pass>,
+window=<lo>-<hi>` plus `cswc=` with the eight per-case outcomes as digits
+(0 none, 1 pass, 2 fell, 3 stuck, 4 bonk). A passing run ends
+`csw=8/8,pass,p=5,window=1380-1780 cswc=11111400`, and the debug note keeps the
+one-line summary until the next run. Full criteria and the differences from the
+host harness: `TESTING.md`.
 ### Cam stick: response curve, radial heatmap and R-shoulder follow
 
 The right-hand analog camera stick has a user-editable response curve, drawn as
@@ -1275,7 +1295,13 @@ Tabs:
   `qd=<on>,<level>,<mute>`.
   A normal launch is unchanged when it is off. HUD (GAME HUD, DEBUG CAPTIONS,
   TOUCH CONTROLS) and PERFORMANCE
-  (PERF MONITOR, FRAME GRAPH, FPS COUNTER — all on by default) follow. LOGS is the
+  (PERF MONITOR, FRAME GRAPH, FPS COUNTER — all on by default) follow, then
+  **REMOTE** — `REMOTE: OFF` / `ON (waiting)` / `ON (live)` / `ON (error: …)`,
+  the no-adb switch for the opt-in otsm64remote bridge: ON rewrites only
+  `enabled = true` in `sm64remote.cfg` (url, token and interval kept) and
+  starts the worker immediately, OFF stops it and writes `enabled = false`; it
+  refuses without a url and a token, with the reason on the button
+  ([`OTSM64REMOTE.md`](OTSM64REMOTE.md)). LOGS is the
   bug-report page: EXPORT/SHARE the debug report, REFRESH INFO, **LEIA
   VERBOSE** (switches the SDK to Trace logging and restarts so the whole
   launch is captured; the capture then covers every process, including the

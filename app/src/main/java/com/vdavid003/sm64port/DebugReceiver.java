@@ -153,6 +153,18 @@ public class DebugReceiver extends BroadcastReceiver {
                 Log.i(TAG, "CMD runticks n=" + n);
                 break;
             }
+            case "cornersweep": {
+                /* In-engine 8-timing corner sweep (DEBUG > MOVE too).
+                 * `cmd cornersweep` starts it; `--es action stop|cancel`
+                 * (or any non-start action) cancels a running sweep. */
+                String action = intent.getStringExtra("action");
+                boolean start = action == null || action.isEmpty()
+                        || action.equals("start");
+                a.debugPtc(start ? "cornersweep" : "cornersweepstop");
+                Log.i(TAG, "CMD cornersweep action=" + action
+                        + (start ? " (start)" : " (stop)"));
+                break;
+            }
             case "cam2": {
                 int m = intent.getIntExtra("mode", 5);
                 a.debugSetCamMode2(m);
@@ -240,7 +252,7 @@ public class DebugReceiver extends BroadcastReceiver {
                 break;
             }
             case "remote": {
-                /* status | reload (config lives in <external files>/sm64remote.cfg) */
+                /* status | reload | on | off (config: <external files>/sm64remote.cfg) */
                 String action = intent.getStringExtra("action");
                 a.debugRemote(action);
                 Log.i(TAG, "CMD remote action=" + action);

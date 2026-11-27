@@ -126,6 +126,18 @@ void produce_one_frame(void) {
      * renders one normal frame of the resulting state.  This only ever runs
      * on the game thread. */
     int ff_ticks = ptc_trace_take_ticks();
+    int csw_ticks = 0;
+
+    if (ff_ticks <= 0) {
+        /* The corner sweep (DEBUG > MOVE) drives this same fast-forward path a
+         * slice at a time: at most fx 450 ticks per frame, then one present, so
+         * the panel and the HUD stay live and a press can cancel.  A real
+         * runticks batch always wins; the sweep just waits for the next frame.
+         * The sweep is not traced: `cmd trace` keeps the last real batch. */
+        extern int ptc_cornersweep_ticks(void);
+        ff_ticks = ptc_cornersweep_ticks();
+        csw_ticks = ff_ticks;
+    }
 
     if (ff_ticks > 0) {
         extern int gfx_test_uncapped;
@@ -133,11 +145,13 @@ void produce_one_frame(void) {
         gfx_test_uncapped = 1;
         for (int i = 0; i < ff_ticks; i++) {
             game_loop_one_iteration();
-            ptc_trace_tick();
+            if (csw_ticks <= 0) {
+                ptc_trace_tick();
+            }
         }
         gfx_test_uncapped = 0;
 
-        {
+        if (csw_ticks <= 0) {
             int ms = ptc_trace_finish(ff_ticks);
             PTC_FF_LOGI("PTC runticks done n=%d ms=%d", ff_ticks, ms);
         }

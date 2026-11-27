@@ -1,7 +1,8 @@
 # otsm64remote — opt-in telemetry + remote-input bridge
 
 **Off by default. Nothing leaves the tablet unless `enabled = true` is written
-into the config file.** The tablet is the authority; the browser at
+into the config file** — either by hand or by the `DEBUG → SYS → REMOTE` switch,
+which writes that same line. The tablet is the authority; the browser at
 <https://omitest.jakedowns.com/otsm64remote/> is a viewer. This is a mirror plus
 a one-tick remote input, not crossplay: there are no sessions, no client
 prediction and no second simulation.
@@ -14,8 +15,9 @@ are ever sent, and the game never waits on the network.
 
 ## Config
 
-Read once at startup (and again on `cmd remote reload`) from the app's external
-files dir, so it is inspectable and pullable over adb:
+Read at startup, again on `cmd remote reload`, and rewritten by the
+`DEBUG → SYS → REMOTE` toggle, from the app's external files dir, so it is
+inspectable and pullable over adb:
 
 ```
 /sdcard/Android/data/com.vdavid003.sm64port/files/sm64remote.cfg
@@ -31,7 +33,7 @@ interval_ms = 160
 
 | key | meaning |
 | --- | --- |
-| `enabled` | `true`/`1`/`yes`/`on` starts the worker. Anything else (or a missing file) keeps the native hooks as no-ops. |
+| `enabled` | `true`/`1`/`yes`/`on` starts the worker. Anything else (or a missing file) keeps the native hooks as no-ops. The `DEBUG → SYS → REMOTE` switch writes this line for you. |
 | `url` | Relay base. Accepts the directory (`https://host/otsm64remote/`) or the script itself (`…/state.php`); `action=` is appended by the app. Must be **https** (Android blocks cleartext by default). |
 | `token` | Shared secret sent as the `X-Sm64-Token` **header**; never in the URL and never logged. Change it. |
 | `interval_ms` | State push period, clamped to 20–1000 ms. Default 80 ms ≈ 12.5 Hz. |
@@ -46,11 +48,42 @@ adb shell am broadcast -n com.vdavid003.sm64port/.DebugReceiver \
     -a com.vdavid003.sm64port.CMD --es cmd remote --es action reload
 ```
 
+### Panel toggle (no adb)
+
+`DEBUG → SYS → REMOTE` is the privacy switch. It calls the same setter as
+`cmd remote on|off`, so the button and the command can never diverge:
+
+* **ON** rewrites *only* the `enabled` line of `sm64remote.cfg` — `url`,
+  `token`, `interval_ms`, comments, key order and line endings stay
+  byte-for-byte — then starts the worker immediately. No relaunch, no
+  `cmd remote reload`. It **requires a url and a non-empty token**: a missing
+  config, an empty `url`, an empty/missing `token` (or a failed write) refuses
+  the ON, starts no thread, writes nothing, and puts the reason on the button
+  and in one log line.
+* **OFF** stops the worker immediately (interrupt, abort any request in flight,
+  join) and writes `enabled = false`. The stored value is what the next launch
+  obeys, so the switch survives a restart without adb.
+
+The row reports the live bridge state, refreshed with the panel readout
+(500 ms), not just the stored preference:
+
+| row | meaning |
+| --- | --- |
+| `REMOTE: OFF` | no worker thread. |
+| `REMOTE: ON (waiting)` | thread up, no successful push yet (title screen, paused, or the relay has not answered). |
+| `REMOTE: ON (live)` | a push landed in the last 1.5 s, i.e. `pushed=` is climbing. |
+| `REMOTE: ON (error: …)` | the last attempt failed (`push HTTP 429`, `push UnknownHostException`, …). |
+
+A refused ON keeps its reason on the button (`REMOTE: OFF (no url)`,
+`(no token)`, `(no config)`, `(cfg write failed)`) until the next transition.
+
 Enabling and disabling each log exactly one line:
 
 ```
-I/SM64Remote: enabled url=https://… interval=80ms token=set
-I/SM64Remote: disabled
+I/SM64Remote: enabled url=https://… interval=80ms token=set          (launch/reload)
+I/SM64Remote: REMOTE enabled by panel url=https://… interval=80ms token=set
+I/SM64Remote: REMOTE disabled by panel
+I/SM64Remote: disabled                                              (launch with enabled = false)
 ```
 
 The token is never printed; `cmd remote` / `cmd dump` report only
@@ -131,8 +164,8 @@ press.
 | `app/jni/src/src/game/mario.c` | one call at the end of `execute_mario_action()` — reads `gMarioState` pos/yaw/action plus the animation state `set_mario_animation()` wrote. Read-only; no second sim, no render-loop change. |
 | `app/jni/src/src/game/game_init.c` | one call after `read_controller_inputs()` — ORs a pending remote press into that tick's controller state. |
 | `app/jni/src/src/pc/gfx/gfx_sdl2.c` | JNI: enable, poll (JSON into a caller buffer), queue/clear input, counters, shared `gfx_uptime_ms()`. |
-| `app/src/main/java/com/vdavid003/sm64port/Sm64Remote.java` | config parse, one worker thread that samples the ring at 30 Hz into a bounded drop-oldest queue, HTTPS push at `interval_ms` + 10 Hz command poll, watchdog. |
-| `app/src/main/java/com/vdavid003/sm64port/sm64portActivity.java` | `start()` in `onCreate`, `stop()` in `onDestroy`, `cmd remote` + `REMOTE …` line in `cmd dump`. |
+| `app/src/main/java/com/vdavid003/sm64port/Sm64Remote.java` | config parse, one worker thread that samples the ring at 30 Hz into a bounded drop-oldest queue, HTTPS push at `interval_ms` + 10 Hz command poll, watchdog, `setEnabled()` (panel + `cmd remote on/off`), config rewrite and panel label. |
+| `app/src/main/java/com/vdavid003/sm64port/sm64portActivity.java` | `start()` in `onCreate`, `stop()` in `onDestroy`, the `DEBUG → SYS → REMOTE` row and its 500 ms refresh, `cmd remote` + `REMOTE …` line in `cmd dump`. |
 | `app/src/main/AndroidManifest.xml` | `INTERNET` permission (needed by the opt-in bridge; no traffic while disabled). |
 
 `cmd dump` reports the bridge state on its own line:
@@ -227,8 +260,10 @@ worker thread exists.
 
 ## Security notes
 
-* **Opt-in only.** The default config (or no config file) sends nothing. The
-  feature is inert on a stock install beyond an unused `INTERNET` permission.
+* **Opt-in only.** The default config (or no config file) sends nothing, and the
+  `DEBUG → SYS → REMOTE` switch refuses to turn it on without a url and a token.
+  The feature is inert on a stock install beyond an unused `INTERNET`
+  permission.
 * **The token is a header.** It never appears in the URL, so it does not leak
   through proxy logs, `Referer`, screenshots of the viewer, or the app's own
   `Log`/`cmd dump` output. Rotate it by editing the file and reloading; there is
@@ -254,15 +289,22 @@ worker thread exists.
 # state: enabled? counters? last error?
 adb shell am broadcast -n com.vdavid003.sm64port/.DebugReceiver \
     -a com.vdavid003.sm64port.CMD --es cmd remote
+# toggle without the panel (same setter, same log lines)
+adb shell am broadcast -n com.vdavid003.sm64port/.DebugReceiver \
+    -a com.vdavid003.sm64port.CMD --es cmd remote --es action on
+adb shell am broadcast -n com.vdavid003.sm64port/.DebugReceiver \
+    -a com.vdavid003.sm64port.CMD --es cmd remote --es action off
 # full dump line
 adb shell am broadcast -n com.vdavid003.sm64port/.DebugReceiver \
     -a com.vdavid003.sm64port.CMD --es cmd dump
 adb logcat -d -s SM64Remote SM64Cmd
 ```
 
-Expected on enable: one `enabled url=… interval=… token=set` line, then
-`REMOTE … pushed=` climbing while a level is running. Expected on disable: one
-`disabled` line and no further pushes (the ring is idle, the thread is gone).
+Expected on enable: one `enabled url=… interval=… token=set` line (or
+`REMOTE enabled by panel …`), then `REMOTE … pushed=` climbing while a level is
+running. Expected on disable: one `REMOTE disabled by panel` line and no further
+pushes (the ring is idle, the thread is gone). `cmd remote` reports the same
+state the button shows.
 
 The game-side half can be exercised without the relay (handy for a latency
 measurement that excludes the network):

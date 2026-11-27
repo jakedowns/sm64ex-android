@@ -756,6 +756,23 @@ Java_com_vdavid003_sm64port_sm64portActivity_nativePtcTrace(JNIEnv *env, jclass 
     return (*env)->NewStringUTF(env, trace != NULL ? trace : "");
 }
 
+/* DEBUG > MOVE: in-engine corner sweep (see ptc.h / TESTING.md).  The label is
+ * the one-line status under the button; the state picks its colour and whether
+ * the button reads RUN or STOP. */
+JNIEXPORT jstring JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeCornerSweepLabel(JNIEnv *env, jclass clazz) {
+    char buf[96];
+    (void) clazz;
+    ptc_cornersweep_label(buf, (int) sizeof(buf));
+    return (*env)->NewStringUTF(env, buf);
+}
+
+JNIEXPORT jint JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeCornerSweepState(JNIEnv *env, jclass clazz) {
+    (void) env; (void) clazz;
+    return (jint) ptc_cornersweep_state();
+}
+
 JNIEXPORT void JNICALL
 Java_com_vdavid003_sm64port_sm64portActivity_nativeSetFreecamMove(JNIEnv *env, jclass clazz, jint on) {
     (void) env; (void) clazz;

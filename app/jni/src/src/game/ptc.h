@@ -61,4 +61,22 @@ void ptc_wrc_dial_set(int which, int value);
 int  ptc_wrc_dial_get(int which);
 void ptc_wrc_format(char *buf, int len);
 
+/* In-engine version of scripts/wallrun-corner-test.py: the same eight timings,
+ * the same pass criteria, sliced across frames from the panel
+ * (DEBUG > MOVE > RUN CORNER SWEEP) or `cmd cornersweep`.
+ *  - ptc_cornersweep_ticks() is the per-frame fast-forward request that
+ *    produce_one_frame() services through the runticks path (fx 450 = ticks
+ *    per slice, fx 451 = per-case tick budget);
+ *  - ptc_cornersweep_format() fills the `csw=` dump field, *_cases() the
+ *    `cswc=` per-case outcome digits, ptc_cornersweep_label() the panel line;
+ *  - ptc_cornersweep_state() is 0 idle, 1 running, 2 pass, 3 fail,
+ *    4 cancelled, 5 refused (not in the Portal Test Chamber). */
+int  ptc_cornersweep_ticks(void);
+void ptc_cornersweep_start(void);
+void ptc_cornersweep_stop(void);
+void ptc_cornersweep_format(char *buf, int len);
+void ptc_cornersweep_cases(char *buf, int len);
+void ptc_cornersweep_label(char *buf, int len);
+int  ptc_cornersweep_state(void);
+
 #endif

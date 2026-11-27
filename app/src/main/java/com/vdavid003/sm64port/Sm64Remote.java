@@ -7,6 +7,7 @@ import android.util.Log;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -38,7 +39,10 @@ import java.util.regex.Pattern;
  * </pre>
  *
  * Absent or {@code enabled = false} means nothing is sent and the native
- * hooks stay no-ops. Full protocol and security notes: OTSM64REMOTE.md
+ * hooks stay no-ops. The DEBUG -> SYS -> REMOTE switch (and
+ * {@code cmd remote on|off}) rewrites only this {@code enabled} line through
+ * {@link #setEnabled}, preserving url/token/interval_ms. Full protocol and
+ * security notes: OTSM64REMOTE.md
  *
  * Threading: one worker thread owns the C ring's read side and the HTTP
  * connection. It samples the ring at ~30 Hz, coalesces into a bounded
@@ -79,6 +83,8 @@ public final class Sm64Remote {
         public String url = "";
         public String token = DEFAULT_TOKEN;
         public int intervalMs = DEFAULT_INTERVAL_MS;
+        /** True when the file carried a `token` key (an empty one still counts). */
+        public boolean tokenSet;
 
         public String describe() {
             return "enabled=" + enabled + " url=" + (url.isEmpty() ? "<unset>" : url)
@@ -107,6 +113,19 @@ public final class Sm64Remote {
 
     /* Reused by the worker; no per-tick allocation on the Java side either. */
     private static final byte[] POLL_BUF = new byte[512];
+
+    /* The request in flight, so stop() can abort it instead of waiting out the
+     * 3 s read timeout. Never contains the token (it is a header). */
+    private static volatile HttpURLConnection sConn;
+    /** Sticky short reason shown on the panel after a refused ON. */
+    private static volatile String sNotice = "";
+    /** "live" = a push landed within this window; older means waiting. */
+    private static final long LIVE_WINDOW_MS = 1500;
+
+    private static final int PANEL_OFF = 0;
+    private static final int PANEL_WAITING = 1;
+    private static final int PANEL_LIVE = 2;
+    private static final int PANEL_ERROR = 3;
 
     private Sm64Remote() {}
 
@@ -152,6 +171,7 @@ public final class Sm64Remote {
                         break;
                     case "token":
                         cfg.token = value;
+                        cfg.tokenSet = true;
                         break;
                     case "interval_ms": {
                         try {
@@ -180,8 +200,12 @@ public final class Sm64Remote {
     }
 
     private static String readAll(File f) throws IOException {
+        return readAll(f, 4096);
+    }
+
+    private static String readAll(File f, int max) throws IOException {
         try (FileInputStream in = new FileInputStream(f)) {
-            return new String(drain(in, 4096), StandardCharsets.UTF_8);
+            return new String(drain(in, max), StandardCharsets.UTF_8);
         }
     }
 
@@ -199,7 +223,16 @@ public final class Sm64Remote {
 
     /** Reads the config and starts the worker when it says enabled = true. */
     public static synchronized void start(Context context) {
-        stop();
+        startInternal(context, false);
+    }
+
+    /**
+     * @param byPanel true for the DEBUG -> SYS button / `cmd remote on`, which
+     *                logs the transition as "REMOTE enabled by panel" instead
+     *                of the launch-time line.
+     */
+    private static synchronized void startInternal(Context context, boolean byPanel) {
+        stopInternal();
         Config cfg = load(context);
         if (!cfg.enabled || cfg.url.isEmpty()) {
             sCfg = cfg;
@@ -209,6 +242,7 @@ public final class Sm64Remote {
             return;
         }
         sCfg = cfg;
+        sNotice = "";
         sPushed = 0;
         sCommands = 0;
         sErrors = 0;
@@ -218,7 +252,8 @@ public final class Sm64Remote {
         sState = "on";
         sPushIntervalMs = cfg.intervalMs;
         nativeSetRemoteEnabled(1);
-        Log.i(TAG, "enabled url=" + cfg.url + " interval=" + cfg.intervalMs
+        Log.i(TAG, (byPanel ? "REMOTE enabled by panel" : "enabled")
+                + " url=" + cfg.url + " interval=" + cfg.intervalMs
                 + "ms token=" + (DEFAULT_TOKEN.equals(cfg.token) ? "default" : "set"));
         sRunning = true;
         Thread t = new Thread(Sm64Remote::worker, "sm64remote");
@@ -229,8 +264,28 @@ public final class Sm64Remote {
 
     /** Stops the worker (one "disabled" line, no token). */
     public static synchronized void stop() {
+        if (stopInternal()) {
+            Log.i(TAG, "disabled");
+        }
+    }
+
+    /**
+     * The body of {@link #stop()}: no log, so the panel transition can emit
+     * exactly one line of its own. Returns whether the worker was running.
+     */
+    private static synchronized boolean stopInternal() {
         boolean wasRunning = sRunning;
         sRunning = false;
+        /* Abort any request in flight: an interrupt cannot break a socket read,
+         * so without this an OFF could trail a push by the 3 s read timeout. */
+        HttpURLConnection c = sConn;
+        sConn = null;
+        if (c != null) {
+            try {
+                c.disconnect();
+            } catch (Throwable ignored) {
+            }
+        }
         Thread t = sThread;
         sThread = null;
         if (t != null) {
@@ -247,7 +302,138 @@ public final class Sm64Remote {
         }
         if (wasRunning) {
             sState = "off";
-            Log.i(TAG, "disabled");
+        }
+        return wasRunning;
+    }
+
+    /** True while the worker thread is alive (the panel's ON state). */
+    public static boolean isRunning() {
+        return sRunning;
+    }
+
+    /**
+     * The one setter behind the DEBUG -> SYS button and `cmd remote on|off`, so
+     * the two can never diverge.
+     *
+     * <p>ON rewrites only the `enabled` line of sm64remote.cfg (url, token,
+     * interval_ms and comments stay byte-for-byte) and then starts the worker
+     * immediately. It refuses - no write, no thread, one log line and a sticky
+     * reason on the button - when the config is missing, has no url, or has no
+     * token. OFF stops the worker (interrupt + abort the in-flight request)
+     * and writes `enabled = false`.
+     *
+     * @return the panel label after the attempt, e.g. "REMOTE: ON (waiting)".
+     */
+    public static synchronized String setEnabled(Context context, boolean on) {
+        File f = cfgFile(context);
+        if (!on) {
+            boolean wasRunning = stopInternal();
+            sState = "off";
+            sCfg.enabled = false;
+            boolean wrote = writeEnabled(f, false);
+            sNotice = "";
+            /* One line per transition, never the token. */
+            Log.i(TAG, "REMOTE disabled by panel"
+                    + (wasRunning ? "" : " (was not running)")
+                    + (wrote ? "" : " (no config file to update)"));
+            return panelLabel();
+        }
+
+        Config cfg = load(context);
+        String reason;
+        String detail;
+        if (!f.isFile()) {
+            reason = "no config";
+            detail = "sm64remote.cfg not found (push one with url + token first)";
+        } else if (cfg.url.isEmpty()) {
+            reason = "no url";
+            detail = "url is empty in sm64remote.cfg";
+        } else if (!cfg.tokenSet || cfg.token.isEmpty()) {
+            reason = "no token";
+            detail = "token is empty in sm64remote.cfg";
+        } else {
+            reason = null;
+            detail = null;
+        }
+        if (reason != null) {
+            sNotice = reason;
+            Log.w(TAG, "REMOTE enable refused: " + detail);
+            return panelLabel();
+        }
+        if (!writeEnabled(f, true)) {
+            sNotice = "cfg write failed";
+            Log.w(TAG, "REMOTE enable refused: could not write " + CFG_NAME);
+            return panelLabel();
+        }
+        startInternal(context, true);
+        sNotice = "";
+        return panelLabel();
+    }
+
+    /**
+     * Rewrites only the `enabled` line, preserving every other byte of the file
+     * (url, token, interval_ms, comments, key order, CRLF). A temp file plus a
+     * rename keeps a reader from ever seeing a half-written config.
+     */
+    static boolean writeEnabled(File f, boolean on) {
+        if (f == null || !f.isFile()) {
+            return false;
+        }
+        String value = "enabled = " + (on ? "true" : "false");
+        try {
+            String text = readAll(f, 64 * 1024);
+            String nl = text.contains("\r\n") ? "\r\n" : "\n";
+            String[] raw = text.split("\n", -1);
+            StringBuilder out = new StringBuilder(text.length() + 16);
+            boolean replaced = false;
+            for (int i = 0; i < raw.length; i++) {
+                String line = raw[i];
+                if (line.endsWith("\r")) {
+                    line = line.substring(0, line.length() - 1);
+                }
+                if (!replaced) {
+                    String bare = line.trim();
+                    if (!bare.isEmpty() && !bare.startsWith("#") && !bare.startsWith(";")) {
+                        int eq = bare.indexOf('=');
+                        if (eq > 0 && "enabled".equals(
+                                bare.substring(0, eq).trim().toLowerCase(Locale.ROOT))) {
+                            line = value;
+                            replaced = true;
+                        }
+                    }
+                }
+                if (i > 0) {
+                    out.append(nl);
+                }
+                out.append(line);
+            }
+            if (!replaced) {
+                if (out.length() > 0 && out.charAt(out.length() - 1) != '\n') {
+                    out.append(nl);
+                }
+                out.append(value).append(nl);
+            }
+            byte[] bytes = out.toString().getBytes(StandardCharsets.UTF_8);
+            File dir = f.getParentFile();
+            File tmp = dir == null ? null : new File(dir, f.getName() + ".tmp");
+            if (tmp != null) {
+                try (FileOutputStream fo = new FileOutputStream(tmp)) {
+                    fo.write(bytes);
+                    fo.getFD().sync();
+                }
+                if (tmp.renameTo(f)) {
+                    return true;
+                }
+                //noinspection ResultOfMethodCallIgnored
+                tmp.delete();
+            }
+            try (FileOutputStream fo = new FileOutputStream(f)) {
+                fo.write(bytes);
+            }
+            return true;
+        } catch (Throwable t) {
+            Log.w(TAG, "config write failed: " + t);
+            return false;
         }
     }
 
@@ -291,6 +477,63 @@ public final class Sm64Remote {
                 + (sLastPushMs > 0
                         ? " lastPushAgo=" + (SystemClock.uptimeMillis() - sLastPushMs) + "ms"
                         : "");
+    }
+
+    /* --------------------------------------------------------------- panel state */
+
+    /** One of PANEL_OFF/WAITING/LIVE/ERROR, from the live worker state. */
+    private static int panelStateCode() {
+        if (!sRunning) {
+            return PANEL_OFF;
+        }
+        long now = SystemClock.uptimeMillis();
+        boolean pushedRecently = sPushed > 0 && now - sLastPushMs <= LIVE_WINDOW_MS;
+        if (!sLastError.isEmpty() && !pushedRecently) {
+            return PANEL_ERROR;
+        }
+        return pushedRecently ? PANEL_LIVE : PANEL_WAITING;
+    }
+
+    /**
+     * The DEBUG -> SYS row text. Live state, not a stored preference:
+     * "REMOTE: OFF", "REMOTE: ON (waiting)", "REMOTE: ON (live)",
+     * "REMOTE: ON (error: push HTTP 429)". A refused ON keeps its reason on the
+     * button until the next accepted transition.
+     */
+    public static String panelLabel() {
+        switch (panelStateCode()) {
+            case PANEL_LIVE:
+                return "REMOTE: ON (live)";
+            case PANEL_WAITING:
+                return "REMOTE: ON (waiting)";
+            case PANEL_ERROR:
+                return "REMOTE: ON (error: " + sLastError + ")";
+            case PANEL_OFF:
+            default: {
+                String label = "REMOTE: OFF";
+                if ("no-url".equals(sState)) {
+                    label += " (cfg enabled, no url)";
+                } else if (sNotice != null && !sNotice.isEmpty()) {
+                    label += " (" + sNotice + ")";
+                }
+                return label;
+            }
+        }
+    }
+
+    /** Panel colour for {@link #panelLabel()}: green live, amber waiting, red error. */
+    public static int panelColor() {
+        switch (panelStateCode()) {
+            case PANEL_LIVE:
+                return 0xFF66FF99;
+            case PANEL_WAITING:
+                return 0xFFFFD966;
+            case PANEL_ERROR:
+                return 0xFFFF7777;
+            case PANEL_OFF:
+            default:
+                return 0xFF888888;
+        }
     }
 
     /* ------------------------------------------------------------------ worker */
@@ -411,6 +654,7 @@ public final class Sm64Remote {
         HttpURLConnection c = null;
         try {
             c = open(url, "POST", bytes.length);
+            sConn = c;
             try (OutputStream out = c.getOutputStream()) {
                 out.write(bytes);
             }
@@ -430,11 +674,16 @@ public final class Sm64Remote {
             }
             sPushed++;
             sLastPushMs = SystemClock.uptimeMillis();
+            sLastError = "";
             sState = "on";
             return PUSH_OK;
         } catch (Throwable t) {
             noteError("push " + t.getClass().getSimpleName());
             return PUSH_FAIL;
+        } finally {
+            if (sConn == c) {
+                sConn = null;
+            }
         }
         /* No disconnect(): reading the response to EOF returns the socket to
          * the JDK's keep-alive pool, which is what makes 12.5 pushes/s plus
@@ -445,6 +694,7 @@ public final class Sm64Remote {
         HttpURLConnection c = null;
         try {
             c = open(url, "GET", -1);
+            sConn = c;
             int code = c.getResponseCode();
             if (code < 200 || code >= 300) {
                 noteError("commands HTTP " + code);
@@ -458,6 +708,10 @@ public final class Sm64Remote {
         } catch (Throwable t) {
             noteError("commands " + t.getClass().getSimpleName());
             return false;
+        } finally {
+            if (sConn == c) {
+                sConn = null;
+            }
         }
     }
 

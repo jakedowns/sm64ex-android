@@ -43,6 +43,10 @@ compaction + docking, Java captions, vertical dock, and the three perf rewrites
       inherited-pose rejection seeds a behind-Mario pose — verify it reads well.
 - [ ] Wall-run rig pass window: measure and document the timing window at a 90°
       corner, and whether an early/late jump should bounce rather than fall.
+      The window is measured (1380-1780 passes, 1280 and below fails) and the
+      sweep now also runs in-engine (`DEBUG > MOVE > RUN CORNER SWEEP` /
+      `cmd cornersweep`, dump `csw=`/`cswc=`); device-verify that its verdict
+      matches the host harness, then tick this line.
 
 ## Performance, next (biggest levers left)
 
@@ -84,6 +88,15 @@ compaction + docking, Java captions, vertical dock, and the three perf rewrites
 
 ## otsm64remote (code landed, awaiting device evidence)
 
+- [x] Panel switch (2026-11-27, code-complete): `DEBUG → SYS → REMOTE` rewrites
+      only the `enabled` line of `sm64remote.cfg` (url/token/interval kept
+      byte-for-byte) and starts/stops the worker with no relaunch and no adb;
+      `cmd remote on|off` is the same setter. Row states: `REMOTE: OFF`,
+      `ON (waiting)`, `ON (live)`, `ON (error: …)`.
+- [ ] Device: toggle ON with a valid cfg (`pushed=` climbs), toggle OFF (counters
+      freeze, one `REMOTE disabled by panel` line, no in-flight POST), and a
+      relaunch honours the stored value. A cfg with no url/token must refuse ON
+      with the reason on the button.
 - [ ] Device run: viewer flips `demo` → `live` on pushes, and a relay
       `{"input":"jump"}` produces a jump in the HUD within ~100 ms. Capture the
       timestamps (`SM64Remote` log + screenshot pair) in

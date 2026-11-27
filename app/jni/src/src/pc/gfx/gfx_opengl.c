@@ -2808,8 +2808,11 @@ void gfx_opengl_ssfx_set(int which, int value) {
         }
         /* 90-degree corner rig dials (ptc.c; fx 410-415): 410 perfect press
          * distance, 411 spacing of the eight timings, 412 re-entry deadline
-         * ticks, 413 entry height, 414 entry speed, 415 corner-stuck ticks. */
-        case 410: case 411: case 412: case 413: case 414: case 415: {
+         * ticks, 413 entry height, 414 entry speed, 415 corner-stuck ticks.
+         * 450 = in-engine corner-sweep ticks per presented frame, 451 = tick
+         * budget of one case before it is called stuck. */
+        case 410: case 411: case 412: case 413: case 414: case 415:
+        case 450: case 451: {
             extern void ptc_wrc_dial_set(int which, int value);
             ptc_wrc_dial_set(which, value);
             break;

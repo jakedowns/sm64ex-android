@@ -74,6 +74,50 @@ instead of falling.  Current answer from the code: it already does what the
 physics says, late = bonk (jump-off cooldown), early = falls short of the wall;
 changing that is a gameplay decision, not a rig bug.
 
+### In-engine corner sweep, no host script (worktree `w5-corner-sweep`, 2026-11-27)
+
+Code-complete, not built and not device-run (the parent builds centrally).
+`DEBUG → MOVE → RUN CORNER SWEEP` and `cmd cornersweep` run all eight corner
+timings on the device and evaluate the harness criteria in-engine, so the
+window can be re-measured without a host script (and by a human on the tablet).
+
+How it works, and why it does not freeze the app:
+
+- `ptc_cornersweep_ticks()` is called once per frame from
+  `produce_one_frame()`.  It asks for `fx 450` ticks (default 10) and the
+  existing `gfx_test_uncapped` fast-forward block runs them and presents one
+  frame, exactly as `cmd runticks` does.  A real `cmd runticks` batch still
+  wins for that frame; the sweep waits.  The sweep does **not** touch the trace
+  ring or print `PTC runticks done`, so a previous `cmd trace` stays readable.
+- The arm frame returns 0 ticks on purpose: that one normal tick is the rig's
+  hold tick (place → Mario's step → re-place + `movekit_wr_clear`), the same
+  state the host harness hands to its `runticks` batch.  First slice tick then
+  attaches the wall run on wall A, matching the measured device numbers.
+- The per-tick criteria live in `ptc_csw_tick()`, called at the end of
+  `ptc_wrc_update()`: A-run normal (+X, speed 40-60), jump stage reached,
+  floor-before-B, per-tick position step < 130 u and stall runs < 6 ticks, all
+  on the same tick window (`rel >= 0` through the re-entry tick) the Python
+  harness scans.  `wr last_jump` / `runs` come from `movekit_wr_state()`.
+- Per-case results are kept in `s_csw*Case[8]`; `csw=` carries
+  `<done>/8,<state>,p=<pass>,window=<lo>-<hi>` and `cswc=` the eight outcome
+  digits, so a panel run can be diffed against `wallrun-corner-test.py`'s
+  table.  The note gets one summary line and keeps it until the next run.
+- Cancel paths: second panel press, `cmd cornersweep --es action stop|cancel`,
+  and any manual `ptc cornerN`/`cornerliveN`/`corneroff` (they abort the sweep
+  so the two cannot fight over `s_wrc*`).  Leaving L38 mid-run refuses after a
+  few seconds of frames; the panel button warps to L38 and waits 2.6 s before
+  arming.
+
+What cannot be ported in-engine (documented in TESTING.md): dump-vs-trace
+agreement (there is no trace), repeat determinism, `FATAL`/`ANR` scanning, the
+post-run `fps=` sanity check, and a native crash (if the app dies the sweep
+never reaches 8/8).  The host script stays the authority for those.
+
+Open after the device run: confirm `cswc=11111400` + `window=1380-1780` matches
+the 2026-11-27 host measurement, and check the panel stayed live (~2 s run,
+one present per slice).  If the verdicts differ, compare `wrc=` and `cswc=`
+from the same case before suspecting the port.
+
 
 All nine worktrees are applied to the main tree and the combined build is green.
 Not yet verified on hardware because the tablet dropped off Wi-Fi adb and needs a
@@ -589,14 +633,16 @@ keep a feature inside its block:
 | `420`-`429` | reduced-resolution FX/post pass, worktree `w4-fx-halfres` (taken: `420` divisor 1/n, `421` upsample mode 0=bilinear 1=depth-aware, `422` read-only divisor the last frame used; `423`-`429` free) |
 | `430`-`439` | QUALITY presets, worktree `w4-presets` (taken: `430` apply tier 0=LOW 1=MED 2=HIGH, `431` read-only tier last applied; `432`-`439` free) |
 | `440`-`449` | otsm64remote, worktree `w5-otsm64remote` (registered 2026-11-26; **unused** — the bridge is config-file driven and deliberately has no fx key) |
+| `450`-`459` | in-engine corner sweep, worktree `w5-corner-sweep` (taken: `450` ticks per presented frame, default 10; `451` per-case tick budget, default 220; `452`-`459` free) |
 
 ### otsm64remote: opt-in telemetry + one-tick remote input
 Code-complete 2026-11-26, not built or device-verified (the parent applies the
 patch and builds centrally). Full protocol: `OTSM64REMOTE.md`.
 
 - Off by default; `enabled = true` in
-  `<external files>/sm64remote.cfg` is the only way in. Disabled means both C
-  hooks return immediately and no worker thread exists.
+  `<external files>/sm64remote.cfg` is the only way in (the `DEBUG → SYS →
+  REMOTE` switch writes that line for you). Disabled means both C hooks return
+  immediately and no worker thread exists.
 - Push at `interval_ms` (default 80 ms) is `POST …/state.php?action=push`; the
   command poll is `GET …/state.php?action=commands` at 10 Hz. Token goes in the
   `X-Sm64-Token` header, never the URL.
@@ -615,6 +661,15 @@ patch and builds centrally). Full protocol: `OTSM64REMOTE.md`.
   URL fails instead of silently downgrading.
 - Test hook that skips the network: `cmd rinput --es input jump` queues the same
   press, so the game-side latency can be measured on its own.
+- The privacy switch lives on the tablet now (2026-11-27): `DEBUG → SYS →
+  REMOTE`. `Sm64Remote.setEnabled()` is the one setter behind the row and
+  `cmd remote on|off`, so they cannot diverge. ON rewrites only the `enabled`
+  line (temp file + rename; url, token, interval_ms, comments and CRLF stay
+  byte-identical) and refuses with no url/token, writing nothing. OFF
+  disconnects the request in flight before interrupting the worker, so a POST
+  cannot outlive the switch by the 3 s read timeout. The row shows live state
+  from `panelLabel()` (OFF / ON waiting / live / error) on the existing 500 ms
+  readout - no new timer, and never the token.
 - Evidence still owed: viewer `demo` → `live` plus a jump within ~100 ms, and a
   disabled run with zero pushes (see `TODO.md`).
 

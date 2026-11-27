@@ -32,9 +32,10 @@ Android): **[README-original.md](README-original.md)**. This file describes what
   Bowser tail-spin HFR rig), wall-run + grapple + jetpack movement kit, an
   occluded-Mario punch-through, and a touch-control layout editor with profiles.
 - **Debugging without a compiler** — every tunable has an `fx` key and a panel
-  control, `cmd dump` reports a machine-readable status line, and there is an
-  in-app feedback outbox plus a `quick-dev` loop that gets a change on screen in
-  seconds.
+  control, `cmd dump` reports a machine-readable status line, the 90-degree
+  wall-run corner sweep runs on-device from **DEBUG → MOVE**
+  (`cmd cornersweep`, verdict in `cmd dump`), and there is an in-app feedback
+  outbox plus a `quick-dev` loop that gets a change on screen in seconds.
 - **Opt-in telemetry mirror** (`otsm64remote`, off by default) — numeric state
   (position, yaw, speed, animation, action label) is mirrored to a browser
   viewer over HTTPS, and a viewer `{"input":"jump"}` becomes a single A press.
@@ -102,7 +103,9 @@ DISCARD in the editor, saved profiles), controller and keyboard support with
 rumble, and a debug panel in four docks (bottom/top, horizontal/vertical) that
 exposes every graphics knob.
 The panel's DEBUG → MOVE / PORTAL / BALL / SYS / LOGS pages drive the test rigs
-and produce bug reports.
+and produce bug reports. DEBUG → SYS also has the `REMOTE: ON/OFF` switch for
+the opt-in telemetry bridge (`OTSM64REMOTE.md`), so it can be turned off without
+adb.
 
 ## Credits and licence
 

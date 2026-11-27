@@ -4607,6 +4607,98 @@ static int s_wrcOutcome = WRC_OUT_NONE;
 static int s_wrcFovSaved = -1;
 static int s_wrcLive;        /* 1 = advance in real time, 0 = wait for runticks */
 
+/* ------------------------------------- in-engine corner sweep (panel rig) */
+
+/* The eight timings of the corner rig, measured on the device exactly the way
+ * scripts/wallrun-corner-test.py measures them on the host.  The script arms
+ * `cornerN`, runs one 150-tick `cmd runticks` batch per timing and asserts a
+ * fixed set of criteria on the per-tick WRC trace.  This runs the same eight
+ * cases from the panel (DEBUG > MOVE, or `cmd cornersweep`) and evaluates the
+ * same criteria from the rig's own per-tick data, so no adb round trip and no
+ * log parsing is involved.
+ *
+ * Slicing keeps the app alive: produce_one_frame() asks for at most `fx 450`
+ * ticks per frame (default 10) through the same gfx_test_uncapped path
+ * `cmd runticks` uses, then presents the resulting frame.  The panel keeps
+ * drawing, `cmd dump` reports `csw=<done>/8,running`, and a second press (or
+ * `cmd cornersweep --es action stop`) cancels.  Determinism is unchanged: only
+ * the number of ticks between presents differs, never the tick contents.
+ *
+ * Criteria, all read from the rig instead of a trace:
+ *   re-entry  s_wrcReTick >= 0 and <= fx 412 (the rig's own deadline)
+ *   advance   s_wrcAdv >= 150 units along wall B after that re-entry
+ *   floor     no floor tick between the jump and the re-entry
+ *   teleport  no per-tick position step >= 130 units
+ *   stall     no run of >= 6 consecutive tick steps below 3 units
+ *   wr jump   movekit_wr_state(2) == 1 after the case
+ *   wr runs   movekit_wr_state(5) >= 2 for the nominal timing (d = 1480)
+ * The harness's remaining checks (dump-vs-trace agreement, repeat determinism,
+ * FATAL/ANR lines, fps sanity, stills and the clip) are host-side by nature and
+ * stay in the script; see TESTING.md "Wall-run 90-degree corner". */
+#define CSW_CASES         8
+#define CSW_NOMINAL       3       /* PTC_WRC_PERFECT_DEF index: d = 1480 */
+#define CSW_SLICE_DEF     10      /* fx 450: ticks per fast-forward slice */
+#define CSW_SLICE_MAX     40
+#define CSW_CASE_CAP_DEF  220     /* fx 451: ticks before a case is "stuck" */
+
+#define CSW_RUNNING       1
+#define CSW_PASS          2
+#define CSW_FAIL          3
+#define CSW_CANCEL        4
+#define CSW_REFUSE        5
+
+#define CSW_STAGE_ARM     0
+#define CSW_STAGE_TICK    1
+#define CSW_STAGE_DONE    2
+
+/* Per-case criteria bitmask.  The pass-only bits (advance, re-entry, floor,
+ * stall) are only set for cases the rig itself called corner-pass, so a
+ * legitimate fell/bonk/stuck row is a measurement, not a failure - the same
+ * rule the host harness uses. */
+#define CSW_BAD_A         (1 << 0)   /* no ACT_WALLRUN on wall A (+X normal) */
+#define CSW_BAD_SPEED     (1 << 1)   /* entry run speed outside 40..60 */
+#define CSW_BAD_JUMP      (1 << 2)   /* rig never left the wall-A run stage */
+#define CSW_BAD_STEP      (1 << 3)   /* a per-tick step >= 130 units */
+#define CSW_BAD_STALL     (1 << 4)   /* a >= 6-tick stall below 3 u/tick */
+#define CSW_BAD_Y         (1 << 5)   /* dropped below y = -2 */
+#define CSW_BAD_WRJUMP    (1 << 6)   /* wr last_jump != 1 after the case */
+#define CSW_BAD_ADV       (1 << 7)   /* pass without 150 units on wall B */
+#define CSW_BAD_RE        (1 << 8)   /* re-entry later than fx 412 */
+#define CSW_BAD_FLOOR     (1 << 9)   /* floor before wall B on a pass */
+#define CSW_BAD_RUNS      (1 << 10)  /* nominal timing: wr runs < 2 */
+#define CSW_BAD_WATCHDOG  (1 << 11)  /* case exceeded fx 451 ticks */
+#define CSW_BAD_NOMINAL   (1 << 12)  /* nominal timing did not corner-pass */
+
+static int s_cswRun;                     /* 0 idle, CSW_RUNNING, CSW_PASS, ... */
+static int s_cswStage = CSW_STAGE_DONE;
+static int s_cswCase;                    /* case being armed / run, 0..7 */
+static int s_cswDone;                    /* cases finished, 0..8 */
+static int s_cswSlice = CSW_SLICE_DEF;   /* fx 450 */
+static int s_cswCaseCap = CSW_CASE_CAP_DEF;
+static int s_cswTicks;                   /* ticks requested for this case */
+static int s_cswWait;                    /* frames spent waiting for the level */
+static int s_cswInit;                    /* g_levelInitCount at arm time */
+static int s_cswRestarts;                /* cases re-armed after a level reload */
+static int s_cswPassCount;
+static int s_cswWinLo = -1;
+static int s_cswWinHi = -1;
+static int s_cswOutCase[CSW_CASES];
+static int s_cswBadCase[CSW_CASES];
+static int s_cswDistCase[CSW_CASES];
+/* Live accumulators for the case being run (reset on every arm). */
+static int s_cswAOk;
+static int s_cswJumped;
+static f32 s_cswSpeed;
+static int s_cswFloorB;
+static int s_cswMaxStep10;               /* max per-tick step, 0.1 units */
+static int s_cswWorstStall;
+static int s_cswStallRun;
+static int s_cswHavePrev;
+static f32 s_cswPrev[3];
+
+static void ptc_csw_tick(struct MarioState *m);
+static void ptc_wrc_camera_off(void);
+
 static void ptc_wrc_finish(int outcome) {
     if (s_wrcOutcome != WRC_OUT_NONE) {
         return;                     /* first classification wins */
@@ -4632,6 +4724,22 @@ static void ptc_wrc_camera(void) {
         custom_camera_apply_mode(3);
     }
     custom_camera_set_freelook(1, pos, focus);
+}
+
+/* Put the camera/FOV back the way the rig found them (shared by `corneroff`
+ * and the end of the in-engine corner sweep). */
+static void ptc_wrc_camera_off(void) {
+    extern void custom_camera_set_freelook(int on, const Vec3f pos,
+                                           const Vec3f focus);
+    extern int gfx_stereo_fov_pct;
+
+    s_wrcMode = 0;
+    s_wrcPress = 0;
+    custom_camera_set_freelook(0, NULL, NULL);
+    if (s_wrcFovSaved >= 0) {
+        gfx_stereo_fov_pct = s_wrcFovSaved;
+        s_wrcFovSaved = -1;
+    }
 }
 
 /* Put Mario back on the frozen start pose.  Also used every real-time tick
@@ -4882,6 +4990,7 @@ static void ptc_wrc_update(void) {
     }
 
     ptc_wrc_trace(m);
+    ptc_csw_tick(m);
 }
 
 /* fx 410-415: corner rig dials (410 perfect press distance, 411 spacing
@@ -4895,6 +5004,10 @@ void ptc_wrc_dial_set(int which, int value) {
         case 413: s_wrcHeight = value < 100 ? 100 : (value > 2600 ? 2600 : value); break;
         case 414: s_wrcSpeed = value < 20 ? 20 : (value > 60 ? 60 : value); break;
         case 415: s_wrcStallTicks = value < 2 ? 2 : (value > 40 ? 40 : value); break;
+        /* In-engine sweep pacing: 450 ticks per presented frame, 451 the tick
+         * budget of one case before it is called stuck. */
+        case 450: s_cswSlice = value < 1 ? 1 : (value > CSW_SLICE_MAX ? CSW_SLICE_MAX : value); break;
+        case 451: s_cswCaseCap = value < 60 ? 60 : (value > 600 ? 600 : value); break;
         default: break;
     }
 }
@@ -4924,6 +5037,429 @@ void ptc_wrc_format(char *buf, int len) {
              s_wrcMode ? 0 : 1, s_wrcAdv, s_wrcYmin, s_wrcCornerTicks,
              PTC_WRC_WALL_Z - s_wrcJumpZ, s_wrcJumpY,
              s_wrcMaxStall, s_wrcBonk);
+}
+
+/* --------------------------------------------- in-engine corner sweep */
+
+static const char *ptc_csw_out_name(int out) {
+    switch (out) {
+        case WRC_OUT_PASS:  return "corner-pass";
+        case WRC_OUT_FELL:  return "fell";
+        case WRC_OUT_STUCK: return "stuck";
+        case WRC_OUT_BONK:  return "bonk";
+        default:            return "none";
+    }
+}
+
+/* Short label for the first failed criterion of a case; the note stays one
+ * line so it fits the debug HUD. */
+static const char *ptc_csw_bad_name(int bad) {
+    if (bad & CSW_BAD_WATCHDOG) return "rig stalled";
+    if (bad & CSW_BAD_A)        return "no wall A run";
+    if (bad & CSW_BAD_JUMP)     return "no jump";
+    if (bad & CSW_BAD_SPEED)    return "entry speed";
+    if (bad & CSW_BAD_STEP)     return "teleport step";
+    if (bad & CSW_BAD_Y)        return "through floor";
+    if (bad & CSW_BAD_WRJUMP)   return "no wr jump";
+    if (bad & CSW_BAD_RE)       return "late re-entry";
+    if (bad & CSW_BAD_ADV)      return "short advance";
+    if (bad & CSW_BAD_FLOOR)    return "floor before B";
+    if (bad & CSW_BAD_STALL)    return "stall";
+    if (bad & CSW_BAD_RUNS)     return "runs<2";
+    if (bad & CSW_BAD_NOMINAL)  return "nominal failed";
+    return "ok";
+}
+
+static void ptc_csw_set_note(const char *text) {
+    if (text != NULL) {
+        gfx_set_debug_note(text);
+    }
+}
+
+/* Record the case that just finished and set up the next one. */
+static void ptc_csw_case_end(int stalled) {
+    int c = s_cswCase;
+    int out = s_wrcOutcome;
+    int bad = 0;
+    char note[160];
+
+    if (c < 0 || c >= CSW_CASES) {
+        return;
+    }
+    if (stalled) {
+        bad |= CSW_BAD_WATCHDOG;
+    }
+    /* Integrity checks the host harness applies to every case. */
+    if (!s_cswAOk) {
+        bad |= CSW_BAD_A;
+    }
+    if (!(s_cswSpeed >= 40.0f && s_cswSpeed <= 60.0f)) {
+        bad |= CSW_BAD_SPEED;
+    }
+    if (!s_cswJumped) {
+        bad |= CSW_BAD_JUMP;
+    }
+    if (s_cswMaxStep10 >= 1300) {          /* 130.0 units */
+        bad |= CSW_BAD_STEP;
+    }
+    if (s_wrcYmin <= -2.0f) {
+        bad |= CSW_BAD_Y;
+    }
+    if (movekit_wr_state(2) != 1) {        /* last jump came from ACT_WALLRUN */
+        bad |= CSW_BAD_WRJUMP;
+    }
+    /* Pass-only criteria: a fell/bonk/stuck row is a measurement. */
+    if (out == WRC_OUT_PASS) {
+        if (s_wrcReTick < 0 || s_wrcReTick > s_wrcDeadlineTicks) {
+            bad |= CSW_BAD_RE;
+        }
+        if (s_wrcAdv < WRC_ADVANCE_MIN) {
+            bad |= CSW_BAD_ADV;
+        }
+        if (s_cswFloorB) {
+            bad |= CSW_BAD_FLOOR;
+        }
+        if (s_cswWorstStall >= 6) {
+            bad |= CSW_BAD_STALL;
+        }
+        s_cswPassCount++;
+        if (s_cswWinLo < 0 || s_cswDistCase[c] < s_cswWinLo) {
+            s_cswWinLo = s_cswDistCase[c];
+        }
+        if (s_cswDistCase[c] > s_cswWinHi) {
+            s_cswWinHi = s_cswDistCase[c];
+        }
+    }
+    if (c == CSW_NOMINAL) {
+        if (out != WRC_OUT_PASS) {
+            bad |= CSW_BAD_NOMINAL;
+        }
+        if (movekit_wr_state(5) < 2) {     /* second wall run actually started */
+            bad |= CSW_BAD_RUNS;
+        }
+    }
+
+    s_cswOutCase[c] = out;
+    s_cswBadCase[c] = bad;
+    s_cswDone = c + 1;
+    s_cswCase = c + 1;
+    s_cswStage = CSW_STAGE_ARM;
+
+    if (out == WRC_OUT_PASS && s_wrcReTick >= 0) {
+        snprintf(note, sizeof(note), "CORNER SWEEP %d/%d: d=%d corner-pass re=%d%s",
+                 s_cswDone, CSW_CASES, s_cswDistCase[c], s_wrcReTick,
+                 bad ? " (rig check)" : "");
+    } else {
+        snprintf(note, sizeof(note), "CORNER SWEEP %d/%d: d=%d %s%s",
+                 s_cswDone, CSW_CASES, s_cswDistCase[c],
+                 stalled ? "stalled" : ptc_csw_out_name(out),
+                 bad ? " (rig check)" : "");
+    }
+    ptc_csw_set_note(note);
+}
+
+static void ptc_csw_finish(void) {
+    int i, bad = 0, first = -1;
+    char note[160];
+
+    for (i = 0; i < CSW_CASES; i++) {
+        if (s_cswBadCase[i]) {
+            bad = 1;
+            if (first < 0) {
+                first = i;
+            }
+        }
+    }
+    s_cswStage = CSW_STAGE_DONE;
+    s_cswRun = bad ? CSW_FAIL : CSW_PASS;
+    ptc_wrc_camera_off();          /* hand the camera back to gameplay */
+
+    if (s_cswWinLo < 0) {
+        snprintf(note, sizeof(note),
+                 "CORNER SWEEP: %s%d/%d pass, window none",
+                 bad ? "FAIL, " : "", s_cswPassCount, CSW_CASES);
+    } else {
+        snprintf(note, sizeof(note),
+                 "CORNER SWEEP: %s%d/%d pass, window d=%d-%d",
+                 bad ? "FAIL, " : "", s_cswPassCount, CSW_CASES,
+                 s_cswWinLo, s_cswWinHi);
+    }
+    if (bad && first >= 0 && strlen(note) + 32 < sizeof(note)) {
+        size_t used = strlen(note);
+
+        snprintf(note + used, sizeof(note) - used, " (case %d: %s)",
+                 first, ptc_csw_bad_name(s_cswBadCase[first]));
+    }
+    ptc_csw_set_note(note);
+}
+
+/* Cancel (or refuse) a running sweep without touching the per-case table, so
+ * the panel can show how far it got. */
+static void ptc_csw_abort(int verdict, const char *why) {
+    char note[160];
+
+    if (s_cswRun != CSW_RUNNING) {
+        return;
+    }
+    s_cswRun = verdict;
+    s_cswStage = CSW_STAGE_DONE;
+    ptc_wrc_camera_off();
+    snprintf(note, sizeof(note), "CORNER SWEEP: %s at %d/%d%s%s",
+             verdict == CSW_REFUSE ? "refused" : "cancelled",
+             s_cswDone, CSW_CASES,
+             why != NULL ? " - " : "", why != NULL ? why : "");
+    ptc_csw_set_note(note);
+}
+
+/* Per-tick criteria, called at the end of ptc_wrc_update() so it sees the
+ * stage machine's state for the same tick.  Mirrors trace_checks() in
+ * scripts/wallrun-corner-test.py without a trace buffer. */
+static void ptc_csw_tick(struct MarioState *m) {
+    int airborne;
+
+    if (s_cswRun != CSW_RUNNING || m == NULL) {
+        return;
+    }
+    airborne = (m->action & ACT_FLAG_AIR) != 0;
+
+    /* Wall A run before the press: ACT_WALLRUN with wall A's +X normal. */
+    if (s_wrcStage == WRC_STAGE_RUN && m->action == ACT_WALLRUN) {
+        if (movekit_wr_wall_normal(0) >= 0.7f) {
+            s_cswAOk = 1;
+            s_cswSpeed = sqrtf(m->vel[0] * m->vel[0]
+                               + m->vel[2] * m->vel[2]);
+        }
+    }
+    if (s_wrcStage >= WRC_STAGE_TRACK) {
+        s_cswJumped = 1;
+    }
+
+    /* Floor contact between the jump and the re-entry. */
+    if (s_wrcRel >= 0 && s_wrcReTick < 0 && !airborne) {
+        s_cswFloorB = 1;
+    }
+
+    /* Continuity over exactly the ticks the harness would have traced: from
+     * the jump (rel 0) through the tick wall B is re-entered. */
+    if (s_wrcRel >= 0 && (s_wrcReTick < 0 || s_wrcReTick == s_wrcRel)) {
+        if (s_cswHavePrev) {
+            f32 dx = m->pos[0] - s_cswPrev[0];
+            f32 dy = m->pos[1] - s_cswPrev[1];
+            f32 dz = m->pos[2] - s_cswPrev[2];
+            f32 step = sqrtf(dx * dx + dy * dy + dz * dz);
+            int step10 = (int) (step * 10.0f + 0.5f);
+
+            if (step10 > s_cswMaxStep10) {
+                s_cswMaxStep10 = step10;
+            }
+            if (step < 3.0f) {
+                if (++s_cswStallRun > s_cswWorstStall) {
+                    s_cswWorstStall = s_cswStallRun;
+                }
+            } else {
+                s_cswStallRun = 0;
+            }
+        }
+        s_cswPrev[0] = m->pos[0];
+        s_cswPrev[1] = m->pos[1];
+        s_cswPrev[2] = m->pos[2];
+        s_cswHavePrev = 1;
+    }
+}
+
+/* Called once per frame from produce_one_frame() before the fast-forward
+ * batch is taken.  Returns the number of simulation ticks to run this frame:
+ * 0 on the arm frame (one normal tick, which is the rig's hold tick) and 0
+ * when the sweep is idle. */
+static void ptc_csw_arm_case(void) {
+    extern int g_levelInitCount;
+
+    ptc_wrc_start(s_cswCase, 0);
+    s_cswDistCase[s_cswCase] = s_wrcDist;
+    s_cswInit = g_levelInitCount;
+    s_cswTicks = 0;
+    s_cswAOk = 0;
+    s_cswJumped = 0;
+    s_cswSpeed = 0.0f;
+    s_cswFloorB = 0;
+    s_cswMaxStep10 = 0;
+    s_cswWorstStall = 0;
+    s_cswStallRun = 0;
+    s_cswHavePrev = 0;
+}
+
+int ptc_cornersweep_ticks(void) {
+    extern int g_levelInitCount;
+
+    if (s_cswRun != CSW_RUNNING) {
+        return 0;
+    }
+    if (!ptc_in_level()) {
+        /* The panel button warps to L38 first and `cmd cornersweep` may arrive
+         * during the transition: wait a few seconds of frames before giving
+         * up. */
+        if (++s_cswWait > 300) {
+            ptc_csw_abort(CSW_REFUSE, "not in L38");
+        }
+        return 0;
+    }
+    s_cswWait = 0;
+
+    switch (s_cswStage) {
+        case CSW_STAGE_ARM:
+            if (s_cswCase >= CSW_CASES) {
+                ptc_csw_finish();
+                return 0;
+            }
+            ptc_csw_arm_case();
+            s_cswStage = CSW_STAGE_TICK;
+            return 0;              /* one held tick, as the host harness has */
+        case CSW_STAGE_TICK:
+            if (g_levelInitCount != s_cswInit) {
+                /* The level (re)initialised under the case, e.g. the sweep was
+                 * started while a warp to L38 was still finishing: throw the
+                 * case away and arm it again on the fresh level. */
+                if (++s_cswRestarts > 8) {
+                    ptc_csw_abort(CSW_REFUSE, "level kept reloading");
+                    return 0;
+                }
+                ptc_csw_arm_case();
+                return 0;
+            }
+            if (s_wrcOutcome != WRC_OUT_NONE) {
+                ptc_csw_case_end(0);
+                return 0;
+            }
+            if (s_cswTicks >= s_cswCaseCap) {
+                ptc_csw_case_end(1);
+                return 0;
+            }
+            s_cswTicks += s_cswSlice;
+            return s_cswSlice;
+        default:
+            return 0;
+    }
+}
+
+/* DEBUG > MOVE: CORNER SWEEP / `cmd cornersweep`. */
+void ptc_cornersweep_start(void) {
+    int i;
+
+    if (s_cswRun == CSW_RUNNING) {
+        return;                    /* a second press is a cancel, not a restart */
+    }
+    for (i = 0; i < CSW_CASES; i++) {
+        s_cswOutCase[i] = WRC_OUT_NONE;
+        s_cswBadCase[i] = 0;
+        s_cswDistCase[i] = s_wrcPerfect + (3 - i) * s_wrcStep;
+    }
+    s_cswDone = 0;
+    s_cswCase = 0;
+    s_cswPassCount = 0;
+    s_cswWinLo = -1;
+    s_cswWinHi = -1;
+    s_cswWait = 0;
+    s_cswRestarts = 0;
+    s_cswStage = CSW_STAGE_ARM;
+    s_cswRun = CSW_RUNNING;
+    ptc_csw_set_note("CORNER SWEEP 0/8: arming, L38 chamber");
+}
+
+/* `cmd cornersweep --es action stop|cancel` and the panel's second press. */
+void ptc_cornersweep_stop(void) {
+    ptc_csw_abort(CSW_CANCEL, NULL);
+}
+
+/* Compact `csw=` field for ptc_format_status():
+ *   <finished>/8,<state>,p=<passing cases>,window=<lo>-<hi>|-
+ * and `cswc=` = the eight per-case outcomes as digits (0 none, 1 pass, 2 fell,
+ * 3 stuck, 4 bonk), so the panel run can be diffed against the host table. */
+void ptc_cornersweep_format(char *buf, int len) {
+    const char *st;
+
+    if (buf == NULL || len <= 0) {
+        return;
+    }
+    switch (s_cswRun) {
+        case CSW_RUNNING: st = "running"; break;
+        case CSW_PASS:    st = "pass"; break;
+        case CSW_FAIL:    st = "fail"; break;
+        case CSW_CANCEL:  st = "cancelled"; break;
+        case CSW_REFUSE:  st = "refused"; break;
+        default:          st = "idle"; break;
+    }
+    if (s_cswWinLo >= 0) {
+        snprintf(buf, len, "%d/%d,%s,p=%d,window=%d-%d",
+                 s_cswDone, CSW_CASES, st, s_cswPassCount,
+                 s_cswWinLo, s_cswWinHi);
+    } else {
+        snprintf(buf, len, "%d/%d,%s,p=%d,window=-",
+                 s_cswDone, CSW_CASES, st, s_cswPassCount);
+    }
+}
+
+void ptc_cornersweep_cases(char *buf, int len) {
+    int i;
+
+    if (buf == NULL || len < CSW_CASES + 1) {
+        return;
+    }
+    for (i = 0; i < CSW_CASES; i++) {
+        buf[i] = (char) ('0' + (s_cswOutCase[i] & 7));
+    }
+    buf[CSW_CASES] = '\0';
+}
+
+int ptc_cornersweep_state(void) {
+    return s_cswRun;
+}
+
+/* Panel status line (DEBUG > MOVE): running progress or the last verdict. */
+void ptc_cornersweep_label(char *buf, int len) {
+    if (buf == NULL || len <= 0) {
+        return;
+    }
+    switch (s_cswRun) {
+        case CSW_RUNNING:
+            if (s_cswStage == CSW_STAGE_TICK && s_cswCase < CSW_CASES) {
+                snprintf(buf, len, "running %d/%d - d=%d",
+                         s_cswDone, CSW_CASES,
+                         s_cswDistCase[s_cswCase]);
+            } else {
+                snprintf(buf, len, "running %d/%d - arming",
+                         s_cswDone, CSW_CASES);
+            }
+            break;
+        case CSW_PASS:
+            if (s_cswWinLo >= 0) {
+                snprintf(buf, len, "%d/%d pass, window d=%d-%d",
+                         s_cswPassCount, CSW_CASES,
+                         s_cswWinLo, s_cswWinHi);
+            } else {
+                snprintf(buf, len, "%d/%d pass, window none",
+                         s_cswPassCount, CSW_CASES);
+            }
+            break;
+        case CSW_FAIL:
+            if (s_cswWinLo >= 0) {
+                snprintf(buf, len, "FAIL, %d/%d pass, window d=%d-%d",
+                         s_cswPassCount, CSW_CASES,
+                         s_cswWinLo, s_cswWinHi);
+            } else {
+                snprintf(buf, len, "FAIL, %d/%d pass, window none",
+                         s_cswPassCount, CSW_CASES);
+            }
+            break;
+        case CSW_CANCEL:
+            snprintf(buf, len, "cancelled at %d/%d", s_cswDone, CSW_CASES);
+            break;
+        case CSW_REFUSE:
+            snprintf(buf, len, "needs the Portal Test Chamber (L38)");
+            break;
+        default:
+            snprintf(buf, len, "not run");
+            break;
+    }
 }
 
 /* ------------------------------------------------------------ diagnostics */
@@ -5353,28 +5889,28 @@ extern int gfx_cam_mode;
         if (cs >= 0 && cs <= 5) {
             ptc_wrj_start(cs);
         }
+    } else if (strcmp(action, "cornersweep") == 0) {
+        /* DEBUG > MOVE: run all eight corner timings on the device. */
+        ptc_cornersweep_start();
+    } else if (strcmp(action, "cornersweepstop") == 0
+               || strcmp(action, "cornersweepcancel") == 0) {
+        ptc_cornersweep_stop();
     } else if (strncmp(action, "corner", 6) == 0
                && strcmp(action, "corneroff") == 0) {
-        extern void custom_camera_set_freelook(int on, const Vec3f pos,
-                                               const Vec3f focus);
-        extern int gfx_stereo_fov_pct;
-        s_wrcMode = 0;
-        s_wrcPress = 0;
-        custom_camera_set_freelook(0, NULL, NULL);
-        if (s_wrcFovSaved >= 0) {
-            gfx_stereo_fov_pct = s_wrcFovSaved;
-            s_wrcFovSaved = -1;
-        }
+        ptc_cornersweep_stop();     /* a manual rig command supersedes the sweep */
+        ptc_wrc_camera_off();
     } else if (strncmp(action, "cornerlive", 10) == 0) {
         int cs = action[10] - '0';
         if (cs >= 0 && cs <= 7) {
             /* Real-time variant for stills/clips; the table run uses batch
              * mode (`cornerN`), which only advances inside `cmd runticks`. */
+            ptc_cornersweep_stop();
             ptc_wrc_start(cs, 1);
         }
     } else if (strncmp(action, "corner", 6) == 0) {
         int cs = action[6] - '0';
         if (cs >= 0 && cs <= 7) {
+            ptc_cornersweep_stop();
             ptc_wrc_start(cs, 0);
         }
     } else if (strcmp(action, "jetpack") == 0) {
@@ -5492,9 +6028,13 @@ void ptc_format_status(char *buf, int len) {
     int hasA = portal_get(0, pa, na);
     int hasB = portal_get(1, pb, nb);
     char wrcBuf[96] = "0,0,0,-1,1,0,0,0,0,0";
+    char cswBuf[72] = "0/8,idle,p=0,window=-";
+    char cswcBuf[12] = "00000000";
     custom_camera_debug(cdbg);
 
     ptc_wrc_format(wrcBuf, (int) sizeof(wrcBuf));
+    ptc_cornersweep_format(cswBuf, (int) sizeof(cswBuf));
+    ptc_cornersweep_cases(cswcBuf, (int) sizeof(cswcBuf));
 
     /* Grapple targeting: resolved with the same query the attach uses, so the
      * status field cannot disagree with what a press would hook. */
@@ -5526,7 +6066,7 @@ void ptc_format_status(char *buf, int len) {
              "mpw=%d,%d,%d,%d,%d,%d,%d fc=%d,%d,%d,%d cg=%d,%.0f,%.0f,%.0f,0x%x "
              "slowmo=%d,%d,%d rays=%d,%d,%d glow=%d,%d,%d,%d,%d occl=%d,%d,%d "
              "dof=%d,%d,%d,%d "
-             "qd=%d,%d,%d lvl=%d sens=%d,%d,%d wr=%d,%d,%d,%d,%d,%.2f,%.2f wrc=%s "
+             "qd=%d,%d,%d lvl=%d sens=%d,%d,%d wr=%d,%d,%d,%d,%d,%.2f,%.2f wrc=%s csw=%s cswc=%s "
              "grade=%d,%d,%d,%d grp=%d,%d,%.1f,%.0f,%.0f,%.0f,%.0f camclip=%s "
              "gi=%d,%d,%d,%d "
              "aop=%d,%d,%d,%d,%d,%d,%d "
@@ -5613,6 +6153,7 @@ void ptc_format_status(char *buf, int len) {
              movekit_wr_state(0), movekit_wr_state(1), movekit_wr_state(2),
              movekit_wr_state(5), movekit_wr_state(6),
              movekit_wr_last_vel(0), movekit_wr_last_vel(1), wrcBuf,
+             cswBuf, cswcBuf,
              gfx_opengl_ssfx_get(280), gfx_opengl_ssfx_get(281),
              gfx_opengl_ssfx_get(284), gfx_opengl_ssfx_get(285),
              gfx_opengl_ssfx_get(310), grpStatus, grpRayDeg, grpDist,

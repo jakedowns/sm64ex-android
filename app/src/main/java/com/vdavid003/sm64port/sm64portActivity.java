@@ -188,6 +188,10 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     private TextView camCycleButton;
     private TextView portalGunButton;
     private TextView pauseLoopToggle;
+    /* DEBUG > MOVE: in-engine 8-timing corner sweep (ptc.c). */
+    private TextView cornerSweepButton;
+    private TextView cornerSweepStatus;
+    private boolean cornerSweepArming;   /* warp-to-L38 delay before the start */
     private boolean hardPaused;
     private boolean ballBlasterOn;
     private boolean aoOn, dofOn, giOn;
@@ -224,6 +228,8 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     private boolean quickDevOn, quickDevMute;
     private int quickDevLevel = QUICK_DEV_DEFAULT_LEVEL;
     private TextView quickDevToggle, quickDevLevelButton, quickDevMuteToggle;
+    /* otsm64remote privacy switch (DEBUG -> SYS): mirrors sm64remote.cfg. */
+    private TextView remoteToggle;
     /* Captions: Java overlay owns the text by default (DEBUG -> SYS). */
     private CaptionOverlay captionOverlay;
     private boolean captionJavaOn = true;
@@ -2352,6 +2358,16 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         addEnhSlider("Wallrun blend %", 0, 100, 65, v -> nativeSetSSFX(320, v));
         addEnhSlider("Wallrun stick %", 0, 300, 120, v -> nativeSetSSFX(321, v));
         addEnhSlider("Wallrun relax ticks", 0, 30, 5, v -> nativeSetSSFX(323, v));
+        /* The eight-timing 90-degree corner sweep, run in-engine instead of by
+         * scripts/wallrun-corner-test.py: same timings (fx 410/411), same
+         * criteria, sliced across frames so this panel stays live.  A second
+         * press cancels.  See TESTING.md. */
+        cornerSweepButton = addEnhButton("RUN CORNER SWEEP", this::cornerSweepPressed);
+        cornerSweepStatus = new TextView(this);
+        cornerSweepStatus.setTextSize(12);
+        cornerSweepStatus.setTextColor(0xFF888888);
+        cornerSweepStatus.setPadding(dp(4), dp(0), dp(4), dp(6));
+        addCompact(enhParent(), cornerSweepStatus);
         addEnhToggle("GRAPPLE (L)", 4, true);
         addEnhToggle("JETPACK (L)", 5, false);
         addEnhSection("GRAPPLE DEBUG");
@@ -2416,6 +2432,23 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             enhParent().addView(note);
         }
         refreshQuickDevUi();
+
+        addEnhSection("REMOTE");
+        remoteToggle = new TextView(this);
+        remoteToggle.setTextSize(16);
+        remoteToggle.setPadding(dp(4), dp(8), dp(4), dp(8));
+        remoteToggle.setOnClickListener(v -> applyRemoteEnabled(!Sm64Remote.isRunning()));
+        addCompact(enhParent(), remoteToggle);
+        {
+            TextView note = new TextView(this);
+            note.setText("telemetry + one-tick jump: ON needs url+token in"
+                    + " sm64remote.cfg, applies now (no relaunch)");
+            note.setTextSize(12);
+            note.setTextColor(0xFF888888);
+            note.setPadding(dp(4), dp(2), dp(4), dp(6));
+            enhParent().addView(note);
+        }
+        refreshRemoteUi();
 
         addEnhSection("CAPTIONS");
         captionToggle = new TextView(this);
@@ -4410,9 +4443,37 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         }
         if (action.equals("reload")) {
             Log.i(TAG, "REMOTE reload -> " + Sm64Remote.reload(this));
+            runOnUiThread(this::refreshRemoteUi);
             return;
         }
-        Log.i(TAG, "REMOTE unknown action '" + action + "' (status|reload)");
+        /* on|off go through the same setter as the DEBUG -> SYS button. */
+        if (action.equals("on") || action.equals("off")) {
+            applyRemoteEnabled(action.equals("on"));
+            return;
+        }
+        Log.i(TAG, "REMOTE unknown action '" + action + "' (status|reload|on|off)");
+    }
+
+    /**
+     * otsm64remote: the single entry point for the panel row and
+     * `cmd remote on|off`, so the two cannot diverge. Sm64Remote owns the
+     * transition log, the config rewrite and the refusal reason.
+     */
+    private void applyRemoteEnabled(boolean on) {
+        Sm64Remote.setEnabled(this, on);
+        runOnUiThread(this::refreshRemoteUi);
+    }
+
+    /** Live bridge state on the SYS row (refreshed by the 500 ms readout). */
+    private void refreshRemoteUi() {
+        if (remoteToggle == null) {
+            return;
+        }
+        String want = Sm64Remote.panelLabel();
+        if (!want.contentEquals(remoteToggle.getText())) {
+            remoteToggle.setText(want);
+        }
+        remoteToggle.setTextColor(Sm64Remote.panelColor());
     }
 
     /** otsm64remote test hook: queue the press a relay "jump" would produce. */
@@ -4531,6 +4592,35 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     void debugPtc(String action) {
         nativePtcCommand(action == null ? "" : action);
         Log.i(TAG, "PTC " + action);
+    }
+
+    /**
+     * DEBUG > MOVE: run the eight-timing 90-degree corner sweep in-engine
+     * (ptc.c, `cmd cornersweep`).  The rig lives in the Portal Test Chamber's
+     * SW corner, so the first press warps to L38 and arms the sweep once the
+     * level is up; a press while it runs (or while the warp is pending)
+     * cancels.  Progress and the verdict come back every 500 ms through
+     * nativeCornerSweepLabel(), the same text as the debug note.
+     */
+    private void cornerSweepPressed() {
+        if (cornerSweepArming) {
+            cornerSweepArming = false;
+            debugPtc("cornersweepstop");
+            return;
+        }
+        if (nativeCornerSweepState() == 1) {
+            debugPtc("cornersweepstop");
+            return;
+        }
+        cornerSweepArming = true;
+        debugLevel(38);
+        new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
+            if (!cornerSweepArming) {
+                return;
+            }
+            cornerSweepArming = false;
+            debugPtc("cornersweep");
+        }, 2600);
     }
 
     /** Debug-only: run fixed 30 Hz sim ticks without display pacing. */
@@ -6148,10 +6238,36 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                     touchOverlay.invalidate();   // refresh gun reticle / P1-P2
                 }
                 refreshLayoutUi();
+                refreshRemoteUi();
                 if (portalGunButton != null) {
                     String want = portalGunLabel();
                     if (!want.contentEquals(portalGunButton.getText())) {
                         portalGunButton.setText("\u25B8 " + want);
+                    }
+                }
+                /* DEBUG > MOVE corner sweep: running state, progress and the
+                 * last verdict (2 = pass, 3 = fail, 4 = cancelled). */
+                if (cornerSweepButton != null) {
+                    int csw = nativeCornerSweepState();
+                    boolean running = csw == 1 || cornerSweepArming;
+                    String want = running ? "\u25B8 STOP CORNER SWEEP"
+                                          : "\u25B8 RUN CORNER SWEEP";
+                    if (!want.contentEquals(cornerSweepButton.getText())) {
+                        cornerSweepButton.setText(want);
+                    }
+                    if (cornerSweepStatus != null) {
+                        String line = cornerSweepArming
+                                ? "arming - warping to L38"
+                                : nativeCornerSweepLabel();
+                        if (line == null) {
+                            line = "";
+                        }
+                        if (!line.contentEquals(cornerSweepStatus.getText())) {
+                            cornerSweepStatus.setText(line);
+                        }
+                        cornerSweepStatus.setTextColor(running ? 0xFFFFCC66
+                                : csw == 2 ? 0xFF66FF99
+                                : csw == 3 ? 0xFFFF6666 : 0xFF888888);
                     }
                 }
                 debugView.setTextColor(busyOn ? 0xFFFF5555 : 0xFFAAFFAA);
@@ -6354,6 +6470,8 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     static native int nativePtcStar();
     static native void nativeRunTicks(int n);
     static native String nativePtcTrace();
+    static native String nativeCornerSweepLabel();
+    static native int nativeCornerSweepState();
     static native void nativeSetUncappedTest(int on);
     static native int nativeGetUncappedTest();
     /* Captions: 1 = the Java overlay owns the text, 0 = native HUD glyphs. */
