@@ -60,6 +60,14 @@ if [[ -z "${ADB:-}" ]]; then
 fi
 export ADB
 
+# Start the adb server BEFORE any lock is taken. The fork-server is long-lived,
+# and a server spawned by a helper that runs while we hold the lock inherits the
+# lock fd — the device lock then looks permanently held by `adb fork-server`
+# (seen in practice: one orphaned server blocked the tablet for an hour).
+if [[ -x "$ADB" || -n "$(command -v "$ADB" 2>/dev/null)" ]]; then
+    "$ADB" start-server >/dev/null 2>&1 || true
+fi
+
 LEGACY_PROJECT_KEY="sm64ex-android"
 LEGACY_BUILD_LOCK="$LOCK_ROOT/$LEGACY_PROJECT_KEY/build.lock"
 
@@ -116,9 +124,9 @@ device_app_busy() {
     local value="$1"
     local adb_bin="${ADB:-adb}"
     export LD_LIBRARY_PATH="/home/ubuntu/.local/lib/android-tools${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-    command -v "$adb_bin" >/dev/null 2>&1 || return 0
-    "$adb_bin" shell pidof com.vdavid003.sm64port >/dev/null 2>&1 || return 0
-    "$adb_bin" shell am broadcast -n com.vdavid003.sm64port/.DebugReceiver \
+    command -v "$adb_bin" 9>&- >/dev/null 2>&1 || return 0
+    "$adb_bin" 9>&- shell pidof com.vdavid003.sm64port >/dev/null 2>&1 || return 0
+    "$adb_bin" 9>&- shell am broadcast -n com.vdavid003.sm64port/.DebugReceiver \
         -a com.vdavid003.sm64port.CMD --es cmd busy --ei v "$value" >/dev/null 2>&1 || true
 }
 
@@ -134,30 +142,30 @@ DEVICE_POWER_STATE() {
 # "boot=<id> reason=<r> wake=<w> batt=<n>"
 device_probe_power() {
     local adb_bin="${ADB:-adb}" boot reason wake batt
-    command -v "$adb_bin" >/dev/null 2>&1 || return 0
-    boot=$("$adb_bin" shell cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d '\r')
-    reason=$("$adb_bin" shell getprop sys.boot.reason 2>/dev/null | tr -d '\r')
-    wake=$("$adb_bin" shell dumpsys power 2>/dev/null | sed -n 's/.*mWakefulness=\([A-Za-z]*\).*/\1/p' | head -1)
-    batt=$("$adb_bin" shell dumpsys battery 2>/dev/null | sed -n 's/^ *level: \([0-9]*\).*/\1/p' | head -1)
+    command -v "$adb_bin" 9>&- >/dev/null 2>&1 || return 0
+    boot=$("$adb_bin" 9>&- shell cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d '\r')
+    reason=$("$adb_bin" 9>&- shell getprop sys.boot.reason 2>/dev/null | tr -d '\r')
+    wake=$("$adb_bin" 9>&- shell dumpsys power 2>/dev/null | sed -n 's/.*mWakefulness=\([A-Za-z]*\).*/\1/p' | head -1)
+    batt=$("$adb_bin" 9>&- shell dumpsys battery 2>/dev/null | sed -n 's/^ *level: \([0-9]*\).*/\1/p' | head -1)
     printf 'boot=%s reason=%s wake=%s batt=%s' "${boot:-?}" "${reason:-?}" "${wake:-?}" "${batt:-?}"
 }
 
 # Screen timeout the hold leaves behind, and the value it was raised to.
 device_timeout_raise() {
     local adb_bin="${ADB:-adb}" cur
-    command -v "$adb_bin" >/dev/null 2>&1 || return 0
-    cur=$("$adb_bin" shell settings get system screen_off_timeout 2>/dev/null | tr -d '\r')
+    command -v "$adb_bin" 9>&- >/dev/null 2>&1 || return 0
+    cur=$("$adb_bin" 9>&- shell settings get system screen_off_timeout 2>/dev/null | tr -d '\r')
     case "$cur" in ''|null) cur=30000 ;; esac
     printf '%s' "$cur" > "$(DEVICE_POWER_STATE).timeout"
-    "$adb_bin" shell settings put system screen_off_timeout 600000 >/dev/null 2>&1 || true
+    "$adb_bin" 9>&- shell settings put system screen_off_timeout 600000 >/dev/null 2>&1 || true
 }
 
 device_timeout_restore() {
     local adb_bin="${ADB:-adb}" cur
-    command -v "$adb_bin" >/dev/null 2>&1 || return 0
+    command -v "$adb_bin" 9>&- >/dev/null 2>&1 || return 0
     cur=$(cat "$(DEVICE_POWER_STATE).timeout" 2>/dev/null || true)
     [[ -n "$cur" ]] || return 0
-    "$adb_bin" shell settings put system screen_off_timeout "$cur" >/dev/null 2>&1 || true
+    "$adb_bin" 9>&- shell settings put system screen_off_timeout "$cur" >/dev/null 2>&1 || true
     rm -f "$(DEVICE_POWER_STATE).timeout"
 }
 
@@ -177,9 +185,9 @@ device_sleep() {
     fi
     local adb_bin="${ADB:-adb}"
     export LD_LIBRARY_PATH="/home/ubuntu/.local/lib/android-tools${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-    command -v "$adb_bin" >/dev/null 2>&1 || return 0
-    if "$adb_bin" shell dumpsys power 2>/dev/null | grep -q "mWakefulness=Awake"; then
-        "$adb_bin" shell input keyevent 26 >/dev/null 2>&1 || true
+    command -v "$adb_bin" 9>&- >/dev/null 2>&1 || return 0
+    if "$adb_bin" 9>&- shell dumpsys power 2>/dev/null | grep -q "mWakefulness=Awake"; then
+        "$adb_bin" 9>&- shell input keyevent 26 >/dev/null 2>&1 || true
         log_event sleep_sent device "$DEVICE_LOCK" "screen off (keyevent 26)" 0 0 0 null
     fi
 }
@@ -191,21 +199,21 @@ device_sleep() {
 device_mute() {
     local adb_bin="${ADB:-adb}"
     export LD_LIBRARY_PATH="/home/ubuntu/.local/lib/android-tools${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-    command -v "$adb_bin" >/dev/null 2>&1 || return 0
+    command -v "$adb_bin" 9>&- >/dev/null 2>&1 || return 0
     if [[ "${AGENT_TABLET_MUTE:-0}" != "1" ]]; then
         echo "agent-lock: WARNING: AGENT_TABLET_MUTE is not 1; tablet audio not verified muted" >&2
         return 0
     fi
-    "$adb_bin" get-state >/dev/null 2>&1 || return 0
+    "$adb_bin" 9>&- get-state >/dev/null 2>&1 || return 0
     for st in 0 1 2 3 5 6 7 8 9 10 11; do
-        "$adb_bin" shell cmd media_session volume --stream "$st" --set 0 >/dev/null 2>&1 || true
+        "$adb_bin" 9>&- shell cmd media_session volume --stream "$st" --set 0 >/dev/null 2>&1 || true
     done
-    "$adb_bin" shell cmd media_session volume --stream 4 --set 1 >/dev/null 2>&1 || true
-    "$adb_bin" shell settings put system volume_alarm 0 >/dev/null 2>&1 || true
+    "$adb_bin" 9>&- shell cmd media_session volume --stream 4 --set 1 >/dev/null 2>&1 || true
+    "$adb_bin" 9>&- shell settings put system volume_alarm 0 >/dev/null 2>&1 || true
     local music ring alarm
-    music=$("$adb_bin" shell cmd media_session volume --stream 3 --get 2>/dev/null | tr -d '\r' | sed -n 's/.*volume is \([0-9][0-9]*\).*/\1/p' | tail -1)
-    ring=$("$adb_bin" shell cmd media_session volume --stream 2 --get 2>/dev/null | tr -d '\r' | sed -n 's/.*volume is \([0-9][0-9]*\).*/\1/p' | tail -1)
-    alarm=$("$adb_bin" shell cmd media_session volume --stream 4 --get 2>/dev/null | tr -d '\r' | sed -n 's/.*volume is \([0-9][0-9]*\).*/\1/p' | tail -1)
+    music=$("$adb_bin" 9>&- shell cmd media_session volume --stream 3 --get 2>/dev/null | tr -d '\r' | sed -n 's/.*volume is \([0-9][0-9]*\).*/\1/p' | tail -1)
+    ring=$("$adb_bin" 9>&- shell cmd media_session volume --stream 2 --get 2>/dev/null | tr -d '\r' | sed -n 's/.*volume is \([0-9][0-9]*\).*/\1/p' | tail -1)
+    alarm=$("$adb_bin" 9>&- shell cmd media_session volume --stream 4 --get 2>/dev/null | tr -d '\r' | sed -n 's/.*volume is \([0-9][0-9]*\).*/\1/p' | tail -1)
     echo "agent-lock: mute music=$music ring=$ring alarm=$alarm" >&2
     if [[ "$music" != "0" || "$ring" != "0" ]]; then
         echo "agent-lock: ERROR: tablet is not muted (music=$music ring=$ring)" >&2
