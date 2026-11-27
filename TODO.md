@@ -16,7 +16,7 @@ compaction + docking, Java captions, vertical dock, and the three perf rewrites
 
 - [ ] Panel stills: VERT short page vs tall page (+ scroll), HORIZ pixel-diff
       baseline, sub-strips both docks, collapsed, restart persistence.
-- [ ] Panel swipe axis (code-complete, needs the charged panel): vertical dock
+- [x] Panel swipe axis (code-complete, needs the charged panel): vertical dock
       left/right toggles and up/down is inert; horizontal dock up/down unchanged;
       a drag started on a page/slider must not move the drawer.
 - [ ] Cam-stick: heatmap still, dragged-point response, C-bit table, the three
@@ -34,7 +34,10 @@ compaction + docking, Java captions, vertical dock, and the three perf rewrites
 - [ ] Motion-vector heatmap renders a flat blue frame (`fx 31 9`, `149 2`).
 - [x] `fxerr=<programs>` in the dump names any FX shader that failed to link
       (verified `fxerr=none`); a silent fallback can no longer look like a no-op.
-- [ ] **Black frame after sleep / resume** (subagent on it now) — the app can come back with the 3D
+- [x] **Black frame after sleep / resume** — fixed (1f36b3c): two causes, the
+      `QUALITY_DETAIL[-1]` crash that aborted `setViewAsset` and the EGLSurface
+      going stale on the render thread. Verified over 3x 3D + 2x 2D sleep/wake and
+      a force-stop/start, all `BLACKCHECK status=ok`, swapfail 0. — the app can come back with the 3D
       layer black (touch overlay and panel draw, game does not) and `HOME` + reopen
       does not always recover it; observed twice today while verifying the swipe
       axis. This blocks visual verification of several items and is the most
