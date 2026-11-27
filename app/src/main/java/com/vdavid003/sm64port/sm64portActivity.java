@@ -69,6 +69,12 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     private static final String PREF_QUICK_DEV = "quick_dev";
     private static final String PREF_QUICK_DEV_LEVEL = "quick_dev_level";
     private static final String PREF_QUICK_DEV_MUTE = "quick_dev_mute";
+    /* Black-frame watchdog: "on|level|mute" of the user's QUICK DEV row when an
+     * emergency restart borrowed it to boot back into the same level. */
+    private static final String PREF_BLACKFIX_RESTORE = "blackfix_restore";
+    /* Wall-clock time of the last emergency restart; persisted so the rate cap
+     * survives the process kill the restart performs. */
+    private static final String PREF_BLACKFIX_RESTART_MS = "blackfix_restart_ms";
     /* Caption ownership: true = Java overlay (crisp type), false = game font. */
     private static final String PREF_CAPTION_JAVA = "caption_java";
     private static final String PREF_CAPTION_SIZE = "caption_size_pct";
@@ -103,6 +109,31 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     private InputViewsAsset asset;
     private LinearLayout controls;
     private SurfaceTexture leiaTexture;
+
+    /* ---- black-frame watchdog (see BLACKFRAME.md) ------------------------
+     * After a panel sleep or a resume the game layer can come back black while
+     * the Java overlays keep drawing. `cmd dump` stays healthy and `cmd reinit`
+     * does not help. The watchdog measures the presented frame, logs the
+     * surface lifecycle, repairs with a fresh SurfaceTexture and - last resort -
+     * restarts once into the same level. It never hides/shows the Leia view and
+     * never restarts the interlacer after startup: both detach the surface on
+     * newer firmware. */
+    private static final int BLACK_MEAN_LIMIT = 4;      /* luma 0..255 */
+    private static final int BLACK_MAX_LIMIT = 24;
+    private static final int BLACK_FIX_MAX_ATTEMPTS = 2;
+    private static final long BLACK_RESTART_MIN_GAP_MS = 10 * 60 * 1000L;
+    private static final int BLACK_ARM_MIN_PRESENTS = 240;  /* ~2-4 s of frames */
+    private int blackTexSeq;              /* SurfaceTextureReady deliveries */
+    private int blackResumeSeq;           /* one watchdog run per resume */
+    private int blackStreak;              /* consecutive black probes */
+    private int blackFixAttempts;
+    private boolean blackWatchRestartOk;  /* the restart rung is allowed */
+    private boolean foreground;
+    private String blackLast = "unknown"; /* last verdict, repeated by cmd dump */
+    private int blackLastMean = -1, blackLastMax = -1, blackLastFrames;
+    /* The tuning panel failed to build: the game surface is fine, the panel is
+     * not. Shown by cmd dump so this can never look like a renderer failure. */
+    private boolean panelBuildFailed;
     private final SeekBar[] bars = new SeekBar[24];
     /* Any slider key -> its SeekBar/min, for gesture control (cam keys > 23). */
     private final java.util.Map<Integer, SeekBar> keyBars = new java.util.HashMap<>();
@@ -516,6 +547,38 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         Log.i(TAG, "QUICK_DEV restored: on=" + quickDevOn + " level=" + quickDevLevel
                 + " mute=" + quickDevMute);
 
+        /* A black-frame emergency restart borrows QUICK DEV to boot straight
+         * back into the level the session was in (the native boot request above
+         * is already armed). Put the user's row back now, so the toggle is not
+         * silently changed by a recovery: only this launch used it. */
+        try {
+            android.content.SharedPreferences sp =
+                    getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+            String prev = sp.getString(PREF_BLACKFIX_RESTORE, null);
+            if (prev != null) {
+                String[] f = prev.split("\\|");
+                if (f.length == 3) {
+                    quickDevOn = "1".equals(f[0]);
+                    try { quickDevLevel = Integer.parseInt(f[1]); } catch (Throwable ignored) {}
+                    if (quickDevLevel < 1 || quickDevLevel > LEVEL_MAX_PORT) {
+                        quickDevLevel = QUICK_DEV_DEFAULT_LEVEL;
+                    }
+                    quickDevMute = "1".equals(f[2]);
+                }
+                sp.edit()
+                        .putBoolean(PREF_QUICK_DEV, quickDevOn)
+                        .putInt(PREF_QUICK_DEV_LEVEL, quickDevLevel)
+                        .putBoolean(PREF_QUICK_DEV_MUTE, quickDevMute)
+                        .remove(PREF_BLACKFIX_RESTORE)
+                        .commit();
+                Log.i(TAG, "BLACKFIX boot: QUICK DEV used for the level restore; row back to"
+                        + " on=" + quickDevOn + " level=" + quickDevLevel
+                        + " mute=" + quickDevMute);
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "BLACKFIX restore failed", t);
+        }
+
         /* Caption ownership + overlay size/opacity. Pushed before native
          * main() starts, so the very first frame already obeys the choice. */
         try {
@@ -718,39 +781,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         asset.CreateEmptySurfaceForVideo(3840, 1200, new SurfaceTextureReadyCallback() {
             @Override
             public void onSurfaceTextureReady(SurfaceTexture texture) {
-                weaverLog("SurfaceTextureReady callback: thread=" + Thread.currentThread().getName()
-                        + " texture=" + texture);
-                if (texture == null) {
-                    weaverLog("SurfaceTextureReady got NULL texture; cannot weave");
-                    return;
-                }
-                // The producer buffer size must match what the interlacer is
-                // told the source is, otherwise it samples a magnified crop.
-                leiaTexture = texture;
-                texture.setDefaultBufferSize(SBS_W, SBS_H);
-                weaverLog("SurfaceTexture default buffer set to " + SBS_W + "x" + SBS_H);
-                // Kick the interlacer without detaching the SurfaceView (hiding
-                // it blacks the display on newer firmware). pause/resume +
-                // requestRender restarts the weave in place.
-                leiaView.postDelayed(new Runnable() {
-                    @Override public void run() {
-                        try {
-                            leiaView.onPause();
-                            leiaView.onResume();
-                            leiaView.requestRender();
-                            reapplySourceSize();
-                            weaverLog("interlacer kick: pause/resume + requestRender");
-                        } catch (Throwable t) {
-                            weaverError("interlacer kick failed", t);
-                        }
-                    }
-                }, 1200);
-                try {
-                    SDLActivity.setOverrideSurface(new Surface(texture));
-                    weaverLog("SDL override surface set from Leia SurfaceTexture");
-                } catch (Throwable t) {
-                    weaverError("setOverrideSurface failed", t);
-                }
+                leiaSurfaceReady(texture, "init", SBS_W, SBS_H);
             }
         });
         weaverLog("asset created; surface request queued");
@@ -759,6 +790,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         leiaView.setClickable(false);
         leiaView.setFocusable(false);
         weaverLog("InterlacedSurfaceView created");
+        installSurfaceLifecycleLog();
 
         // Attach the view before binding the asset: the interlacer only creates
         // the SurfaceTexture once the view is in a window.
@@ -801,33 +833,45 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             pictoParams.rightMargin = dp(10);
             layout.addView(stereoPictogram, pictoParams);
 
-            RelativeLayout.LayoutParams panelParams = new RelativeLayout.LayoutParams(
-                    RelativeLayout.LayoutParams.MATCH_PARENT,
-                    RelativeLayout.LayoutParams.WRAP_CONTENT);
-            panelParams.addRule(RelativeLayout.ALIGN_PARENT_BOTTOM);
-            layout.addView(buildTuningPanel(), panelParams);
-            weaverLog("debug tuning panel attached");
-            tuningPanelView.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, orr, ob) -> {
-                int nw = r - l;
-                if (nw != lastHeaderWidth) {
-                    lastHeaderWidth = nw;
-                    layoutPanelHeader();
-                }
-            });
-            applyPanelOrientation(false);
-            // Apply the persisted opacity after both the overlay and its slider
-            // exist (SeekBar.setProgress happens before the listener is set).
-            applyOverlayAlpha(overlayAlphaPct);
-            // Last: the QUALITY bundle overwrites every FX key the panel's own
-            // construction just pushed, so it must run after buildTuningPanel().
-            if (fxPreset >= 0) applyFxPreset(fxPreset, false);
-            updateToeSliderState();
+            /* The tuning panel is a big pile of widgets and sliders; a bug in
+             * any of them must NOT be able to abort the weaver setup below.
+             * On 2026-11-27 an ArrayIndexOutOfBoundsException in
+             * updateQualityPills() (fxPreset == -1, no QUALITY tier stored yet)
+             * threw out of here, so setViewAsset() never ran, SDL fell back to
+             * its own invisible SurfaceView and the game layer was black for
+             * the whole session - with a live overlay and a sane cmd dump. */
             try {
-                if (touchOverlay != null) {
-                    touchOverlay.setAnalogMode(true);   // analog camera stick by default
+                RelativeLayout.LayoutParams panelParams = new RelativeLayout.LayoutParams(
+                        RelativeLayout.LayoutParams.MATCH_PARENT,
+                        RelativeLayout.LayoutParams.WRAP_CONTENT);
+                panelParams.addRule(RelativeLayout.ALIGN_PARENT_BOTTOM);
+                layout.addView(buildTuningPanel(), panelParams);
+                weaverLog("debug tuning panel attached");
+                tuningPanelView.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, orr, ob) -> {
+                    int nw = r - l;
+                    if (nw != lastHeaderWidth) {
+                        lastHeaderWidth = nw;
+                        layoutPanelHeader();
+                    }
+                });
+                applyPanelOrientation(false);
+                // Apply the persisted opacity after both the overlay and its slider
+                // exist (SeekBar.setProgress happens before the listener is set).
+                applyOverlayAlpha(overlayAlphaPct);
+                // Last: the QUALITY bundle overwrites every FX key the panel's own
+                // construction just pushed, so it must run after buildTuningPanel().
+                if (fxPreset >= 0) applyFxPreset(fxPreset, false);
+                updateToeSliderState();
+                try {
+                    if (touchOverlay != null) {
+                        touchOverlay.setAnalogMode(true);   // analog camera stick by default
+                    }
+                } catch (Throwable t) {
+                    Log.w(TAG, "analog default failed", t);
                 }
             } catch (Throwable t) {
-                Log.w(TAG, "analog default failed", t);
+                panelBuildFailed = true;
+                weaverError("tuning panel build FAILED (game surface continues)", t);
             }
         } else {
             weaverError("mLayout is null; Leia view was not attached", null);
@@ -3705,7 +3749,11 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
             }
             pill.setBackground(bg);
         }
-        if (qualityDetail != null) qualityDetail.setText(QUALITY_DETAIL[fxPreset]);
+        if (qualityDetail != null) {
+            qualityDetail.setText(fxPreset >= 0 && fxPreset < QUALITY_DETAIL.length
+                    ? QUALITY_DETAIL[fxPreset]
+                    : "\u25B8 no tier chosen - keys untouched (tap LOW / MED / HIGH)");
+        }
     }
 
     /**
@@ -6114,9 +6162,7 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                             weaverLog("resize surface ready got NULL texture");
                             return;
                         }
-                        texture.setDefaultBufferSize(w, h);
-                        leiaTexture = texture;
-                        SDLActivity.setOverrideSurface(new Surface(texture));
+                        leiaSurfaceReady(texture, "resize " + w + "x" + h, w, h);
                         // mpv's Enable3D(): backlight and tracking together,
                         // once the video surface exists.
                         try {
@@ -6490,10 +6536,19 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
     private native int nativeGetStereoEnabled();
     private native int nativeGetDrawableWidth();
     private native int nativeGetDrawableHeight();
+    /* Black-frame probe / present telemetry (gfx_sdl2.c, see BLACKFRAME.md). */
+    private native void nativeBlackProbe();
+    private native int nativeBlackProbeState();
+    private native int nativeBlackProbeMean();
+    private native int nativeBlackProbeMax();
+    private native int nativeBlackProbeFrames();
+    private native int nativeGetPresentStats(int which);
+    private native int nativeGetCurrLevel();
 
     @Override
     protected void onResume() {
         super.onResume();
+        foreground = true;
         if (leiaView != null) leiaView.onResume();
         if (sdk != null) {
             sdk.onResume();
@@ -6516,11 +6571,34 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         Log.i(TAG, "CAPTIONS resume: " + (captionJavaOn ? "JAVA" : "GAME FONT")
                 + " native=" + captionNativeMode()
                 + " overlay=" + (captionOverlay != null ? 1 : 0));
+        logSurfaceState("resume");
+        /* This is the moment the black frame used to happen: the Leia view
+         * recreates its SurfaceTexture, SDL rebinds its EGLSurface, and the GL
+         * context can be left on the old one. Measure instead of guessing, and
+         * repair if the probe stays black. */
+        if (SDLActivity.mOverrideSurface == null) {
+            /* No override surface at all: SDL is drawing into its own hidden
+             * SurfaceView (the "flat" fallback after a failed initLeia). Watch
+             * it once, repair, but never restart from here. */
+            Log.i(TAG, "BLACKWATCH: no override surface at resume (flat?) - watching");
+            armBlackWatch("flat", 4000, false, true);
+        } else if (nativeGetPresentStats(0) >= BLACK_ARM_MIN_PRESENTS) {
+            armBlackWatch("resume", 2500, true, true);
+        } else {
+            Log.i(TAG, "BLACKWATCH not armed on this resume (presents="
+                    + nativeGetPresentStats(0) + " < " + BLACK_ARM_MIN_PRESENTS
+                    + ": still the boot)");
+        }
     }
 
     @Override
     protected void onPause() {
+        /* Cancel a watchdog run in flight: its probe would read a paused frame
+         * and its repair would fight the surface teardown. */
+        foreground = false;
+        blackResumeSeq++;
         DebugLog.flush();
+        logSurfaceState("pause");
         if (leiaView != null) leiaView.onPause();
         if (sdk != null) {
             sdk.onPause();
@@ -6529,6 +6607,416 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
         }
         super.onPause();
     }
+
+    // ---- surface lifecycle + black-frame watchdog -------------------------
+    /**
+     * One SurfaceTexture from the Leia asset, in one place.
+     *
+     * Both CreateEmptySurfaceForVideo() call sites land here, so the SDL
+     * override surface is always re-bound to the texture the interlacer will
+     * actually consume, and the sequence is visible in logcat
+     * ("SurfaceTextureReady #n"). A delivery after the first one is the resume
+     * path; it arms a probe instead of trusting the rebind.
+     */
+    private void leiaSurfaceReady(final SurfaceTexture texture, final String why,
+                                  final int bufW, final int bufH) {
+        if (texture == null) {
+            weaverLog("SurfaceTextureReady (" + why + ") got NULL texture; cannot weave");
+            return;
+        }
+        final int seq = ++blackTexSeq;
+        boolean oldReleased = false;
+        boolean oldSame = false;
+        try {
+            oldSame = leiaTexture == texture;
+            oldReleased = leiaTexture != null && !oldSame && leiaTexture.isReleased();
+        } catch (Throwable ignored) {
+        }
+        weaverLog("SurfaceTextureReady #" + seq + " (" + why + ")"
+                + " thread=" + Thread.currentThread().getName()
+                + " tex=" + texture
+                + " old=" + leiaTexture + " oldSame=" + oldSame
+                + " oldReleased=" + oldReleased
+                + " buffer=" + bufW + "x" + bufH);
+        // The producer buffer size must match what the interlacer is told the
+        // source is, otherwise it samples a magnified crop.
+        leiaTexture = texture;
+        try {
+            texture.setDefaultBufferSize(bufW, bufH);
+        } catch (Throwable t) {
+            weaverError("setDefaultBufferSize(" + bufW + "x" + bufH + ") failed", t);
+        }
+        try {
+            SDLActivity.setOverrideSurface(new Surface(texture));
+            weaverLog("SDL override surface #" + seq + " set from Leia SurfaceTexture ("
+                    + why + ")");
+        } catch (Throwable t) {
+            weaverError("setOverrideSurface #" + seq + " failed", t);
+        }
+
+        if (seq == 1 && leiaView != null) {
+            // Kick the interlacer ONCE, at startup: pause/resume + requestRender
+            // restarts the weave in place without detaching the SurfaceView
+            // (hiding it blacks the display on newer firmware). After startup
+            // the same call destroys the surface SDL is drawing into, so it is
+            // never repeated here.
+            leiaView.postDelayed(new Runnable() {
+                @Override public void run() {
+                    try {
+                        leiaView.onPause();
+                        leiaView.onResume();
+                        leiaView.requestRender();
+                        reapplySourceSize();
+                        weaverLog("interlacer kick: pause/resume + requestRender");
+                    } catch (Throwable t) {
+                        weaverError("interlacer kick failed", t);
+                    }
+                }
+            }, 1200);
+        } else if (foreground && nativeGetPresentStats(0) >= BLACK_ARM_MIN_PRESENTS) {
+            // Mid-session delivery = the resume path. Give the weave a few
+            // frames, then measure; armBlackWatch() repairs only if it stays
+            // black twice (a level fade is black for well under a second).
+            // The presents gate keeps the two startup deliveries (init +
+            // resize, both before the first level is up) out of the watchdog.
+            armBlackWatch("surface#" + seq, 900, true, false);
+        }
+    }
+
+    /** SurfaceHolder + attach-state logging: the failure was invisible without it. */
+    private void installSurfaceLifecycleLog() {
+        try {
+            leiaView.getHolder().addCallback(new android.view.SurfaceHolder.Callback() {
+                @Override
+                public void surfaceCreated(android.view.SurfaceHolder holder) {
+                    weaverLog("LEIA surfaceCreated frame=" + surfaceFrame(holder)
+                            + " texs=" + blackTexSeq
+                            + " presents=" + nativeGetPresentStats(0));
+                }
+                @Override
+                public void surfaceChanged(android.view.SurfaceHolder holder, int format,
+                                           int w, int h) {
+                    weaverLog("LEIA surfaceChanged " + w + "x" + h + " format=" + format
+                            + " texs=" + blackTexSeq);
+                }
+                @Override
+                public void surfaceDestroyed(android.view.SurfaceHolder holder) {
+                    weaverLog("LEIA surfaceDestroyed texs=" + blackTexSeq
+                            + " presents=" + nativeGetPresentStats(0)
+                            + " swapfail=" + nativeGetPresentStats(1)
+                            + " tex=" + (leiaTexture == null ? "null"
+                                    : ("released=" + surfaceTextureReleased())));
+                }
+            });
+            leiaView.addOnAttachStateChangeListener(new View.OnAttachStateChangeListener() {
+                @Override
+                public void onViewAttachedToWindow(View v) {
+                    weaverLog("LEIA view attached " + v.getWidth() + "x" + v.getHeight());
+                }
+                @Override
+                public void onViewDetachedFromWindow(View v) {
+                    weaverLog("LEIA view DETACHED (surface goes with it)");
+                }
+            });
+            weaverLog("surface lifecycle logging installed");
+        } catch (Throwable t) {
+            weaverError("surface lifecycle logging failed", t);
+        }
+    }
+
+    private static String surfaceFrame(android.view.SurfaceHolder holder) {
+        try {
+            android.graphics.Rect r = holder.getSurfaceFrame();
+            return r == null ? "null" : (r.width() + "x" + r.height());
+        } catch (Throwable t) {
+            return "?";
+        }
+    }
+
+    private String surfaceTextureReleased() {
+        try {
+            return String.valueOf(leiaTexture.isReleased());
+        } catch (Throwable t) {
+            return "?";
+        }
+    }
+
+    /** One log line with everything that decides a rebind. */
+    private void logSurfaceState(String tag) {
+        android.view.Surface ov = SDLActivity.mOverrideSurface;
+        boolean ovValid = false;
+        try {
+            ovValid = ov != null && ov.isValid();
+        } catch (Throwable ignored) {
+        }
+        weaverLog("SURFACE " + tag
+                + " view=" + (leiaView == null ? "null"
+                        : (leiaView.getWidth() + "x" + leiaView.getHeight()
+                           + " attached=" + leiaView.isAttachedToWindow()))
+                + " texs=" + blackTexSeq
+                + " tex=" + (leiaTexture == null ? "null"
+                        : ("released=" + surfaceTextureReleased()))
+                + " override=" + (ov == null ? "null" : ("valid=" + ovValid))
+                + " presents=" + nativeGetPresentStats(0)
+                + " swapfail=" + nativeGetPresentStats(1)
+                + " glfix=" + nativeGetPresentStats(2)
+                + " glstale=" + nativeGetPresentStats(3)
+                + " ctxreset=" + nativeGetPresentStats(5)
+                + " blk=" + blackLast);
+    }
+
+    /**
+     * Start (or restart) one watchdog run. {@code firstDelayMs} is the settling
+     * time: long after a resume, short after a mid-session texture delivery.
+     */
+    private void armBlackWatch(String why, long firstDelayMs, boolean allowRestart,
+                               boolean freshEpisode) {
+        final int seq = ++blackResumeSeq;
+        blackStreak = 0;
+        if (freshEpisode) {
+            blackFixAttempts = 0;
+        }
+        blackWatchRestartOk = allowRestart;
+        Log.i(TAG, "BLACKWATCH arm #" + seq + " (" + why + ") in " + firstDelayMs + "ms"
+                + " restart=" + allowRestart + " fixes=" + blackFixAttempts
+                + " presents=" + nativeGetPresentStats(0));
+        perfHandler.postDelayed(() -> blackWatchProbe(seq), firstDelayMs);
+    }
+
+    private void blackWatchProbe(final int seq) {
+        Thread t = new Thread(() -> {
+            int[] p = blackProbe(2500);
+            String verdict = blackVerdict(p);
+            blackLast = verdict;
+            blackLastMean = p[0];
+            blackLastMax = p[1];
+            blackLastFrames = p[2];
+            Log.i(TAG, "BLACKWATCH #" + seq + " " + blackLine(p, verdict));
+            perfHandler.post(() -> blackWatchResult(seq, p, verdict));
+        }, "sm64-blackwatch");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    private void blackWatchResult(int seq, int[] p, String verdict) {
+        if (seq != blackResumeSeq || !foreground) {
+            return;
+        }
+        final boolean bad = "black".equals(verdict) || "flat".equals(verdict);
+        if (!bad) {
+            if (blackFixAttempts > 0) {
+                weaverLog("BLACKWATCH recovered after " + blackFixAttempts
+                        + " repair(s): " + blackLine(p, verdict));
+            }
+            blackStreak = 0;
+            blackFixAttempts = 0;   /* only consecutive bad episodes escalate */
+            return;
+        }
+        blackStreak++;
+        if (blackStreak < 2) {
+            // A level fade / star-get black is well under a second long; only a
+            // second consecutive black probe is treated as the bug.
+            perfHandler.postDelayed(() -> blackWatchProbe(seq), 1200);
+            return;
+        }
+        /* A replaced GL context means every texture/shader name the game holds
+         * is stale: no surface repair can help, only a restart can. "flat" is
+         * the different case (SDL drawing into its own view, nothing to
+         * re-bind), which blackRepair() addresses by re-requesting a producer. */
+        if ("black".equals(verdict) && blackWatchRestartOk && nativeGetPresentStats(5) > 0) {
+            weaverLog("BLACKWATCH ctxreset=" + nativeGetPresentStats(5)
+                    + " -> skipping surface repairs");
+            blackEmergencyRestart(seq, p);
+            return;
+        }
+        if (blackFixAttempts >= BLACK_FIX_MAX_ATTEMPTS) {
+            if (blackWatchRestartOk) {
+                blackEmergencyRestart(seq, p);
+            } else {
+                weaverLog("BLACKWATCH #" + seq + " still black, no restart allowed here: "
+                        + blackLine(p, verdict));
+            }
+            return;
+        }
+        blackFixAttempts++;
+        blackRepair("watchdog " + blackFixAttempts + "/" + BLACK_FIX_MAX_ATTEMPTS);
+        perfHandler.postDelayed(() -> blackWatchProbe(seq), 1500);
+    }
+
+    /** Blocking one-frame luminance probe; background threads only. */
+    private int[] blackProbe(int timeoutMs) {
+        try {
+            nativeBlackProbe();
+        } catch (Throwable t) {
+            Log.w(TAG, "black probe failed", t);
+            return new int[] { -2, -2, 0 };
+        }
+        long start = SystemClock.elapsedRealtime();
+        while (SystemClock.elapsedRealtime() - start < timeoutMs) {
+            int st = nativeBlackProbeState();
+            if (st == 2) {
+                return new int[] { nativeBlackProbeMean(), nativeBlackProbeMax(),
+                        nativeBlackProbeFrames() };
+            }
+            if (st < 0) {
+                return new int[] { -1, -1, 0 };
+            }
+            try {
+                Thread.sleep(16);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+        return new int[] { -1, -1, 0 };   /* never serviced: the loop is stalled */
+    }
+
+    private String blackVerdict(int[] p) {
+        /* No override surface means SDL is rendering into its own (hidden)
+         * SurfaceView: the game is drawing, the panel cannot show it. The probe
+         * reads SDL's buffer, so it would say "ok" while the screen is black -
+         * report the binding instead. */
+        if (SDLActivity.mOverrideSurface == null) return "flat";
+        if (p[0] == -2) return "error";
+        if (p[0] < 0) return "stalled";
+        if (p[0] <= BLACK_MEAN_LIMIT && p[1] <= BLACK_MAX_LIMIT) return "black";
+        return "ok";
+    }
+
+    private String blackLine(int[] p, String verdict) {
+        return "mean=" + p[0] + " max=" + p[1] + " frames=" + p[2]
+                + " presents=" + nativeGetPresentStats(0)
+                + " swapfail=" + nativeGetPresentStats(1)
+                + " glfix=" + nativeGetPresentStats(2)
+                + " glstale=" + nativeGetPresentStats(3)
+                + " ctxreset=" + nativeGetPresentStats(5)
+                + " texs=" + blackTexSeq
+                + " status=" + verdict;
+    }
+
+    /**
+     * The safe repair: ask the Leia asset for a fresh SurfaceTexture. The
+     * interlacer builds it on its GL thread and calls
+     * leiaSurfaceReady() on the main thread, which re-binds SDL; the render
+     * loop's per-frame make-current check then binds the GL context to the new
+     * window surface. No view hide/show, no interlacer pause/resume.
+     */
+    private void blackRepair(String why) {
+        final boolean haveProducer = surfaceValid && leiaTexture != null;
+        weaverLog("BLACKFIX " + why + ": " + (haveProducer
+                ? "fresh Leia SurfaceTexture (no view hide/show, no interlacer restart)"
+                : "no producer surface (surfaceValid=" + surfaceValid
+                  + " tex=" + leiaTexture + ") -> re-requesting one"));
+        try {
+            if (leiaView != null) leiaView.requestRender();
+        } catch (Throwable t) {
+            weaverError("BLACKFIX requestRender failed", t);
+        }
+        if (haveProducer) {
+            /* A producer exists but is not being consumed (or its buffer queue
+             * is abandoned): ask the asset for a new SurfaceTexture. */
+            try {
+                if (asset != null) asset.scheduleRecreatingAssets();
+            } catch (Throwable t) {
+                weaverError("BLACKFIX scheduleRecreatingAssets failed", t);
+            }
+        } else {
+            /* The app itself thinks it has no producer: no amount of
+             * re-binding helps, the request has to be re-armed the same way the
+             * layout path does it. This is the class `cmd reinit` could never
+             * fix (it requested a surface but the view had no asset bound, so
+             * nothing was ever delivered). */
+            int w = leiaView != null && leiaView.getWidth() > 0 ? leiaView.getWidth() : SBS_W;
+            int h = leiaView != null && leiaView.getHeight() > 0 ? leiaView.getHeight() : SBS_H;
+            surfaceValid = false;
+            resizeLeiaSurface(w, h);
+            try {
+                if (asset != null) asset.scheduleRecreatingAssets();
+            } catch (Throwable t) {
+                weaverError("BLACKFIX scheduleRecreatingAssets failed", t);
+            }
+        }
+    }
+
+    /**
+     * Last resort: restart once into the level the session is in. QUICK DEV
+     * boots L&lt;level&gt; before SDL starts, and onCreate() restores the user's
+     * toggle so the recovery does not change their settings. Rate limited so a
+     * permanently broken surface cannot loop.
+     */
+    private void blackEmergencyRestart(int seq, int[] p) {
+        long now = System.currentTimeMillis();
+        long last = 0;
+        try {
+            last = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                    .getLong(PREF_BLACKFIX_RESTART_MS, 0L);
+        } catch (Throwable ignored) {
+        }
+        if (last != 0 && now - last < BLACK_RESTART_MIN_GAP_MS) {
+            weaverLog("BLACKWATCH #" + seq + " still black, restart SUPPRESSED (last one "
+                    + ((now - last) / 1000) + "s ago): " + blackLine(p, "black"));
+            return;
+        }
+        int level = QUICK_DEV_DEFAULT_LEVEL;
+        try {
+            level = nativeGetCurrLevel();
+        } catch (Throwable ignored) {
+        }
+        if (level < 1 || level > LEVEL_MAX_PORT) {
+            level = QUICK_DEV_DEFAULT_LEVEL;
+        }
+        weaverLog("BLACKWATCH #" + seq + " still black after " + blackFixAttempts
+                + " repair(s) -> restart into L" + level + ": " + blackLine(p, "black"));
+        try {
+            String prev = (quickDevOn ? 1 : 0) + "|" + quickDevLevel + "|" + (quickDevMute ? 1 : 0);
+            getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                    .putString(PREF_BLACKFIX_RESTORE, prev)
+                    .putLong(PREF_BLACKFIX_RESTART_MS, now)
+                    .putBoolean(PREF_QUICK_DEV, true)
+                    .putInt(PREF_QUICK_DEV_LEVEL, level)
+                    .commit();
+        } catch (Throwable t) {
+            Log.w(TAG, "BLACKWATCH quick-dev persist failed", t);
+        }
+        restartApp();
+    }
+
+    /** adb: cmd blackcheck - measure the presented frame, change nothing. */
+    void debugBlackCheck() {
+        Thread t = new Thread(() -> {
+            int[] p = blackProbe(3000);
+            String verdict = blackVerdict(p);
+            blackLast = verdict;
+            blackLastMean = p[0];
+            blackLastMax = p[1];
+            blackLastFrames = p[2];
+            Log.i(TAG, "BLACKCHECK " + blackLine(p, verdict)
+                    + " streak=" + blackStreak + " fixes=" + blackFixAttempts
+                    + " stereoOn=" + stereoOn);
+        }, "sm64-blackcheck");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    /** adb: cmd blackfix [--es action restart] - the safe repair, or a restart. */
+    void debugBlackFix(String action) {
+        if ("restart".equals(action)) {
+            runOnUiThread(() -> blackEmergencyRestart(blackResumeSeq, new int[] { -1, -1, 0 }));
+            return;
+        }
+        runOnUiThread(() -> {
+            Log.i(TAG, "BLACKFIX cmd: " + blackLast
+                    + " presents=" + nativeGetPresentStats(0)
+                    + " swapfail=" + nativeGetPresentStats(1)
+                    + " glfix=" + nativeGetPresentStats(2)
+                    + " ctxreset=" + nativeGetPresentStats(5));
+            blackRepair("cmd");
+            /* Serialize with any watchdog in flight and measure the result.
+             * A manual repair never escalates to a restart on its own. */
+            armBlackWatch("cmd blackfix", 1200, false, false);
+        });
+    }
+
 
     // ---- runtime debug control (see DebugReceiver) -------------------------
     /** Red debug line + notice while the assistant is driving the app. */
@@ -6962,7 +7450,12 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
 
     void debugReinit() {
         runOnUiThread(() -> {
-            Log.i(TAG, "REINIT requested");
+            Log.i(TAG, "REINIT requested; " + blackLast
+                    + " texs=" + blackTexSeq
+                    + " presents=" + nativeGetPresentStats(0)
+                    + " swapfail=" + nativeGetPresentStats(1)
+                    + " glfix=" + nativeGetPresentStats(2)
+                    + " ctxreset=" + nativeGetPresentStats(5));
             if (surfaceValid && leiaTexture != null) {
                 // Re-bind the existing producer surface and refresh the backlight.
                 // Never hide/show the view: that detaches the surface on newer
@@ -6981,6 +7474,11 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                 } catch (Throwable t) {
                     weaverError("REINIT rebind failed", t);
                 }
+                /* Re-binding the same producer surface CANNOT fix the resume
+                 * case: the ANativeWindow is unchanged, so SDL keeps its (dead)
+                 * EGLSurface. Measure, and escalate to a fresh SurfaceTexture
+                 * if the frame is still black. No restart from here. */
+                armBlackWatch("reinit", 600, false, false);
             } else {
                 // No usable texture: request a fresh one at the SBS size.
                 surfaceValid = false;
@@ -7025,6 +7523,15 @@ public class sm64portActivity extends SDLActivity implements SensorEventListener
                     + " view=" + leiaView.getWidth() + "x" + leiaView.getHeight()
                     + " surfaceValid=" + surfaceValid
                     + " stereoOn=" + stereoOn
+                    + " texs=" + blackTexSeq + " blk=" + blackLast
+                    + "/" + blackLastMean + "/" + blackLastMax + "/" + blackLastFrames
+                    + " panel=" + (panelBuildFailed ? "FAILED" : "ok")
+                    + " flat=" + (SDLActivity.mOverrideSurface == null ? 1 : 0)
+                    + " presents=" + nativeGetPresentStats(0)
+                    + " swapfail=" + nativeGetPresentStats(1)
+                    + " glfix=" + nativeGetPresentStats(2)
+                    + " glstale=" + nativeGetPresentStats(3)
+                    + " ctxreset=" + nativeGetPresentStats(5)
                     + " tint=" + tintOn + " zbuf=" + zbufOn + " wire=" + wireOn
                     + " perf=" + perfOn + " swap=" + swapOn + " same=" + sameOn
                     + " nocull=" + nocullOn

@@ -13,6 +13,9 @@ import android.util.Log;
  *   adb shell am broadcast -a com.vdavid003.sm64port.CMD --es cmd set --ei k 0 --ei v 400
  *   adb shell am broadcast -a com.vdavid003.sm64port.CMD --es cmd toggle --es name TINT
  *   adb shell am broadcast -a com.vdavid003.sm64port.CMD --es cmd reinit
+ *   adb shell am broadcast -a com.vdavid003.sm64port.CMD --es cmd blackcheck
+ *   adb shell am broadcast -a com.vdavid003.sm64port.CMD --es cmd blackfix
+ *   adb shell am broadcast -a com.vdavid003.sm64port.CMD --es cmd blackfix --es action restart
  *   adb shell am broadcast -a com.vdavid003.sm64port.CMD --es cmd quickdev --ei v 1
  *   adb shell am broadcast -a com.vdavid003.sm64port.CMD --es cmd layout --es action save
  *   adb shell am broadcast -a com.vdavid003.sm64port.CMD --es cmd layout --es action discard
@@ -241,6 +244,16 @@ public class DebugReceiver extends BroadcastReceiver {
                 a.debugReinit();
                 Log.i(TAG, "CMD reinit");
                 break;
+            case "blackcheck":
+                a.debugBlackCheck();
+                Log.i(TAG, "CMD blackcheck");
+                break;
+            case "blackfix": {
+                String action = intent.getStringExtra("action");
+                a.debugBlackFix(action);
+                Log.i(TAG, "CMD blackfix action=" + action);
+                break;
+            }
             case "reset":
                 a.debugReset();
                 Log.i(TAG, "CMD reset");

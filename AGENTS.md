@@ -236,6 +236,9 @@ adb shell $B --es cmd ptc --es action launch # portal momentum launch demo
 adb shell $B --es cmd ptc --es action toolswap # portal gun <-> grapple
 adb shell $B --es cmd ptc --es action run   # smoke test
 adb shell $B --es cmd dump                  # status line in logcat (SM64Leia: PTC)
+adb shell $B --es cmd blackcheck            # BLACKCHECK mean/max/frames/status=ok|black
+adb shell $B --es cmd blackfix              # safe black-frame repair (fresh SurfaceTexture)
+adb shell $B --es cmd blackfix --es action restart  # last resort: restart into this level
 adb shell $B --es cmd busy --ei v 1         # BUSY/red (device lock does this)
 adb shell $B --es cmd captions --ei v 1     # caption text: 1 JAVA (default), 0 GAME FONT
 adb shell $B --es cmd layout --es action toggle  # touch layout editor on/off (HUD chip)

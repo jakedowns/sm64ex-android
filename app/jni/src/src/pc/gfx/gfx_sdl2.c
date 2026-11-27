@@ -45,6 +45,7 @@
 #include "game/ptc_trace.h"
 #include "game/otsm64remote.h"
 #include "game/print.h"
+#include "game/area.h"          /* gCurrLevelNum (black-frame restart) */
 #include "level_table.h"
 
 // TODO: figure out if this shit even works
@@ -1683,13 +1684,231 @@ Java_com_vdavid003_sm64port_FeedbackOutbox_nativeCaptureState(JNIEnv *env, jclas
     (void) env; (void) clazz;
     return (jint) gfx_feedback_capture_state();
 }
+
+/*
+ * Present telemetry + black-frame probe.  See BLACKFRAME.md.
+ *
+ * The visible failure: after a panel sleep (or a resume) the touch overlay and
+ * the debug panel keep drawing but the game layer is black, `cmd dump` still
+ * reports surfaceValid=true with the frame counter ticking, and `cmd reinit`
+ * (rebind-only) does not help.
+ *
+ * Mechanism: on resume the Leia view recreates its SurfaceTexture and
+ * SDLActivity.setOverrideSurface() therefore destroys and recreates SDL's
+ * EGLSurface *on the Java thread*. Nothing re-binds the GL context to that new
+ * surface on the render thread, so every following eglSwapBuffers() targets a
+ * surface that is not the current draw surface: the driver drops it, the loop
+ * keeps counting frames, and the panel shows the weaver's last (black) clear.
+ * Re-binding the same producer surface (cmd reinit) cannot fix it because the
+ * ANativeWindow is unchanged; only a fresh SurfaceTexture or a fresh context is.
+ *
+ * So, once per frame, on the GL thread: verify that the context's draw surface
+ * is still the window's EGLSurface and make it current again if not. Count
+ * swaps, EGL errors, repairs, stale-surface frames and context replacements so
+ * `cmd dump` can tell "swap fails" from "presented, but the weaver is black"
+ * from "the GL context was recreated and every GL name is stale".
+ */
+#include <EGL/egl.h>
+#include <SDL_syswm.h>
+
+static volatile unsigned s_present_frames;   /* swaps attempted */
+static volatile unsigned s_present_fails;    /* swaps that returned an EGL error */
+static volatile unsigned s_present_repairs;  /* context re-bound to the window surface */
+static volatile unsigned s_present_mismatch; /* frames found with a stale draw surface */
+static volatile unsigned s_present_ctxreset; /* GL context replaced under us */
+static volatile int s_present_last_err;
+
+#define BLACK_PROBE_IDLE 0
+#define BLACK_PROBE_PENDING 1
+#define BLACK_PROBE_DONE 2
+#define BLACK_PROBE_FAILED (-1)
+
+static volatile int s_black_state = BLACK_PROBE_IDLE;
+static volatile unsigned s_black_mean;
+static volatile unsigned s_black_max;
+static volatile unsigned s_black_frames;
+static volatile unsigned s_black_base;
+
+static void gfx_black_probe_request(void) {
+    s_black_base = s_present_frames;
+    s_black_mean = 0;
+    s_black_max = 0;
+    s_black_frames = 0;
+    s_black_state = BLACK_PROBE_PENDING;
+}
+
+/*
+ * Re-bind the GL context to the window's current EGLSurface when the Leia view
+ * swapped it underneath us. Returns 1 when the binding is usable. Called on the
+ * GL thread, before the swap, i.e. outside SDL's Android_ActivityMutex: a
+ * rebind racing with this check is detected (and repaired) on the next frame.
+ */
+static int gfx_sdl_present_binding(void) {
+    if (wnd == NULL) return 0;
+
+    EGLContext cur_ctx = eglGetCurrentContext();
+    if (cur_ctx == EGL_NO_CONTEXT) return 0;
+    /* SDL creates a fresh EGLContext when its restore fails; every GL name the
+     * game holds is then stale and no rebind can help. Adopt the new context so
+     * this is logged once per reset, and count it for the Java watchdog. */
+    if (ctx != NULL && cur_ctx != (EGLContext) ctx) {
+        s_present_ctxreset++;
+        if (s_present_ctxreset <= 3) {
+            SDL_Log("SM64 present: GL context REPLACED under the renderer "
+                    "(resets=%u) - GL objects are stale", s_present_ctxreset);
+        }
+        ctx = (SDL_GLContext) cur_ctx;
+    }
+
+    SDL_SysWMinfo info;
+    SDL_VERSION(&info.version);
+    if (!SDL_GetWindowWMInfo(wnd, &info)) return 0;
+    EGLSurface want = info.info.android.surface;
+    if (want == EGL_NO_SURFACE) return 0;
+
+    if (eglGetCurrentSurface(EGL_DRAW) == want) return 1;
+
+    EGLDisplay dpy = eglGetCurrentDisplay();
+    s_present_mismatch++;
+    if (dpy != EGL_NO_DISPLAY && eglMakeCurrent(dpy, want, want, cur_ctx)) {
+        s_present_repairs++;
+        SDL_Log("SM64 present: GL context re-bound to the window surface "
+                "(stale=%u repairs=%u frames=%u)",
+                s_present_mismatch, s_present_repairs, s_present_frames);
+        return 1;
+    }
+    SDL_Log("SM64 present: eglMakeCurrent failed err=0x%x (stale=%u)",
+            eglGetError(), s_present_mismatch);
+    return 0;
+}
+
+/* Mean/max luminance of the frame about to be presented (feedback readback). */
+static int gfx_black_probe_measure(void) {
+    int w = gfx_stereo_full_w;
+    int h = gfx_stereo_full_h;
+    if (w < 2 || h < 2) {
+        SDL_GL_GetDrawableSize(wnd, &w, &h);
+    }
+    if (w < 2 || h < 2) {
+        w = s_draw_w;
+        h = s_draw_h;
+    }
+    if (w <= 0 || h <= 0 || w > 8192 || h > 8192) return 0;
+
+    unsigned char *px = (unsigned char *)malloc((size_t)w * (size_t)h * 4u);
+    if (px == NULL) return 0;
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px);
+
+    int step = (w + 255) / 256;    /* ~256 columns */
+    if (step < 1) step = 1;
+    unsigned long long sum = 0;
+    unsigned long n = 0;
+    unsigned mx = 0;
+    for (int y = 0; y < h; y += step * 4) {     /* every 4th sampled row */
+        const unsigned char *row = px + (size_t)y * (size_t)w * 4u;
+        for (int x = 0; x < w; x += step) {
+            const unsigned char *p = row + (size_t)x * 4u;
+            unsigned luma = (unsigned)((p[0] * 77 + p[1] * 151 + p[2] * 28) >> 8);
+            sum += luma;
+            n++;
+            if (luma > mx) mx = luma;
+        }
+    }
+    free(px);
+    if (n == 0) return 0;
+    s_black_mean = (unsigned)(sum / n);
+    s_black_max = mx;
+    return 1;
+}
+
+JNIEXPORT void JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeBlackProbe(JNIEnv *env, jclass clazz) {
+    (void) env; (void) clazz;
+    gfx_black_probe_request();
+}
+
+JNIEXPORT jint JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeBlackProbeState(JNIEnv *env, jclass clazz) {
+    (void) env; (void) clazz;
+    return (jint) s_black_state;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeBlackProbeMean(JNIEnv *env, jclass clazz) {
+    (void) env; (void) clazz;
+    return (jint) s_black_mean;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeBlackProbeMax(JNIEnv *env, jclass clazz) {
+    (void) env; (void) clazz;
+    return (jint) s_black_max;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeBlackProbeFrames(JNIEnv *env, jclass clazz) {
+    (void) env; (void) clazz;
+    return (jint) s_black_frames;
+}
+
+/* 0 swaps attempted, 1 failed swaps, 2 GL repairs, 3 stale-surface frames,
+ * 4 last EGL error, 5 GL context replacements. */
+JNIEXPORT jint JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeGetPresentStats(JNIEnv *env, jclass clazz,
+                                                                  jint which) {
+    (void) env; (void) clazz;
+    switch (which) {
+        case 0: return (jint) s_present_frames;
+        case 1: return (jint) s_present_fails;
+        case 2: return (jint) s_present_repairs;
+        case 3: return (jint) s_present_mismatch;
+        case 4: return (jint) s_present_last_err;
+        case 5: return (jint) s_present_ctxreset;
+    }
+    return -1;
+}
+
+/* The level the session is in, for the last-resort QUICK DEV restart. */
+JNIEXPORT jint JNICALL
+Java_com_vdavid003_sm64port_sm64portActivity_nativeGetCurrLevel(JNIEnv *env, jclass clazz) {
+    (void) env; (void) clazz;
+    return (jint) gCurrLevelNum;
+}
 #endif /* __ANDROID__ */
 
 static void gfx_sdl_swap_buffers_begin(void) {
 #ifdef __ANDROID__
+    gfx_sdl_present_binding();
     gfx_feedback_capture_maybe();
+    if (s_black_state == BLACK_PROBE_PENDING) {
+        if (gfx_black_probe_measure()) {
+            s_black_frames = s_present_frames - s_black_base + 1;
+            s_black_state = BLACK_PROBE_DONE;
+        } else {
+            s_black_state = BLACK_PROBE_FAILED;
+        }
+    }
+    s_present_frames++;
+    while (eglGetError() != EGL_SUCCESS) {
+        /* clear a stale error so the swap's own error is attributable */
+    }
 #endif
     SDL_GL_SwapWindow(wnd);
+#ifdef __ANDROID__
+    {
+        EGLint err = eglGetError();
+        if (err != EGL_SUCCESS) {
+            s_present_fails++;
+            if (err != s_present_last_err || (s_present_fails % 120u) == 0u) {
+                s_present_last_err = (int) err;
+                SDL_Log("SM64 present: swap FAILED err=0x%x fails=%u frames=%u repairs=%u",
+                        (unsigned) err, s_present_fails, s_present_frames,
+                        s_present_repairs);
+            }
+        }
+    }
+#endif
 }
 
 static void gfx_sdl_swap_buffers_end(void) {

@@ -692,6 +692,24 @@ patch and builds centrally). Full protocol: `OTSM64REMOTE.md`.
   panel's 30 s timeout. Suspect the Leia/SDL override surface not re-binding on
   resume (the "never hide/show the view" workaround covers activity restarts,
   not sleep); do not "fix" it by restarting the interlacer.
+  **Diagnosed 2026-11-27 (worktree `w7-blackframe`).** Two distinct causes, same
+  symptom. (A) `initLeia()` can abort *before* `setViewAsset(asset)`: on the live
+  capture an `ArrayIndexOutOfBoundsException` in `updateQualityPills()`
+  (`fxPreset == -1`, no QUALITY tier stored) threw out of `buildTuningPanel()`,
+  so the asset was never bound, `onCreate` fell back via `failOverride()` and SDL
+  rendered into its own hidden `SurfaceView` - live fps, sane `cmd dump`
+  (`surfaceValid=false`, `drawable=2560x1534`), black panel, and `cmd reinit`
+  could never help because a request with no bound asset is never answered.
+  (B) On resume the Leia view rebuilds its `SurfaceTexture` and
+  `setOverrideSurface()` recreates SDL's `EGLSurface` *on the Java thread* with
+  nothing making it current on the render thread, so every following
+  `eglSwapBuffers` is dropped while the loop stays green; `cmd reinit` re-binds
+  the same `ANativeWindow` and cannot help, `HOME` only helps when a new
+  `SurfaceTexture` is created. Fixed by the QUALITY guard plus a try/catch
+  around the panel build (A), a per-frame make-current check in
+  `gfx_sdl_swap_buffers_begin` (B), a probe (`cmd blackcheck`), a safe repair
+  (`cmd blackfix`), and a capped QUICK-DEV restart as last resort. See
+  [`BLACKFRAME.md`](BLACKFRAME.md).
 - **The app sometimes "refuses to die" on relaunch.** Dropbox repeatedly logs
   `ProcessRecord{... com.vdavid003.sm64port} <pid> refused to die, but we need to
   launch ...` — the old process does not exit promptly when the activity is
